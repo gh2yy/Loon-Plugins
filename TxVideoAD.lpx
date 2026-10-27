@@ -1,6 +1,6 @@
 #!name = 腾讯视频净化
 #!desc = 由 Quantumult X 的 TxvideoAD.snippet 转换：去开屏广告、视频播放前广告、底部多余 tab 栏、我的页面美化、我的界面顶部广告。原作者 TG@ZenMoFiShi，原版更新 2026-10-27。脚本仍用原作者远程 Txvideoad.js，未改一行。
-#!author = TG@ZenMoFiShi
+#!author = TG@ZenMoFiShi & AI自动转化
 #!date = 2026-10-27
 #!tag = 腾讯视频,去广告,界面净化
 
