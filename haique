@@ -1,13 +1,24 @@
 #!name = 海雀去广告
-#!desc = 拦截海雀所用的广告与统计 SDK 域名
-#!author = gh2yy
+#!desc = 移除开屏、横幅、弹窗广告，拦截商城和资讯页面，拦截广告统计 SDK 域名
+#!author = 可莉（kelee.one）
 #!date = 2026-10-27
 #!tag = 海雀,去广告
 
 # 修改日志：
 # - 2026-10-27 Muse：从自用 Loon 配置的本地 [Rule] 中提取成独立插件，规则和配置中一致，未增删；三条均为域名级拦截，不需要 MITM。
+# - 2026-10-27 Muse：合并可莉海雀去广告插件（版本日期 2026-10-02）的做法——新增 5 条复写与 3 个 MITM 主机名：对海雀自有接口的开屏、横幅、弹窗三个广告命令返回空数据，对资讯页与有赞商城页直接拦截；原有 3 条 SDK 域名拦截保留。
 
 [Rule]
 DOMAIN-SUFFIX,umeng.com,REJECT
 DOMAIN-SUFFIX,anythinktech.com,REJECT
 DOMAIN-SUFFIX,ubixioe.com,REJECT
+
+[Rewrite]
+request if ${url} ~= /^https:\/\/app-api-32\.ihaique\.net\/api\/app\/v\d\/appad\/cmd\/AppadGetSplashAds\?/i then reject_dict(200)
+request if ${url} ~= /^https:\/\/app-api-32\.ihaique\.net\/api\/app\/v\d\/appad\/cmd\/AppGetAttentionInfos\?/i then reject_dict(200)
+request if ${url} ~= /^https:\/\/app-api-32\.ihaique\.net\/api\/app\/v\d\/appad\/cmd\/AppadGetBannerAds\?/i then reject_dict(200)
+request if ${url} ~= /^https:\/\/g\.ihaique\.net\/alcidae\/info\/index\.html$/i then reject(404)
+request if ${url} ~= /^https:\/\/shop151522958\.youzan\.com\/v\d\/showcase\/homepage\?/i then reject(404)
+
+[Mitm]
+hostname = app-api-32.ihaique.net, g.ihaique.net, shop151522958.youzan.com
