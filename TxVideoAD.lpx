@@ -1,0 +1,44 @@
+#!name = 腾讯视频净化
+#!desc = 由 Quantumult X 的 TxvideoAD.snippet 转换：去开屏广告、视频播放前广告、底部多余 tab 栏、我的页面美化、我的界面顶部广告。原作者 TG@ZenMoFiShi，原版更新 2026-10-27。脚本仍用原作者远程 Txvideoad.js，未改一行。
+#!author = TG@ZenMoFiShi
+#!date = 2026-10-27
+#!tag = 腾讯视频,去广告,界面净化
+
+# 转换说明（QX -> Loon，逐条对应、无增删）
+# - host,xxx,reject                -> [Rule] DOMAIN,xxx,REJECT（2 条）
+# - ^... url script-request-body   -> [Script] http-request  ^... script-path=Txvideoad.js, requires-body=true, binary-body-mode=true（1 条）
+# - ^... url script-response-body  -> [Script] http-response ^... script-path=Txvideoad.js, requires-body=true, binary-body-mode=true（3 条二进制）+ 1 条纯文本（rdelivery，不加 binary）
+# - hostname = ...                  -> [Mitm] hostname = ...（原样保留 4 个，未扩）
+#
+# 为什么加 binary-body-mode=true
+# - Txvideoad.js 不是普通 JSON 脚本：它直接改二进制 bodyBytes —— i.video.qq.com 走 TRPC/Protobuf（含 gzip 解/压、改帧头长度）、
+#   iacc.qq.com 走 JCE 二进制、config.ab.qq.com 的 GetTabRemoteConfig 也是 Protobuf。Loon 不开 binary-body-mode 就拿不到完整的 bodyBytes，
+#   脚本会直接原样放行、看起来像“装了没效果”。rdelivery 那条是纯 JSON 文本（只改 "tab_gray":true->false），故不加 binary。
+# - 脚本兼容性已核：全文只用 $request / $response / $done 和 body / bodyBytes，无 $prefs / $httpClient / QX 专属 API，Loon 可直接跑远程原脚本。
+#
+# 原版在干什么（读 Txvideoad.js 核实）
+# - i.video 请求侧：按 TRPC 函数名拦截开屏 GetSplash*、片中 GetPushAd*、信息流/搜索/下载广告 Get*AdData、会员推广等 16 个广告函数（改函数名字符使其失效）。
+# - i.video 响应侧：清 AdResponseInfo / AdFeedInfo / InnerAd* / LoadingConfig 等 Any 包、去个人中心广告模块（outerPaster、user_center_more_function）。
+# - 底部 tab：GetTabListRsp 里删 smallvideo_entrance / goods_entrance（标题“短剧”“好物”）；AB 配置里强制 simple_mode_config 的 tab_bar_cut 白名单 "0;2;4"；
+#   并关掉 QUIC（quic.enabled=false）和预解析/HDNS（enablePreResolve/enableNac/enableHdns=false），逼走普通连接以便上面的改写生效。
+# - iacc 响应侧：修青少年弹窗配置、播放提示、直播滚动广告（JCE 命令 89738 / 126577 / 129278 / 130273）。
+# - [Rule] 两条 reject 的是广告接入域名 iacc.stgw.qq.com / tacc.video.qq.com，与脚本无关、直接拦。
+#
+# 注意
+# - 必须开 MITM 并信任证书，否则 4 个 hostname 的脚本都不触发。若装后腾讯视频黑屏/播放不了/首页刷不出，先禁用本插件验证，不要先怀疑节点。
+# - 脚本是远程 script-path，作者更新 Txvideoad.js 后 Loon 跟随更新；若哪天失效，多半是腾讯视频改版或作者未跟进，与转换格式无关。
+# - 上游基准：TxvideoAD.snippet sha256 39ba1d95…（2026-10-27 版）、Txvideoad.js sha256 1de991d9…，转换时逐条核对。
+
+[Rule]
+DOMAIN,iacc.stgw.qq.com,REJECT
+DOMAIN,tacc.video.qq.com,REJECT
+
+[Script]
+http-request ^https?:\/\/i\.video\.qq\.com\/(?:\?.*)?$ script-path=https://raw.githubusercontent.com/ZenmoFeiShi/Qx/refs/heads/main/Txvideoad.js, requires-body=true, binary-body-mode=true, tag=腾讯视频-请求拦广告函数
+http-response ^https?:\/\/i\.video\.qq\.com\/(?:\?.*)?$ script-path=https://raw.githubusercontent.com/ZenmoFeiShi/Qx/refs/heads/main/Txvideoad.js, requires-body=true, binary-body-mode=true, tag=腾讯视频-响应清广告和底部tab
+http-response ^https?:\/\/iacc\.qq\.com\/(?:\?.*)?$ script-path=https://raw.githubusercontent.com/ZenmoFeiShi/Qx/refs/heads/main/Txvideoad.js, requires-body=true, binary-body-mode=true, tag=腾讯视频-JCE去广告
+http-response ^https?:\/\/config\.ab\.qq\.com\/tab\/GetTabRemoteConfig(?:\?.*)?$ script-path=https://raw.githubusercontent.com/ZenmoFeiShi/Qx/refs/heads/main/Txvideoad.js, requires-body=true, binary-body-mode=true, tag=腾讯视频-底部tab精简配置
+http-response ^https:\/\/rdelivery\.qq\.com\/v1\/sdkconfig\/get(?:\?.*)?$ script-path=https://raw.githubusercontent.com/ZenmoFeiShi/Qx/refs/heads/main/Txvideoad.js, requires-body=true, tag=腾讯视频-关闭tab_gray
+
+[Mitm]
+hostname = i.video.qq.com, iacc.qq.com, config.ab.qq.com, rdelivery.qq.com
