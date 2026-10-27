@@ -1,25 +1,32 @@
-#!name = 网易新闻去发布按钮
-#!desc = 只去掉网易新闻底部中间的「发布」按钮，其余一概不动。
+#!name = 网易新闻去发布按钮+去签到
+#!desc = 去掉网易新闻底部中间的「发布」按钮和「我的」页的签到有礼模块，其余一概不动。
 #!author = Muse
 #!date = 2026-10-27
 #!tag = 网易新闻,界面
 
+# ============ 1. 发布按钮 ============
 # 接口：POST (b-)c.m.163.com/nc/gl/newsclient/ft（features 全局开关表）
-#
-# 发布按钮的正确改法（2026-10-27 实测修正）：
 # v1 里同时改了两处与 publish 有关的配置，发布按钮随之消失；
 # 精简版一度只保留 publish_middle_show="0"，实测按钮恢复——
 # 说明真正起作用的是把 tab_setting 里的 publish 项删掉，
 # publish_middle_show 单独改并不足以隐藏按钮。
-# 本版只做两处 publish 相关改动，不碰视频的任何字段：
-# 1. features.tab_setting 的 tab 数组按 id 删掉 publish 项
-#    （删除后为 视频/圈子/社区，即恢复 v1 中已验证的状态）；
-# 2. features.publish_middle_show.value 改为 "0"（保留，与 1 双保险，
-#    与 v1 的发布相关改动完全一致）。
+# 本版保留两处 publish 相关改动双保险，不碰视频的任何字段：
+# 1. features.tab_setting 的 tab 数组按 id 删掉 publish 项；
+# 2. features.publish_middle_show.value 改为 "0"。
+#
+# ============ 2. 签到有礼模块（2026-10-27 晚新增，用户实测已消失） ============
+# 接口：GET gw.m.163.com/commons-user-main/api/v1/commons/user/profile/signTask
+# 抓包实证：其响应就是「签到有礼」卡片的全部内容——
+# data.message="签到有礼"、entryName="立即签到"、signProgress 是 7 天奖励格子。
+# 改法：把 data 置空，卡片无数据可渲染即不显示。
+#
+# 注：VIP 推荐卡片（membership 接口）实测置空数据仍显示，未并入；
+# 底部视频 tab 经多份抓包定案非接口配置决定，未处理。
 # 禁用/删除本插件即恢复原状。
 
 [Rewrite]
 ^https:\/\/(?:b-)?c\.m\.163\.com\/nc\/gl\/newsclient\/ft response-body-json-jq 'if (.features.tab_setting.value | type) == "string" then .features.tab_setting.value |= (. as $v | try (fromjson | .tab |= map(select(.id != "publish")) | tojson) catch $v) else . end | if .features.publish_middle_show then .features.publish_middle_show.value = "0" else . end'
+^https:\/\/gw\.m\.163\.com\/commons-user-main\/api\/v1\/commons\/user\/profile\/signTask(?:\?.*)?$ response-body-json-jq '.data = null'
 
 [Mitm]
-hostname = c.m.163.com, b-c.m.163.com
+hostname = c.m.163.com, b-c.m.163.com, gw.m.163.com
