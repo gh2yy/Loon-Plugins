@@ -1,0 +1,59 @@
+#!name = 网页去广告（通用）
+#!desc = 拦截网页里常见的广告联盟、广告分发与统计监测域名
+#!author = gh2yy
+#!date = 2026-10-27
+#!tag = 网页,去广告
+
+# 修改日志：
+# - 2026-10-27 Muse：新建通用网页去广告插件 v1。按公开广告清单（EasyList / anti-AD 一类）里通用的条目整理：国际广告联盟与内容推荐平台、国内广告联盟与分发域名、统计监测域名，共 40 条，全部为域名级 REJECT，不需要 MITM、不解密网页流量。与正文同域名的内嵌推广拦不住，那类需针对具体站点写复写，后续遇到再往本插件追加。
+
+[Rule]
+# 国际广告联盟 / 内容推荐
+DOMAIN-SUFFIX,doubleclick.net,REJECT
+DOMAIN-SUFFIX,googlesyndication.com,REJECT
+DOMAIN-SUFFIX,googleadservices.com,REJECT
+DOMAIN,adservice.google.com,REJECT
+DOMAIN-SUFFIX,amazon-adsystem.com,REJECT
+DOMAIN-SUFFIX,criteo.com,REJECT
+DOMAIN-SUFFIX,taboola.com,REJECT
+DOMAIN-SUFFIX,outbrain.com,REJECT
+DOMAIN-SUFFIX,mgid.com,REJECT
+DOMAIN-SUFFIX,revcontent.com,REJECT
+DOMAIN-SUFFIX,adnxs.com,REJECT
+DOMAIN-SUFFIX,rubiconproject.com,REJECT
+DOMAIN-SUFFIX,pubmatic.com,REJECT
+DOMAIN-SUFFIX,openx.net,REJECT
+DOMAIN-SUFFIX,casalemedia.com,REJECT
+DOMAIN-SUFFIX,adsrvr.org,REJECT
+DOMAIN-SUFFIX,smartadserver.com,REJECT
+DOMAIN-SUFFIX,adform.com,REJECT
+DOMAIN-SUFFIX,teads.tv,REJECT
+DOMAIN-SUFFIX,gumgum.com,REJECT
+DOMAIN-SUFFIX,sharethrough.com,REJECT
+DOMAIN-SUFFIX,lijit.com,REJECT
+DOMAIN-SUFFIX,popads.net,REJECT
+DOMAIN-SUFFIX,propellerads.com,REJECT
+DOMAIN-SUFFIX,exoclick.com,REJECT
+DOMAIN-SUFFIX,adcash.com,REJECT
+DOMAIN-SUFFIX,advertising.com,REJECT
+DOMAIN-SUFFIX,yieldmanager.com,REJECT
+DOMAIN-SUFFIX,zedo.com,REJECT
+DOMAIN,ads.yahoo.com,REJECT
+# 国内广告联盟 / 分发
+DOMAIN-SUFFIX,tanx.com,REJECT
+DOMAIN-SUFFIX,alimama.com,REJECT
+DOMAIN,pos.baidu.com,REJECT
+DOMAIN,cpro.baidu.com,REJECT
+DOMAIN,union.baidu.com,REJECT
+DOMAIN,eiv.baidu.com,REJECT
+DOMAIN,ubmcmm.baidustatic.com,REJECT
+DOMAIN-SUFFIX,e.qq.com,REJECT
+DOMAIN,pgdt.gtimg.cn,REJECT
+# 统计 / 广告监测
+DOMAIN-SUFFIX,google-analytics.com,REJECT
+DOMAIN,hm.baidu.com,REJECT
+DOMAIN-SUFFIX,cnzz.com,REJECT
+DOMAIN-SUFFIX,miaozhen.com,REJECT
+DOMAIN-SUFFIX,admaster.com.cn,REJECT
+DOMAIN-SUFFIX,mmstat.com,REJECT
+DOMAIN,owa.99click.com,REJECT
