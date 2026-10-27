@@ -1,11 +1,9 @@
 #!name = 美团App 12.67.403
-#!desc = 去底部视频/小团 tab、清信息流/搜索热词/开屏等（由 QX 版 MT.snippet 转换）
+#!desc = 去底部视频/小团 tab、清信息流/搜索热词/开屏等
 #!author = ZenmoFeiShi（TG @ZenMoFiShi）
 #!date = 2026-10-27
 #!tag = 美团,去广告,界面净化
 
-# 原作者：ZenmoFeiShi（TG @ZenMoFiShi）
-# 修改日期：2026-10-27
 # 修改日志：
 # - 2026-10-27 Muse：由 QX 版 MT.snippet（原版更新 2026-10-25，对应美团 App 12.67.403）逐条转换为 Loon 格式，规则、脚本、域名无增删；脚本仍用原作者远程 MT.js，未改动。
 

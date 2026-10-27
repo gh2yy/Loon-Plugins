@@ -1,11 +1,9 @@
 #!name = 腾讯视频净化 v3
-#!desc = 去开屏/片头广告、底部多余 tab 等（由 QX 版 TxvideoAD.snippet 转换，脚本为 Loon 适配版 Txvideoad-loon.js）
+#!desc = 去开屏/片头广告、底部多余 tab 等
 #!author = ZenmoFeiShi（TG @ZenMoFiShi）
 #!date = 2026-10-27
 #!tag = 腾讯视频,去广告,界面净化
 
-# 原作者：ZenmoFeiShi（TG @ZenMoFiShi）
-# 修改日期：2026-10-27
 # 修改日志：
 # - 2026-10-27 Muse：由 QX 版 TxvideoAD.snippet 逐条转换为 Loon 格式。
 # - 2026-10-27 Muse：新增拦 QUIC 的 4 条 UDP 规则；i.video/iacc 脚本匹配放宽为任意路径；二进制脚本超时改为 30 秒。
