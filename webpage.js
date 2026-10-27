@@ -4,6 +4,7 @@
 // 修改日志：
 // - 2026-10-27 Muse：新建。91porny 首页：剔除顶部「九色热搜」模块（服务端直出 HTML，按标题锚点定位容器 div 后整段移除）。
 // - 2026-10-27 Muse：改为多站点分区结构——顶部统一分发，每个网站一个独立处理函数（以域名命名、横幅注释隔开），新增网站只加一段，互不影响。
+// - 2026-10-27 Muse：新增 hsex.men 首页「热搜」模块剔除（h2 标题 + div.hot_search 词条区整段移除）。
 
 (function () {
   var body = $response.body;
@@ -13,6 +14,9 @@
 
   // ================= 91porny.com =================
   if (/^https:\/\/91porny\.com\//.test(url)) out = site_91porny(out);
+
+  // ================= hsex.men =================
+  if (/^https:\/\/hsex\.men\//.test(url)) out = site_hsex(out);
 
   // ================= 下一个网站从这里往下加 =================
 
@@ -45,5 +49,34 @@
     var block = html.slice(start, end);
     if (block.indexOf('九色热搜') < 0 || block.indexOf('video-elem') >= 0) return html;
     return html.slice(0, start) + html.slice(end);
+  }
+
+  // ---------- hsex.men：剔除首页「热搜」模块 ----------
+  // 结构 = <h2>热搜</h2> + <div class="row"><div class="hot_search">词条按钮×30</div></div>。
+  // 以 div.hot_search 为锚（全页唯一），向前回溯到同模块的 h2 起点，向后按 div 配平找到 row 段结尾，整段切除。
+  function site_hsex(html) {
+    var hs = html.indexOf('<div class="hot_search">');
+    if (hs < 0) return html;
+    var row = html.lastIndexOf('<div class="row">', hs);
+    if (row < 0) return html;
+    var h2 = html.lastIndexOf('<h2>', row);
+    if (h2 < 0) return html;
+    if (html.slice(h2, row).indexOf('热搜') < 0) return html;
+    var depth = 0, i = row, end = -1;
+    while (i < html.length) {
+      var nextOpen = html.indexOf('<div', i);
+      var nextClose = html.indexOf('</div>', i);
+      if (nextClose < 0) return html;
+      if (nextOpen >= 0 && nextOpen < nextClose) {
+        depth++; i = nextOpen + 4;
+      } else {
+        depth--; i = nextClose + 6;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end < 0) return html;
+    var block = html.slice(h2, end);
+    if (block.indexOf('hot_search') < 0 || block.indexOf('最热') >= 0) return html;
+    return html.slice(0, h2) + html.slice(end);
   }
 })();
