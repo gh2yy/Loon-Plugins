@@ -1,0 +1,46 @@
+#!name = 腾讯视频净化 v3
+#!desc = 由 Quantumult X 的 TxvideoAD.snippet 转换 v3：去开屏广告、视频播放前广告、底部多余 tab 栏、我的页面美化。原作者 TG@ZenMoFiShi，原版更新 2026-10-27。v3 定案修复：原脚本是 QX 专用 bodyBytes API、在 Loon 里恒读不到 body，改用 Loon 适配版脚本。
+#!author = TG@ZenMoFiShi
+#!date = 2026-10-27
+#!tag = 腾讯视频,去广告,界面净化
+
+# v3 定案（2026-10-27，本地模拟 QX/Loon 双环境实测）
+# v1/v2 完全没效果的原因不在插件格式、也不在远程/本地，而在脚本的平台 API：
+# - QX：二进制 body 读 $request.bodyBytes / $response.bodyBytes，回 $done({bodyBytes})
+# - Loon：官方 Script API 里根本没有 bodyBytes（文档全文 0 处）；只有 $request.body / $response.body
+#   （binary-body-mode=true 时为 Uint8Array），回 $done({body: Uint8Array})
+# 原版 Txvideoad.js 只读 bodyBytes，在 Loon 里永远是 undefined -> 每条请求都 $done({}) 原样放行，
+# 且不报错、无日志，所以表现为“完全没一点效果”。我此前说“只用通用 API、Loon 可直接跑”是误判。
+# 本地 A/B 实测（自构 TRPC 请求帧 + AB 配置 Protobuf）：原版在 QX 环境能改、在 Loon 环境两项全 no-op；
+# 适配版在 Loon 环境两项都能改，在 QX 环境也不受影响。
+#
+# v3 的改法
+# - script-path 不再指向原作者的 Txvideoad.js，而是指向 Loon 适配版 Txvideoad-loon.js（托管在你自己的仓库）。
+#   适配版与原版只差 4 行（都在 main()）：读 body 时 bodyBytes||body 兜底，回结果时用 {body: Uint8Array}；
+#   TRPC/JCE/Protobuf 全部业务逻辑一字未动。原版上游哈希仍为 snippet 39ba1d95… / JS 1de991d9…（复查未更新）。
+# - 其余沿用 v2：[Rule] 原版 2 条 DOMAIN REJECT + 4 条 AND+PROTOCOL,UDP REJECT 拦 QUIC；
+#   i.video/iacc 放宽到任意路径；二进制脚本 timeout=30；[MITM] 原版 4 个 hostname。
+# - 插件格式本身经对照 Loon 官方文档与在用插件复核无误（[Rule]/[Script]/[MITM] 写法、参数名均正确），v1/v2 的映射也无漏条。
+#
+# 使用前提（重要）
+# - 必须先把 Txvideoad-loon.js 上传到你仓库 gh2yy/Loon-Plugins 根目录（与本 .lpx 同名文件并列），
+#   本插件的 script-path 指向的就是那份文件；只装 .lpx、不传 JS，脚本会 404、照样没效果。
+# - 装 v3 前删掉/禁用 v1、v2，避免重复处理。装后彻底杀掉腾讯视频冷启动测试。
+
+[Rule]
+DOMAIN,iacc.stgw.qq.com,REJECT
+DOMAIN,tacc.video.qq.com,REJECT
+AND,((DOMAIN,i.video.qq.com),(PROTOCOL,UDP)),REJECT
+AND,((DOMAIN,iacc.qq.com),(PROTOCOL,UDP)),REJECT
+AND,((DOMAIN,config.ab.qq.com),(PROTOCOL,UDP)),REJECT
+AND,((DOMAIN,rdelivery.qq.com),(PROTOCOL,UDP)),REJECT
+
+[Script]
+http-request ^https?:\/\/i\.video\.qq\.com\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, requires-body=true, binary-body-mode=true, timeout=30, tag=腾讯视频-请求拦广告函数
+http-response ^https?:\/\/i\.video\.qq\.com\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, requires-body=true, binary-body-mode=true, timeout=30, tag=腾讯视频-响应清广告和底部tab
+http-response ^https?:\/\/iacc\.qq\.com\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, requires-body=true, binary-body-mode=true, timeout=30, tag=腾讯视频-JCE去广告
+http-response ^https?:\/\/config\.ab\.qq\.com\/tab\/GetTabRemoteConfig(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, requires-body=true, binary-body-mode=true, timeout=30, tag=腾讯视频-底部tab精简配置
+http-response ^https:\/\/rdelivery\.qq\.com\/v1\/sdkconfig\/get(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, requires-body=true, tag=腾讯视频-关闭tab_gray
+
+[MITM]
+hostname = i.video.qq.com, iacc.qq.com, config.ab.qq.com, rdelivery.qq.com
