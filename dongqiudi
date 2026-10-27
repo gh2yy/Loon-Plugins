@@ -1,0 +1,14 @@
+#!name = 懂球帝去广告
+#!desc = 拦截懂球帝广告平台接口请求
+#!author = gh2yy
+#!date = 2026-10-27
+#!tag = 懂球帝,去广告
+
+# 修改日志：
+# - 2026-10-27 Muse：从自用 Loon 配置的本地 [Rule] 中提取成独立插件，规则与 MITM 域名和配置中一致，未增删。
+
+[Rule]
+URL-REGEX,^https?:\/\/ap\.dongdianqiu\.com\/plat,REJECT
+
+[Mitm]
+hostname = ap.dongdianqiu.com
