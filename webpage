@@ -1,14 +1,20 @@
 #!name = 网页去广告
-#!desc = 去除指定网站的页面模块（当前：91porny 顶部九色热搜）
+#!desc = 按网站分区去除页面模块与广告（当前：91porny）
 #!author = gh2yy
 #!date = 2026-10-27
 #!tag = 网页,去广告
 
 # 修改日志：
 # - 2026-10-27 Muse：加入首个站点——91porny 首页顶部「九色热搜」模块。该模块是服务端直出 HTML、无独立接口，由响应脚本 webpage.js 按标题锚点定位容器后整段剔除；已用真实抓包的 3 份首页 HTML 本地验证（模块剔除干净、视频列表与页脚不受影响）。MITM 加入 91porny.com。
+# - 2026-10-27 Muse：定下多站点分区规矩（后续加站都照此）：插件里每个网站一个带域名横幅的分区，[Script] 每站一行、tag 以站名开头；webpage.js 里每站一个独立函数、顶部分发；[Mitm] 上方注释逐站标注域名归属；修改日志每站一条。
 
 [Script]
+# ================= 91porny.com =================
+# 首页顶部「九色热搜」模块（HTML 直出，脚本剔除）
 http-response ^https:\/\/91porny\.com\/?(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/webpage.js, requires-body=true, tag=91porny-去九色热搜
 
+# ================= 下一个网站从这里往下加 =================
+
 [Mitm]
+# 91porny.com —— 91porny
 hostname = 91porny.com
