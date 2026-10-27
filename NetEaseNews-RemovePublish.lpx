@@ -1,0 +1,22 @@
+#!name = 网易新闻去发布按钮
+#!desc = 只去掉网易新闻底部中间的「发布」按钮，其余一概不动。
+#!author = Muse
+#!date = 2026-10-27
+#!tag = 网易新闻,界面
+
+# 原理（2026-10-27 两份抓包定位 + 实测验证）
+# 接口：POST (b-)c.m.163.com/nc/gl/newsclient/ft
+# 响应 features 全局开关表中，features.publish_middle_show.value = "1"
+# 即中间「发布」按钮的显示开关，本插件把它改为 "0"。
+# 第二份抓包中原始响应与 Loon 改写后响应的逐项 diff 已证实此改写
+# 真实送达 App，实测发布按钮随之消失。
+#
+# 说明：此前版本还尝试过去掉视频 tab（改 tab_setting、video_module），
+# 实测均无效——视频 tab 不由这份配置控制，应为客户端写死，故本版全部去掉，
+# 只保留已验证有效的这一项。禁用/删除本插件即恢复发布按钮。
+
+[Rewrite]
+^https:\/\/(?:b-)?c\.m\.163\.com\/nc\/gl\/newsclient\/ft response-body-json-jq 'if .features.publish_middle_show then .features.publish_middle_show.value = "0" else . end'
+
+[Mitm]
+hostname = c.m.163.com, b-c.m.163.com
