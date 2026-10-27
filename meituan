@@ -1,26 +1,13 @@
 #!name = 美团App 12.67.403
-#!desc = 由 Quantumult X 的 MT.snippet 转换：去底部视频/小团 tab、清信息流/搜索热词/开屏等。原作者 TG@ZenMoFiShi，原版更新 2026.10.25。脚本仍用原作者远程 MT.js，未改一行。
-#!author = TG @ZenMoFiShi
+#!desc = 去底部视频/小团 tab、清信息流/搜索热词/开屏等（由 QX 版 MT.snippet 转换）
+#!author = ZenmoFeiShi（TG @ZenMoFiShi）
 #!date = 2026-10-27
 #!tag = 美团,去广告,界面净化
 
-# 转换说明（QX -> Loon，逐条对应、无增删）
-# - host,xxx,reject            -> [Rule] DOMAIN,xxx,REJECT（12 条）
-# - host-wildcard,xxx,reject    -> [Rule] DOMAIN-WILDCARD,xxx,REJECT（1 条）
-# - ip-cidr,xxx,reject          -> [Rule] IP-CIDR,xxx,REJECT,no-resolve（29 条，加 no-resolve 避免为判 IP 先做 DNS 解析，是 Loon 惯例）
-# - ip6-cidr,xxx,reject         -> [Rule] IP-CIDR6,xxx,REJECT,no-resolve（4 条，Loon 的 IPv6 规则名是 IP-CIDR6）
-# - ^... url reject             -> [Rewrite] ^... reject（2 条）
-# - ^... url script-response-body MT.js -> [Script] http-response ^... script-path=MT.js, requires-body=true（8 条）
-# - hostname = ...              -> [Mitm] hostname = ...（原样保留 7 个，未扩）
-#
-# 原版在干什么
-# - [Rule] 的 shark-*/mquic-* 是美团的 QUIC/上报域名，httpdns* 与那批 119.29/103.37 等 IP 是 HTTPDNS 服务器：原版就是要拦掉 HTTPDNS+QUIC，逼 App 走系统 DNS/普通连接。
-# - [Script] 的 MT.js 按 URL 分发：indexTab 只留 homepage/mine、去掉 video/xiaotuan 两个底部 tab；lycoris/scene 清空信息流；usercenter 去 mine_cross_recommend；搜索页清默认词/热词/AI 气泡；购物入口清 topBannerArea；startupPicture 清开屏图区。脚本只用 $request/$response/$done 通用 API，Loon 可直接跑。
-#
-# 注意
-# - 拦 HTTPDNS 是原版设计、不是转换加的。若装后美团加载变慢/图片刷不出，先禁用本插件验证，不要先怀疑节点——这和之前 B站 HTTPDNS 被误拦是同一类链路，只是这次是作者有意拦。
-# - 脚本是远程 script-path，作者更新 MT.js 后 Loon 跟随更新；若哪天脚本失效，多半是美团改版或作者未跟进，与转换格式无关。
-# - 美团版本标注 12.67.403，App 大版本升级后规则可能需要作者更新。
+# 原作者：ZenmoFeiShi（TG @ZenMoFiShi）
+# 修改日期：2026-10-27
+# 修改日志：
+# - 2026-10-27 Muse：由 QX 版 MT.snippet（原版更新 2026-10-25，对应美团 App 12.67.403）逐条转换为 Loon 格式，规则、脚本、域名无增删；脚本仍用原作者远程 MT.js，未改动。
 
 [Rule]
 DOMAIN,shark-mt.meituan.com,REJECT

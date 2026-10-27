@@ -1,15 +1,10 @@
-// Txvideoad.js — Loon 适配版（基于 ZenmoFeiShi/Qx 原版，2026-10-27 更新版，sha256 2c56bc76…）
-// 与原版的唯一区别（共 4 处，均在 main() 里，业务逻辑一字未动）：
-//   QX 与 Loon 的二进制 body API 不同名 —
-//   QX:    读 $request.bodyBytes / $response.bodyBytes，回 $done({bodyBytes})
-//   Loon:  官方 API 只有 $request.body / $response.body（binary-body-mode=true 时为 Uint8Array），
-//          回 $done({body: Uint8Array})；全文无 bodyBytes，原版在 Loon 里读到的永远是 undefined，
-//          于是每条请求都原样放行、完全没效果（这就是 v1/v2 实测无效的定案原因）。
-//   本版读时 bodyBytes||body 兜底、回时用 {body: Uint8Array}，其余 TRPC/JCE/Protobuf 处理原样保留。
-// 另有一处 Muse 本地功能补丁（非适配、非上游）：新增 JCE cmd 129513（广告 SDK 总配置）
-// 的 fixSplashConfig，把 splashConfig.enableHotLaunchSplashAd 与
-// isSupportMergeLongTermSplashAd 改为 false（关热启动开屏与长期开屏订单合并），
-// 详见 JCE_SPLASH_CONFIG 注释。上游更新重套适配时必须连同此补丁一起保留。
+// Txvideoad-loon.js — 腾讯视频去广告脚本（Loon 适配版）
+// 原作者：ZenmoFeiShi（TG @ZenMoFiShi）
+// 修改日期：2026-10-27
+// 修改日志：
+// - 2026-10-27 Muse：Loon 适配——原版读/回二进制 body 用 QX 专属 bodyBytes，Loon 只有 body，原版在 Loon 里永远读不到 body、完全不生效；本版在 main() 4 处改为读 bodyBytes||body、回 {body}，业务逻辑未动。
+// - 2026-10-27 上游更新：Txvideoad.js 新增暂停广告处理、信息流瀑布流广告清理，已重套上述适配。
+// - 2026-10-27 Muse：本地补丁 fixSplashConfig（JCE 129513 广告配置）——关热启动开屏、关长期开屏订单合并。上游更新重套时须连同适配一起保留。
 (() => {
   const TAB_DROP_KEYS = ["smallvideo_entrance", "goods_entrance"];
   const TAB_DROP_TITLES = ["短剧", "好物"];
@@ -43,12 +38,7 @@
   const JCE_ROLL_ADS = [129278, 130273];
   // 暂停广告，body tag1.tag1 为包着广告单列表的 simple list
   const JCE_PAUSE_AD = 129196;
-  // 广告 SDK 总配置（含 splashConfig）——Muse 本地补丁（非上游功能）：
-  // 2026-10-27 抓包定案当前版本开屏走本地预下载订单+热启动开屏，
-  // 上游拦的 TRPC splash 函数在本版根本不调用；此配置里
-  // enableHotLaunchSplashAd=true 是「后台放 >180 秒回到前台弹开屏」的开关，
-  // isSupportMergeLongTermSplashAd=true 让预下载订单并入长期库存反复播。
-  // fixSplashConfig 把这两项改成 false。上游更新时须连同 bodyBytes 适配一起重套。
+  // 广告 SDK 总配置（含 splashConfig）——本地补丁，见文件头修改日志（2026-10-27）
   const JCE_SPLASH_CONFIG = 129513;
   const DROP = {};
 
@@ -632,9 +622,7 @@
     return jRebuild(b, s, e, fs, edits);
   }
   function fixSplashConfig(b, s, e) {
-    // Muse 本地补丁：body 载荷 = 0x0c(tag0 zero) + 0x17(tag1 string4) + u32be 长度 + JSON。
-    // 只翻 splashConfig 里两个布尔开关，长度变化同步修正 string4 长度头，
-    // 其余字节原样；结构对不上或开关不在都返回 null（原样放行）。
+    // body 载荷 = 0x0c + 0x17(tag1 string4) + u32be 长度 + JSON；只翻两个开关并同步修正长度头，结构不符返回 null。
     if (e - s < 7 || b[s] !== 0x0c || b[s + 1] !== 0x17) return null;
     const jl = u32(b, s + 2);
     if (s + 6 + jl !== e) return null;
