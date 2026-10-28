@@ -7,11 +7,15 @@
 # 修改日志：
 # - 2026-10-28 Muse：首版——把 Loon 主配置 [Rule] 区的本地规则整组迁出收纳（淘宝测试、本地、海角社区、海雀、懂球帝、央视频六组，外加招行/中国移动两组停用备忘注释），与主配置解耦、单独维护。海角社区一条原指向已不存在的 Ken US 策略组，迁入时先注释保留，策略改成现有组名后去掉行首 # 即可启用。
 # - 2026-10-28 Muse：按要求删去海雀、懂球帝、央视频三组——三者已有独立插件（haique、dongqiudi、yangshipin），不在此重复收录；随之移除仅为这两组 URL-REGEX 服务的 [Mitm] 段。
+# - 2026-10-28 Muse：按用户重发的现行配置重新对齐：新增「bilibili测试」组 5 条（旧版配置文件里没有此组，为 B站 PCDN 屏蔽与 acgvideo 直连）；移除「淘宝测试」组（现行配置已改用可莉的 Alibaba 远程规则集）与招行/中国移动停用备忘（现行配置已无）。已核对 bilibili 组与远程规则集关系：acgvideo 与 China 集同向直连（效果重复、无害）；其余 4 条 REJECT 是压住 China 集直连的必要覆盖，缺一不可。
 
 [Rule]
-# ================= 淘宝测试 =================
-DOMAIN,adashx.m.taobao.com,REJECT
-DOMAIN,h-adashx.ut.taobao.com,REJECT
+# ================= bilibili测试 =================
+DOMAIN-SUFFIX,acgvideo.com,DIRECT
+DOMAIN,pcdn.biliapi.net,REJECT
+DOMAIN-SUFFIX,mcdn.bilivideo.com,REJECT
+DOMAIN-SUFFIX,mcdn.bilivideo.cn,REJECT
+DOMAIN-SUFFIX,szbdyd.com,REJECT
 
 # ================= 本地 =================
 DOMAIN-KEYWORD,okaapps,DIRECT
@@ -24,14 +28,3 @@ DOMAIN-KEYWORD,dcard,TW Auto
 # ================= 海角社区 =================
 # 原策略组 Ken US 在主配置里已不存在（悬空规则），先注释保留
 #DOMAIN-KEYWORD,haijiao,Ken US
-
-# ================= 停用备忘（保持注释，勿启用） =================
-# 招商银行·开屏广告/横幅（需 Mitm: webappcfg.paas.cmbchina.com, mbmodule-openapi.paas.cmbchina.com, mbasecc.bas.cmbchina.com, mbasecc.bcs.cmbchina.com）
-#URL-REGEX,"^https?:\/\/mbasecc\.(bas|bcs)\.cmbchina\.com\/Edge\/api\/mlife\.clientface\.clientservice\.api\.advertiseService\/preCacheAdvertiseSec",REJECT-DICT
-#URL-REGEX,"^https?:\/\/webappcfg\.paas\.cmbchina\.com\/v\d\/func\/getmarketconfig",REJECT-DICT
-#URL-REGEX,"^https?:\/\/mbmodule-openapi\.paas\.cmbchina\.com\/graphic\/v2\/module\/graphic",REJECT-DICT
-# 中国移动·开屏/悬浮窗/信息收集（需 Mitm: client.app.coc.10086.cn, h.client.app.coc.10086.cn）
-#URL-REGEX,"^https?:\/\/client\.app\.coc\.10086\.cn\/biz-orange\/DN\/init\/startInit",REJECT-DICT
-#URL-REGEX,"^https?:\/\/client\.app\.coc\.10086\.cn\/biz-orange\/DN\/explorePage\/getAdverList",REJECT
-#URL-REGEX,"^https:\/\/(client\.app\.coc|h\.app\.coc|app)\.10086\.cn\/biz-orange\/DN\/emotionMarket",REJECT
-#URL-REGEX,"\.log\.",REJECT
