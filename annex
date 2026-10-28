@@ -1,0 +1,51 @@
+#!name = 补充规则
+#!desc = 自用本地规则汇总
+#!author = gh2yy
+#!date = 2026-10-28
+#!tag = 规则,自用
+
+# 修改日志：
+# - 2026-10-28 Muse：首版——把 Loon 主配置 [Rule] 区的本地规则整组迁出收纳（淘宝测试、本地、海角社区、海雀、懂球帝、央视频六组，外加招行/中国移动两组停用备忘注释），与主配置解耦、单独维护。海角社区一条原指向已不存在的 Ken US 策略组，迁入时先注释保留，策略改成现有组名后去掉行首 # 即可启用。
+
+[Rule]
+# ================= 淘宝测试 =================
+DOMAIN,adashx.m.taobao.com,REJECT
+DOMAIN,h-adashx.ut.taobao.com,REJECT
+
+# ================= 本地 =================
+DOMAIN-KEYWORD,okaapps,DIRECT
+DOMAIN-KEYWORD,vidhub,DIRECT
+DOMAIN-KEYWORD,anywhere,Proxy
+DOMAIN-KEYWORD,seeduck,DIRECT
+DOMAIN-KEYWORD,t66y,Proxy
+DOMAIN-KEYWORD,dcard,TW Auto
+
+# ================= 海角社区 =================
+# 原策略组 Ken US 在主配置里已不存在（悬空规则），先注释保留
+#DOMAIN-KEYWORD,haijiao,Ken US
+
+# ================= 海雀去广告（已有 haique 插件，此处留档） =================
+DOMAIN-SUFFIX,umeng.com,REJECT
+DOMAIN-SUFFIX,anythinktech.com,REJECT
+DOMAIN-SUFFIX,ubixioe.com,REJECT
+
+# ================= 懂球帝（已有 dongqiudi 插件，此处留档） =================
+URL-REGEX,"^https?:\/\/ap\.dongdianqiu\.com\/plat",REJECT
+
+# ================= 央视频（已有 yangshipin 插件，此处留档） =================
+URL-REGEX,"^https:\/\/cdn\.cmgadx\.com\/sdk\/pool",REJECT-DICT
+
+# ================= 停用备忘（保持注释，勿启用） =================
+# 招商银行·开屏广告/横幅（需 Mitm: webappcfg.paas.cmbchina.com, mbmodule-openapi.paas.cmbchina.com, mbasecc.bas.cmbchina.com, mbasecc.bcs.cmbchina.com）
+#URL-REGEX,"^https?:\/\/mbasecc\.(bas|bcs)\.cmbchina\.com\/Edge\/api\/mlife\.clientface\.clientservice\.api\.advertiseService\/preCacheAdvertiseSec",REJECT-DICT
+#URL-REGEX,"^https?:\/\/webappcfg\.paas\.cmbchina\.com\/v\d\/func\/getmarketconfig",REJECT-DICT
+#URL-REGEX,"^https?:\/\/mbmodule-openapi\.paas\.cmbchina\.com\/graphic\/v2\/module\/graphic",REJECT-DICT
+# 中国移动·开屏/悬浮窗/信息收集（需 Mitm: client.app.coc.10086.cn, h.client.app.coc.10086.cn）
+#URL-REGEX,"^https?:\/\/client\.app\.coc\.10086\.cn\/biz-orange\/DN\/init\/startInit",REJECT-DICT
+#URL-REGEX,"^https?:\/\/client\.app\.coc\.10086\.cn\/biz-orange\/DN\/explorePage\/getAdverList",REJECT
+#URL-REGEX,"^https:\/\/(client\.app\.coc|h\.app\.coc|app)\.10086\.cn\/biz-orange\/DN\/emotionMarket",REJECT
+#URL-REGEX,"\.log\.",REJECT
+
+[Mitm]
+# ap.dongdianqiu.com —— 懂球帝；cdn.cmgadx.com —— 央视频
+hostname = ap.dongdianqiu.com, cdn.cmgadx.com
