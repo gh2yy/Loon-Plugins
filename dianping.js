@@ -2,6 +2,7 @@
 // 原作者：gh2yy
 // 修改日期：2026-10-28
 // 修改日志：
+// - 2026-10-28 晚 Muse：诊断v2。通知标题加版本号，排除仓库缓存拉到旧版的干扰。
 // - 2026-10-28 晚 Muse：诊断版。改写/放行/异常三个出口各加一条系统通知（独立 try 包裹，通知失败不影响主流程），用于确认脚本在 Loon 内是否被触发；确诊后移除。
 // - 2026-10-28 Muse：首版。拦截 mapi/operating/homepageframe.bin 响应，在本地完成 AES-128-CBC 解密（静态密钥，逆向自 DPScope 11.74.2）→ gzip 解压 → dpobject 清单删除 newmaptab/maptab 条目 → stored-gzip 重压 → 加密回送；产物经真实抓包验证，与服务器未定位时自发的无地图响应逐字节相同。无地图条目或任一步异常时原样放行。效果：底部第 2 位由地图变为视频 tab（清单为空会触发 App 写死默认地图，故保留 videotab 不删）。
 // ---------- 静态密钥材料（逆向自 DPScope 11.74.2，全版本通用已验证 11.73.13/11.74.2） ----------
@@ -247,7 +248,7 @@ function bizTypeOf(elem, buf) {
         }
       }
     }
-    try { $notification.post('点评插件·诊断', removed ? '脚本已触发：已摘除地图条目' : '脚本已触发：无地图条目，原样放行', ''); } catch (e2) {}
+    try { $notification.post('点评插件·诊断v2', removed ? '脚本已触发：已摘除地图条目' : '脚本已触发：无地图条目，原样放行', ''); } catch (e2) {}
     if (!removed) { $done({}); return; }
     var newDp = serialize(root);
     var gz = gzipStored(newDp);
@@ -255,7 +256,7 @@ function bizTypeOf(elem, buf) {
     var enc = aesCbc(gz, DP_KEY, DP_IV, false);
     $done({ body: new Uint8Array(enc) });
   } catch (e) {
-    try { $notification.post('点评插件·诊断', '脚本已触发：异常放行', String(e && e.message || e)); } catch (e3) {}
+    try { $notification.post('点评插件·诊断v2', '脚本已触发：异常放行', String(e && e.message || e)); } catch (e3) {}
     $done({});
   }
 })();
