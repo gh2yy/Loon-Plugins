@@ -5,10 +5,11 @@
 #!tag = 大众点评,去tab
 
 # 修改日志：
+# - 2026-10-28 晚 Muse：诊断版。脚本行格式对齐已验证的腾讯视频插件写法；脚本加触发通知，先确诊脚本在 Loon 内是否被执行，确诊后再出正式版。
 # - 2026-10-28 Muse：首版。拦截 homepageframe.bin 响应，由脚本 dianping.js 在本地解密（.bin 静态 AES 密钥）后摘除清单中的地图条目（newmaptab/maptab）再加密回送；已用真实抓包全链路验证：改写产物与服务器自发的无地图响应逐字节相同。预期效果：底部第 2 位地图变视频 tab（代码定案只能换不能空），首页/打卡/消息/我的不受影响；无地图条目时原样放行。前置：App 内 tab 清单有本地缓存，启用后需冷启一两次待缓存刷新。
 
 [Script]
-http-response ^https:\/\/mapi\.dianping\.com\/mapi\/operating\/homepageframe\.bin script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/dianping.js, requires-body=true, binary-body-mode=true, tag=点评-去地图tab, timeout=30
+http-response ^https?:\/\/mapi\.dianping\.com\/mapi\/operating\/homepageframe\.bin.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/dianping.js, requires-body=true, binary-body-mode=true, timeout=30, tag=点评-去地图tab
 
 [Mitm]
 hostname = mapi.dianping.com
