@@ -22,3 +22,4 @@ request if ${url} ~= /^https:\/\/shop151522958\.youzan\.com\/v\d\/showcase\/home
 
 [Mitm]
 hostname = app-api-32.ihaique.net, g.ihaique.net, shop151522958.youzan.com
+
