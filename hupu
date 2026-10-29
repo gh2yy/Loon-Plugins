@@ -1,0 +1,14 @@
+#!name = 虎扑去底部tab
+#!desc = 去掉底部栏的发布与评分 tab
+#!author = gh2yy
+#!date = 2026-10-30
+#!tag = 虎扑,去tab
+
+# 修改日志：
+# - 2026-10-30 Muse：首版。依据用户抓包：底部栏由 getBottomNav 明文 JSON 下发 5 项（首页/专区/发帖/评分/我的），脚本 hupu.js 删去 post（发帖，中间红色+按钮）与 score（评分）两项，并顺延 navVersion 防 App 按版本相同跳过应用；已用抓包原响应本地验证删后只剩 3 项、其余字段不动。待用户实测界面布局是否随清单收缩。
+
+[Script]
+http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/nav\/getBottomNav script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-去底部tab
+
+[Mitm]
+hostname = games.mobileapi.hupu.com
