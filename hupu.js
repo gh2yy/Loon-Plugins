@@ -2,6 +2,7 @@
 // 原作者：gh2yy
 // 修改日期：2026-10-30
 // 修改日志：
+// - 2026-10-30 v7 Muse：用户选择恢复评分试试。本版只删 post（发帖），清单为 首页/专区/评分/我的 四项；按第 3 位动作键模型，评分将落在动作位（预计弹出打开）、「我的」回到第 4 位应恢复正常切换。另 navVersion 改为原值+10 再拼条目数（如 D1074），避免与此前三项版同为 D98 时被 App 按版本相同跳过。
 // - 2026-10-30 v6 Muse：v5 实测条目顺序纹丝不动 ⇒ App 按 code 的固定原生次序排位，清单顺序与 order 字段都不决定位置（v4/v5 的改法对它无效）。本版恢复自然次序（首页/专区/我的），配合用户重装 App 后首启即喂 3 项清单，排除旧五槽结构缓存的干扰。
 // - 2026-10-30 v5（诊断）Muse：条目重排为 首页/我的/专区 做位置诊断；实测未挪位，见 v6 说明。
 // - 2026-10-30 v4 Muse：v3 的 type 同步无效（用户实测现象不变，type 定位说排除）。清单里每项还带 order 字段（原 1..5），删后「我的」仍是 order=5，疑为 App 按 order 把条目放进固定槽位、槽位对不上导致按外链弹出；本版删后将 order 重排为连续的 1..3，type 同步保留 v3 的改法。
@@ -16,12 +17,12 @@
     if (!normals || !Array.isArray(normals.navItems)) { $done({}); return; }
     var before = normals.navItems.length;
     normals.navItems = normals.navItems.filter(function (it) {
-      return it && it.code !== 'post' && it.code !== 'score';
+      return it && it.code !== 'post';
     });
     if (normals.navItems.length === before) { $done({}); return; }
     normals.type = normals.navItems.length - 1;
     normals.navItems.forEach(function (it, idx) { it.order = idx + 1; });
-    if (obj.result.navVersion) obj.result.navVersion = String(obj.result.navVersion).replace(/\d+$/, function (n) { return String(parseInt(n, 10) + 1); });
+    if (obj.result.navVersion) obj.result.navVersion = String(obj.result.navVersion).replace(/\d+$/, function (n) { return String(parseInt(n, 10) + 10); }) + String(normals.navItems.length);
     $done({ body: JSON.stringify(obj) });
   } catch (e) {
     $done({});
