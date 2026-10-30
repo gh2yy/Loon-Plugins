@@ -5,13 +5,14 @@
 #!tag = 虎扑,去tab
 
 # 修改日志：
-# - 2026-10-30 Muse：去底部 tab 与首页热榜，均经实测生效。底部栏由 getBottomNav 下发 5 项清单，脚本删 post（发帖）与 score（评分）；第 3 位动作键逻辑写死在 App 代码内，插件层改 type/order/顺序均无效，须配合改包版使用。首页顶栏频道由 init 接口的 clientLevelOneNavV2 下发，脚本删 en 为 hotRank 的热榜项。帖子详情页是离线 H5 包（bbs-detailapp-opg），脚本改写其升级清单、换成本仓库改色包实现深色纯黑（待实测）。
+# - 2026-10-30 Muse：去底部 tab 与首页热榜，均经实测生效。底部栏由 getBottomNav 下发 5 项清单，脚本删 post（发帖）与 score（评分）；第 3 位动作键逻辑写死在 App 代码内，插件层改 type/order/顺序均无效，须配合改包版使用。首页顶栏频道由 init 接口的 clientLevelOneNavV2 下发，脚本删 en 为 hotRank 的热榜项。帖子详情页是离线 H5 包（bbs-detailapp-opg），脚本改写其升级清单、换成本仓库改色包实现深色纯黑。NBA 页快捷入口由 basketballapi/news/v3/tab 下发，脚本删「战术百科」与「2K手游」。
 
 [Script]
 http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/nav\/getBottomNav script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-去底部tab
 http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/init script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-去首页热榜
 http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/frontendofflinepkg\/upgradeListByCodes script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-详情包换黑包
 http-response ^https?:\/\/w1\.hoopchina\.com\.cn\/games\/static\/bbs-m-web\/.*\.css script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-详情页深色
+http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/basketballapi\/news\/v3\/tab script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-NBA入口精简
 
 [Mitm]
 hostname = games.mobileapi.hupu.com, w1.hoopchina.com.cn

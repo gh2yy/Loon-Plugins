@@ -2,7 +2,7 @@
 // 原作者：gh2yy
 // 修改日期：2026-10-30
 // 修改日志：
-// - 2026-10-30 Muse：脚本按 URL 分发处理三个接口，前两项经实测生效。getBottomNav：底部清单 5 项删 post 与 score，navVersion 顺延标记防按版本跳过；第 3 位动作键逻辑写死在 App 代码内，插件层试过 type/order/顺序均无效，已由改包修复，须配合改包版使用。init：clientLevelOneNavV2 删 en 为 hotRank 的热榜项。帖子详情页是随包下发的离线 H5（frontendofflinepkg 的 bbs-detailapp-opg 包），脚本改写该接口的升级清单，把详情包的下载地址与 md5 换成本仓库的改色包（深色变量改 OLED 黑），待实测；另有一段 bbs-m-web 主题 CSS 改写，作用于 m.hupu.com 网页版（详情页不走它）。
+// - 2026-10-30 Muse：脚本按 URL 分发处理各接口。getBottomNav：底部清单 5 项删 post 与 score，navVersion 顺延标记防按版本跳过；第 3 位动作键逻辑写死在 App 代码内，插件层试过 type/order/顺序均无效，已由改包修复，须配合改包版使用。init：clientLevelOneNavV2 删 en 为 hotRank 的热榜项。帖子详情页是随包下发的离线 H5（frontendofflinepkg 的 bbs-detailapp-opg 包），脚本改写该接口的升级清单，把详情包的下载地址与 md5 换成本仓库的改色包（深色变量改 OLED 黑）；另有一段 bbs-m-web 主题 CSS 改写，作用于 m.hupu.com 网页版（详情页不走它）。basketballapi/news/v3/tab（tagCode=nba）：入口清单删「战术百科」与「2K手游」，保留赛程、数据、主队。
 (function () {
   try {
     var body = $response.body;
@@ -75,6 +75,18 @@
         }
       });
       if (!changed) { $done({}); return; }
+      $done({ body: JSON.stringify(obj) });
+      return;
+    }
+
+    // NBA 页快捷入口：news/v3/tab 清单（tagCode=nba）删战术百科与 2K 手游
+    if (url.indexOf('basketballapi/news/v3/tab') !== -1 && url.indexOf('tagCode=nba') !== -1) {
+      if (!Array.isArray(obj.result)) { $done({}); return; }
+      var kept = obj.result.filter(function (it) {
+        return it && it.name !== '战术百科' && it.name !== '2K手游';
+      });
+      if (kept.length === obj.result.length) { $done({}); return; }
+      obj.result = kept;
       $done({ body: JSON.stringify(obj) });
       return;
     }
