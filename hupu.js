@@ -18,7 +18,7 @@
         ['--bg_data:#2c2f37', '--bg_data:#0b0b0d'],
         ['--bg_click:#3a3f49', '--bg_click:#232328'],
         ['--line:#303440', '--line:#1e1e21'],
-        ['--separator:#111217', '--separator:#161618'],
+        ['--separator:#111217', '--separator:#1e1e21'],
         ['--label_bg1:#2a3e45', '--label_bg1:#141f24'],
         ['--label_bg2:#3e2c32', '--label_bg2:#2c1d21'],
         ['--label_bg3:#343f50', '--label_bg3:#1d2735'],
@@ -40,8 +40,8 @@
     // 帖子详情离线包：改写升级清单，把官方详情包换成本仓库的改色包（深色变量已改 OLED 黑）
     if (url.indexOf('frontendofflinepkg/upgradeListByCodes') !== -1) {
       var ZIP_URL = 'https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/bbs-detailapp-black.zip';
-      var ZIP_MD5 = '8e7502dfbce6bc4a058d74ef1a7198d1';
-      var ZIP_VER = 12562;
+      var ZIP_MD5 = '60b51559eaead8b7c7fa73ddb3c40be1';
+      var ZIP_VER = 12563;
       if (!Array.isArray(obj.result)) obj.result = [];
       var found = false;
       obj.result.forEach(function (entry) {
