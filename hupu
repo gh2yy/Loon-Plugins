@@ -5,15 +5,7 @@
 #!tag = 虎扑,去tab
 
 # 修改日志：
-# - 2026-10-30 v10 Muse：新增去首页热榜：顶栏频道由 init 接口下发的 clientLevelOneNavV2 清单决定（热榜/推荐/赛事），脚本删去 en 为 hotRank 的一项，只剩推荐/赛事；底部 tab 逻辑不变。已用抓包原响应本地验证，待用户冷启动实测。
-# - 2026-10-30 v9 Muse：改包配套版，恢复删发布与评分（三项），type/order 不再改动；第 3 位弹出问题已在改包中修复，须配合改包版虎扑使用。
-# - 2026-10-30 v8（实验）Muse：四项版仅改 type 为 0，验证能否关掉第 3 位动作键逻辑。
-# - 2026-10-30 v7 Muse：按用户选择恢复评分，本版只删发布（post），共四项；版本号标记带条目数防同版跳过。
-# - 2026-10-30 v6 Muse：实测清单顺序不影响排位（App 按 code 固定次序）；恢复自然次序，配合重装后首启验证缓存因素。
-# - 2026-10-30 v5（诊断）Muse：v4 无效；本版重排为 首页/我的/专区，验证第 3 个位置是否被 App 写死拦截。
-# - 2026-10-30 v4 Muse：v3 改 type 无效；本版将删后条目的 order 重排为连续 1..3，疑为 order 与槽位不对应所致。
-# - 2026-10-30 v3 Muse：tab 已确认去掉，撤下诊断通知；针对点「我的」变弹出式打开且无底部栏，将清单 type 同步改为条目数减一。
-# - 2026-10-30 Muse：首版。依据用户抓包：底部栏由 getBottomNav 明文 JSON 下发 5 项（首页/专区/发帖/评分/我的），脚本 hupu.js 删去 post（发帖，中间红色+按钮）与 score（评分）两项，并顺延 navVersion 防 App 按版本相同跳过应用；已用抓包原响应本地验证删后只剩 3 项、其余字段不动。待用户实测界面布局是否随清单收缩。
+# - 2026-10-30 Muse：去底部 tab 与首页热榜，均经实测生效。底部栏由 getBottomNav 下发 5 项清单，脚本删 post（发帖）与 score（评分）；第 3 位动作键逻辑写死在 App 代码内，插件层改 type/order/顺序均无效，须配合改包版使用。首页顶栏频道由 init 接口的 clientLevelOneNavV2 下发，脚本删 en 为 hotRank 的热榜项。
 
 [Script]
 http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/nav\/getBottomNav script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-去底部tab

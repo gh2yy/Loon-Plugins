@@ -2,9 +2,7 @@
 // 原作者：ZenmoFeiShi（TG @ZenMoFiShi）
 // 修改日期：2026-10-27
 // 修改日志：
-// - 2026-10-27 Muse：Loon 适配——原版读/回二进制 body 用 QX 专属 bodyBytes，Loon 只有 body，原版在 Loon 里永远读不到 body、完全不生效；本版在 main() 4 处改为读 bodyBytes||body、回 {body}，业务逻辑未动。
-// - 2026-10-27 上游更新：Txvideoad.js 新增暂停广告处理、信息流瀑布流广告清理，已重套上述适配。
-// - 2026-10-27 Muse：本地补丁 fixSplashConfig（JCE 129513 广告配置）——关热启动开屏、关长期开屏订单合并。上游更新重套时须连同适配一起保留。
+// - 2026-10-27 Muse：Loon 适配版：原版用 QX 专属 bodyBytes 读/回二进制 body，在 Loon 下完全不生效；main() 4 处改为读 bodyBytes||body、回 {body}，业务逻辑未动。另含本地补丁 fixSplashConfig（关热启动开屏、关长期开屏订单合并）；同日同步上游新增的暂停广告与信息流瀑布流清理。重套上游更新时适配与补丁须一并保留。
 (() => {
   const TAB_DROP_KEYS = ["smallvideo_entrance", "goods_entrance"];
   const TAB_DROP_TITLES = ["短剧", "好物"];

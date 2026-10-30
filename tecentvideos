@@ -5,11 +5,7 @@
 #!tag = 腾讯视频,去广告,界面净化
 
 # 修改日志：
-# - 2026-10-27 Muse：由 QX 版 TxvideoAD.snippet 逐条转换为 Loon 格式。
-# - 2026-10-27 Muse：新增拦 QUIC 的 4 条 UDP 规则；i.video/iacc 脚本匹配放宽为任意路径；二进制脚本超时改为 30 秒。
-# - 2026-10-27 Muse：修复脚本在 Loon 下完全不生效——原版用 QX 专属 bodyBytes API，Loon 没有；script-path 改指自托管的 Loon 适配版 Txvideoad-loon.js。
-# - 2026-10-27 上游更新：Txvideoad.js 新增暂停广告处理、信息流瀑布流广告清理，已同步重套适配。
-# - 2026-10-27 Muse：脚本新增开屏补丁——关热启动开屏、关长期开屏订单合并（详见 Txvideoad-loon.js 修改日志）。
+# - 2026-10-27 Muse：由 QX 版 TxvideoAD.snippet 转为 Loon 格式：新增拦 QUIC 的 UDP 规则、脚本匹配放宽、超时 30 秒；脚本改指自托管适配版 Txvideoad-loon.js（修复 QX 专属 bodyBytes 在 Loon 下不生效，另含热启动开屏补丁）；同日同步上游更新（暂停广告、信息流瀑布流广告清理）。
 
 [Rule]
 DOMAIN,iacc.stgw.qq.com,REJECT
