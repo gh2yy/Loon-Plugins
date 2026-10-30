@@ -2,6 +2,7 @@
 // 原作者：gh2yy
 // 修改日期：2026-10-30
 // 修改日志：
+// - 2026-10-30 v11 Muse：v10 实测无效且诊断通知未出现，判断请求侧改版本号使请求体 MD5 签名失效、服务器未下发数据块。本版撤掉请求侧改动，改两条腿：① init 接口（bplapi/device/v1/init）的响应里 result 本就映射到含 activityNav 字段的初始化模型，注入 activityNav 为空数组，覆盖本地缓存的活动导航数据；② update 接口响应侧保留清空逻辑，并放宽诊断：只要 result.data 非空就一次性通知首个数据块的字段名，便于确认数据块是否流动及其结构。init 处理也发一次性通知（注明字段原本是否存在）。
 // - 2026-10-30 v10 Muse：新增去首页右上角活动入口（精灵球图标，点开为「今天玩什么」游戏聚合页），免改包、纯插件实现。该入口数据由 bplapi/device/v1/update 增量通道的 activityNav 模块下发并缓存在本地，版本未变时服务器不下发内容（抓包响应 data 为空），故两段处理：请求侧把上报的 activityNav 版本号改报为 0，促使服务器回传当前数据块；响应侧在 result.data 中定位 activityNav 数据块，保留其标量字段（版本号等），把数组清空、对象置空、长字符串清空，使 App 以空数据更新本地缓存、入口不再显示。首次实际拦到数据块时发一次性通知列出字段名，便于核对拦截是否命中。原 getBottomNav 逻辑不变，按请求 URL 分发。
 // - 2026-10-30 v9 Muse：改包配套版。逆向定案第 3 位动作键逻辑在 App 代码内（HPContainerTabBarViewController 的 hp_tabbar:shouleSelectedAt: 写死 index != 2，will 处理写死 index==2 走发布、index==4 走「我的」），已在改包中修掉，插件数据层实验证明走不通的部分不再试。本版恢复删 post 与 score 两项（三项：首页/专区/我的），type 与 order 不再改动，只做删项与 navVersion 标记（原值+30 拼条目数，如 D1273）。使用时须配合改包版虎扑，否则第 3 位的「我的」仍会弹出打开。
 // - 2026-10-30 v8（实验）Muse：用户选择试 type=0。四项版（只删 post）基础上仅改 normals.type 为 0（原值 4，此前试过改为条目数-1 无效），验证 type 是否为布局枚举、0 能否关掉第 3 位动作键逻辑；若评分恢复正常切换，再将 type=0 套到三项版收尾。版本号标记同步改为原值+20 拼条目数（D1174），与 v7 内容区分防同版跳过。
@@ -15,6 +16,8 @@
   var url = (typeof $request !== 'undefined' && $request && $request.url) || '';
   if (url.indexOf('/bplapi/device/v1/update') !== -1) {
     handleDeviceUpdate();
+  } else if (url.indexOf('/bplapi/device/v1/init') !== -1) {
+    handleDeviceInit();
   } else {
     handleBottomNav();
   }
@@ -38,36 +41,48 @@
     }
   }
 
-  function handleDeviceUpdate() {
-    var isResponse = typeof $response !== 'undefined' && $response;
-    if (!isResponse) {
-      // 请求侧：activityNav 版本改报 0，促使服务器回传当前数据块
-      try {
-        var reqBody = ($request && $request.body) || '';
-        if (/activityNav@\d+/.test(reqBody) && !/activityNav@0(?!\d)/.test(reqBody)) {
-          $done({ body: reqBody.replace(/activityNav@\d+/, 'activityNav@0') });
-        } else {
-          $done({});
-        }
-      } catch (e) {
-        $done({});
+  function handleDeviceInit() {
+    // init 响应 result 映射到含 activityNav 的初始化模型：把该字段置为空数组，覆盖缓存的活动导航
+    try {
+      var body = $response.body;
+      if (!body) { $done({}); return; }
+      var obj = JSON.parse(body);
+      var result = obj && obj.result;
+      if (!result || typeof result !== 'object') { $done({}); return; }
+      var had = Object.prototype.hasOwnProperty.call(result, 'activityNav');
+      var prevDesc = '无此字段';
+      if (had) {
+        var prev = result.activityNav;
+        if (Array.isArray(prev)) prevDesc = '数组(' + prev.length + ' 项)';
+        else if (prev && typeof prev === 'object') prevDesc = '对象，字段：' + Object.keys(prev).join(', ');
+        else prevDesc = String(typeof prev);
       }
-      return;
+      result.activityNav = [];
+      notifyOnce('hupu_init_diag', '虎扑插件', '已处理 init 的 activityNav 字段', '原本：' + prevDesc);
+      $done({ body: JSON.stringify(obj) });
+    } catch (e) {
+      $done({});
     }
-    // 响应侧：定位 activityNav 数据块并清空其内容（标量字段保留）
+  }
+
+  function handleDeviceUpdate() {
+    // 响应侧：定位 activityNav 数据块并清空其内容（标量字段保留）；data 非空时一次性诊断通知
     try {
       var body = $response.body;
       if (!body) { $done({}); return; }
       var obj = JSON.parse(body);
       var result = obj && obj.result;
       if (!result) { $done({}); return; }
-      var hitKeys = null;
+      var changed = false;
       if (Object.prototype.hasOwnProperty.call(result, 'activityNav')) {
         result.activityNav = null;
-        hitKeys = ['activityNav'];
+        changed = true;
       }
       var data = result.data;
-      if (Array.isArray(data)) {
+      if (Array.isArray(data) && data.length) {
+        var first = data[0];
+        var firstDesc = typeof first === 'string' ? '字符串：' + first.slice(0, 120) : '字段：' + Object.keys(first || {}).join(', ');
+        notifyOnce('hupu_update_diag', '虎扑插件', 'update 接口有数据块下发', firstDesc);
         for (var i = 0; i < data.length; i++) {
           var el = data[i];
           if (typeof el === 'string' && el.indexOf('activityNav') !== -1) {
@@ -75,22 +90,18 @@
               var parsed = JSON.parse(el);
               emptyPayload(parsed);
               data[i] = JSON.stringify(parsed);
-              hitKeys = Object.keys(parsed);
+              changed = true;
+              notifyOnce('hupu_activitynav_diag', '虎扑插件', '已拦截活动导航数据块', '字段：' + Object.keys(parsed).join(', '));
             } catch (e2) { /* 非 JSON 字符串则不动 */ }
           } else if (el && typeof el === 'object' && JSON.stringify(el).indexOf('activityNav') !== -1) {
             emptyPayload(el);
-            hitKeys = Object.keys(el);
+            changed = true;
+            notifyOnce('hupu_activitynav_diag', '虎扑插件', '已拦截活动导航数据块', '字段：' + Object.keys(el).join(', '));
           }
         }
       }
-      if (!hitKeys) { $done({}); return; }
-      try {
-        if (!$persistentStore.read('hupu_activitynav_diag')) {
-          $persistentStore.write('1', 'hupu_activitynav_diag');
-          $notification.post('虎扑插件', '已拦截活动导航数据块', '字段：' + hitKeys.join(', '));
-        }
-      } catch (e3) { /* 通知失败不影响改写 */ }
-      $done({ body: JSON.stringify(obj) });
+      if (changed) $done({ body: JSON.stringify(obj) });
+      else $done({});
     } catch (e) {
       $done({});
     }
@@ -103,5 +114,14 @@
       else if (v && typeof v === 'object') block[k] = {};
       else if (typeof v === 'string' && v.length > 40) block[k] = '';
     });
+  }
+
+  function notifyOnce(flag, title, subtitle, bodyText) {
+    try {
+      if (!$persistentStore.read(flag)) {
+        $persistentStore.write('1', flag);
+        $notification.post(title, subtitle, bodyText);
+      }
+    } catch (e) { /* 通知失败不影响改写 */ }
   }
 })();

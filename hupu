@@ -5,6 +5,7 @@
 #!tag = 虎扑,去tab
 
 # 修改日志：
+# - 2026-10-30 v11 Muse：v10 实测无效且诊断通知未出现，判断请求改版本号使请求体签名失效。本版撤掉请求侧改动：改为在 init 接口响应中把 activityNav 字段置为空数组以覆盖本地缓存；update 接口响应侧保留清空逻辑，并放宽诊断通知（data 非空或 init 处理都会一次性通知）。
 # - 2026-10-30 v10 Muse：新增去首页右上角活动入口（精灵球），纯插件实现免改包。该入口数据走 device/v1/update 增量通道（activityNav 模块），版本未变时不下发内容，故请求侧把上报版本号改报 0 引出数据块、响应侧清空该块内容（保留版本号等标量字段），App 以空数据更新缓存后入口消失；首次拦到数据块时发一次性通知列出字段名以便核对。getBottomNav 逻辑不变。
 # - 2026-10-30 v9 Muse：改包配套版，恢复删发布与评分（三项），type/order 不再改动；第 3 位弹出问题已在改包中修复，须配合改包版虎扑使用。
 # - 2026-10-30 v8（实验）Muse：四项版仅改 type 为 0，验证能否关掉第 3 位动作键逻辑。
@@ -17,8 +18,8 @@
 
 [Script]
 http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/nav\/getBottomNav script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-去底部tab
-http-request ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/update script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-活动导航请求
 http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/update script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-活动导航响应
+http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/init script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-初始化数据
 
 [Mitm]
 hostname = games.mobileapi.hupu.com
