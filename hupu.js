@@ -40,8 +40,8 @@
     // 帖子详情离线包：改写升级清单，把官方详情包换成本仓库的改色包（深色变量已改 OLED 黑）
     if (url.indexOf('frontendofflinepkg/upgradeListByCodes') !== -1) {
       var ZIP_URL = 'https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/bbs-detailapp-black.zip';
-      var ZIP_MD5 = '30e7382a9ee1f211f4439e96b4479c1e';
-      var ZIP_VER = 12461;
+      var ZIP_MD5 = '6b539c361bc29e74ca90112db63e8cb8';
+      var ZIP_VER = 12561;
       if (!Array.isArray(obj.result)) obj.result = [];
       var found = false;
       obj.result.forEach(function (entry) {
