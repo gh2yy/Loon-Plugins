@@ -2,12 +2,39 @@
 // 原作者：gh2yy
 // 修改日期：2026-10-30
 // 修改日志：
-// - 2026-10-30 Muse：脚本按 URL 分发处理两个接口，均经实测生效。getBottomNav：底部清单 5 项删 post 与 score，navVersion 顺延标记防按版本跳过；第 3 位动作键逻辑写死在 App 代码内，插件层试过 type/order/顺序均无效，已由改包修复，须配合改包版使用。init：clientLevelOneNavV2 删 en 为 hotRank 的热榜项。
+// - 2026-10-30 Muse：脚本按 URL 分发处理两个接口与详情页主题 CSS，均经实测生效（CSS 为本日追加、待实测）。getBottomNav：底部清单 5 项删 post 与 score，navVersion 顺延标记防按版本跳过；第 3 位动作键逻辑写死在 App 代码内，插件层试过 type/order/顺序均无效，已由改包修复，须配合改包版使用。init：clientLevelOneNavV2 删 en 为 hotRank 的热榜项。帖子详情正文是 w1.hoopchina.com.cn 的 bbs-m-web 网页，其主题 CSS 与 App 颜色令牌同名同值但相互独立，脚本把 CSS 深色变量（--bg 等）改为 OLED 黑。
 (function () {
   try {
     var body = $response.body;
     if (!body) { $done({}); return; }
     var url = ($request && $request.url) || '';
+
+    // 帖子详情页 H5（bbs-m-web）主题 CSS：深色变量改 OLED 黑（与 App 内颜色令牌同名同值，独立一份）
+    if (url.indexOf('/bbs-m-web/') !== -1 && url.indexOf('.css') !== -1) {
+      var pairs = [
+        ['--bg:#24262b', '--bg:#000000'],
+        ['--bg2:#111217', '--bg2:#000000'],
+        ['--bg_card:#2c2f37', '--bg_card:#121214'],
+        ['--bg_data:#2c2f37', '--bg_data:#0b0b0d'],
+        ['--bg_click:#3a3f49', '--bg_click:#232328'],
+        ['--line:#303440', '--line:#1e1e21'],
+        ['--separator:#111217', '--separator:#161618'],
+        ['--label_bg1:#2a3e45', '--label_bg1:#141f24'],
+        ['--label_bg2:#3e2c32', '--label_bg2:#2c1d21'],
+        ['--label_bg3:#343f50', '--label_bg3:#1d2735'],
+        ['--label_bg4:#474134', '--label_bg4:#2a251c'],
+        ['--disable_text:#3a3f49', '--disable_text:#2e2e33'],
+        ['--toast:#242f37cc', '--toast:#1c1c20cc']
+      ];
+      var out = body, hit = false;
+      pairs.forEach(function (p) {
+        if (out.indexOf(p[0]) !== -1) { out = out.split(p[0]).join(p[1]); hit = true; }
+      });
+      if (!hit) { $done({}); return; }
+      $done({ body: out });
+      return;
+    }
+
     var obj = JSON.parse(body);
 
     // 首页顶栏频道：init 响应的 clientLevelOneNavV2 / clientLevelOneNav，删热榜

@@ -1,15 +1,16 @@
-#!name = 虎扑去底部tab与热榜
-#!desc = 去掉底部栏的发布与评分 tab 和首页的热榜频道
+#!name = 虎扑去底部tab、热榜与详情页深色
+#!desc = 去掉底部栏的发布与评分 tab 和首页热榜频道，帖子详情页深色背景改纯黑
 #!author = gh2yy
 #!date = 2026-10-30
 #!tag = 虎扑,去tab
 
 # 修改日志：
-# - 2026-10-30 Muse：去底部 tab 与首页热榜，均经实测生效。底部栏由 getBottomNav 下发 5 项清单，脚本删 post（发帖）与 score（评分）；第 3 位动作键逻辑写死在 App 代码内，插件层改 type/order/顺序均无效，须配合改包版使用。首页顶栏频道由 init 接口的 clientLevelOneNavV2 下发，脚本删 en 为 hotRank 的热榜项。
+# - 2026-10-30 Muse：去底部 tab 与首页热榜，均经实测生效。底部栏由 getBottomNav 下发 5 项清单，脚本删 post（发帖）与 score（评分）；第 3 位动作键逻辑写死在 App 代码内，插件层改 type/order/顺序均无效，须配合改包版使用。首页顶栏频道由 init 接口的 clientLevelOneNavV2 下发，脚本删 en 为 hotRank 的热榜项。帖子详情正文为 bbs-m-web 网页，其主题 CSS 的深色变量由脚本改黑（本日追加、待实测）。
 
 [Script]
 http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/nav\/getBottomNav script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-去底部tab
 http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/init script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-去首页热榜
+http-response ^https?:\/\/w1\.hoopchina\.com\.cn\/games\/static\/bbs-m-web\/.*\.css script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js, requires-body=true, timeout=10, tag=虎扑-详情页深色
 
 [Mitm]
-hostname = games.mobileapi.hupu.com
+hostname = games.mobileapi.hupu.com, w1.hoopchina.com.cn
