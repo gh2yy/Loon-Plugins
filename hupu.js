@@ -1,8 +1,8 @@
-// 虎扑 - 去底部发布与评分 tab、去首页热榜频道
+// 虎扑 - 去底部发布与评分 tab、去首页热榜频道、详情页离线包换黑包
 // 原作者：gh2yy
 // 修改日期：2026-10-30
 // 修改日志：
-// - 2026-10-30 Muse：脚本按 URL 分发处理两个接口与详情页主题 CSS，均经实测生效（CSS 为本日追加、待实测）。getBottomNav：底部清单 5 项删 post 与 score，navVersion 顺延标记防按版本跳过；第 3 位动作键逻辑写死在 App 代码内，插件层试过 type/order/顺序均无效，已由改包修复，须配合改包版使用。init：clientLevelOneNavV2 删 en 为 hotRank 的热榜项。帖子详情正文是 w1.hoopchina.com.cn 的 bbs-m-web 网页，其主题 CSS 与 App 颜色令牌同名同值但相互独立，脚本把 CSS 深色变量（--bg 等）改为 OLED 黑。
+// - 2026-10-30 Muse：脚本按 URL 分发处理三个接口，前两项经实测生效。getBottomNav：底部清单 5 项删 post 与 score，navVersion 顺延标记防按版本跳过；第 3 位动作键逻辑写死在 App 代码内，插件层试过 type/order/顺序均无效，已由改包修复，须配合改包版使用。init：clientLevelOneNavV2 删 en 为 hotRank 的热榜项。帖子详情页是随包下发的离线 H5（frontendofflinepkg 的 bbs-detailapp-opg 包），脚本改写该接口的升级清单，把详情包的下载地址与 md5 换成本仓库的改色包（深色变量改 OLED 黑），待实测；另有一段 bbs-m-web 主题 CSS 改写，作用于 m.hupu.com 网页版（详情页不走它）。
 (function () {
   try {
     var body = $response.body;
@@ -36,6 +36,28 @@
     }
 
     var obj = JSON.parse(body);
+
+    // 帖子详情离线包：改写升级清单，把官方详情包换成本仓库的改色包（深色变量已改 OLED 黑）
+    if (url.indexOf('frontendofflinepkg/upgradeListByCodes') !== -1) {
+      var ZIP_URL = 'https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/bbs-detailapp-black.zip';
+      var ZIP_MD5 = '30e7382a9ee1f211f4439e96b4479c1e';
+      var ZIP_VER = 12461;
+      if (!Array.isArray(obj.result)) obj.result = [];
+      var found = false;
+      obj.result.forEach(function (entry) {
+        if (entry && entry.package && entry.package.appId === 'bbs-detailapp-opg') {
+          entry.package.url = ZIP_URL;
+          entry.package.md5 = ZIP_MD5;
+          entry.package.version = ZIP_VER;
+          found = true;
+        }
+      });
+      if (!found) {
+        obj.result.push({ code: 1, package: { type: 'zip', version: ZIP_VER, url: ZIP_URL, md5: ZIP_MD5, appId: 'bbs-detailapp-opg', appCode: 310001 } });
+      }
+      $done({ body: JSON.stringify(obj) });
+      return;
+    }
 
     // 首页顶栏频道：init 响应的 clientLevelOneNavV2 / clientLevelOneNav，删热榜
     if (url.indexOf('/bplapi/device/v1/init') !== -1) {
