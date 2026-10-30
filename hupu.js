@@ -2,6 +2,7 @@
 // 原作者：gh2yy
 // 修改日期：2026-10-30
 // 修改日志：
+// - 2026-10-30 v9 Muse：改包配套版。逆向定案第 3 位动作键逻辑在 App 代码内（HPContainerTabBarViewController 的 hp_tabbar:shouleSelectedAt: 写死 index != 2，will 处理写死 index==2 走发布、index==4 走「我的」），已在改包中修掉，插件数据层实验证明走不通的部分不再试。本版恢复删 post 与 score 两项（三项：首页/专区/我的），type 与 order 不再改动，只做删项与 navVersion 标记（原值+30 拼条目数，如 D1273）。使用时须配合改包版虎扑，否则第 3 位的「我的」仍会弹出打开。
 // - 2026-10-30 v8（实验）Muse：用户选择试 type=0。四项版（只删 post）基础上仅改 normals.type 为 0（原值 4，此前试过改为条目数-1 无效），验证 type 是否为布局枚举、0 能否关掉第 3 位动作键逻辑；若评分恢复正常切换，再将 type=0 套到三项版收尾。版本号标记同步改为原值+20 拼条目数（D1174），与 v7 内容区分防同版跳过。
 // - 2026-10-30 v7 Muse：用户选择恢复评分试试。本版只删 post（发帖），清单为 首页/专区/评分/我的 四项；按第 3 位动作键模型，评分将落在动作位（预计弹出打开）、「我的」回到第 4 位应恢复正常切换。另 navVersion 改为原值+10 再拼条目数（如 D1074），避免与此前三项版同为 D98 时被 App 按版本相同跳过。
 // - 2026-10-30 v6 Muse：v5 实测条目顺序纹丝不动 ⇒ App 按 code 的固定原生次序排位，清单顺序与 order 字段都不决定位置（v4/v5 的改法对它无效）。本版恢复自然次序（首页/专区/我的），配合用户重装 App 后首启即喂 3 项清单，排除旧五槽结构缓存的干扰。
@@ -18,12 +19,10 @@
     if (!normals || !Array.isArray(normals.navItems)) { $done({}); return; }
     var before = normals.navItems.length;
     normals.navItems = normals.navItems.filter(function (it) {
-      return it && it.code !== 'post';
+      return it && it.code !== 'post' && it.code !== 'score';
     });
     if (normals.navItems.length === before) { $done({}); return; }
-    normals.type = 0;
-    normals.navItems.forEach(function (it, idx) { it.order = idx + 1; });
-    if (obj.result.navVersion) obj.result.navVersion = String(obj.result.navVersion).replace(/\d+$/, function (n) { return String(parseInt(n, 10) + 20); }) + String(normals.navItems.length);
+    if (obj.result.navVersion) obj.result.navVersion = String(obj.result.navVersion).replace(/\d+$/, function (n) { return String(parseInt(n, 10) + 30); }) + String(normals.navItems.length);
     $done({ body: JSON.stringify(obj) });
   } catch (e) {
     $done({});
