@@ -1,0 +1,70 @@
+name: bili-build-v6
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  dylib:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile BiliNoNowPlaying.dylib (swallow MPNowPlayingInfoCenter/MPNowPlayingSession setNowPlayingInfo:)
+        run: |
+          set +e
+          mkdir -p results
+          cat > BiliNoNowPlaying.m <<'EOF'
+          #import <Foundation/Foundation.h>
+          #import <objc/runtime.h>
+
+          static BOOL g_installed = NO;
+
+          static void BNNP_swallowInfo(id self, SEL _cmd, id info) {
+              // Publish nothing: no lock screen, control centre or Dynamic Island presence.
+          }
+
+          static void BNNP_install(void) {
+              if (g_installed) return;
+              BOOL did = NO;
+              const char *names[] = {"MPNowPlayingInfoCenter", "MPNowPlayingSession"};
+              for (int i = 0; i < 2; i++) {
+                  Class c = objc_getClass(names[i]);
+                  if (!c) continue;
+                  Method m = class_getInstanceMethod(c, @selector(setNowPlayingInfo:));
+                  if (m) {
+                      method_setImplementation(m, (IMP)BNNP_swallowInfo);
+                      did = YES;
+                  }
+              }
+              if (did) g_installed = YES;
+          }
+
+          __attribute__((constructor)) static void BNNP_init(void) {
+              BNNP_install();
+              if (!g_installed) {
+                  [[NSNotificationCenter defaultCenter] addObserverForName:@"UIApplicationDidBecomeActiveNotification"
+                      object:nil queue:[NSOperationQueue mainQueue]
+                      usingBlock:^(NSNotification *note) { BNNP_install(); }];
+              }
+          }
+          EOF
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK: $SDK" > results/build.log
+          xcrun clang -target arm64-apple-ios15.0 -isysroot "$SDK" -dynamiclib \
+            -install_name @executable_path/Frameworks/BiliNoNowPlaying.dylib \
+            -framework Foundation \
+            -o results/BiliNoNowPlaying.dylib BiliNoNowPlaying.m >> results/build.log 2>&1
+          echo "clang exit: $?" >> results/build.log
+          file results/BiliNoNowPlaying.dylib >> results/build.log 2>&1
+          otool -L results/BiliNoNowPlaying.dylib >> results/build.log 2>&1
+          ls -la results >> results/build.log 2>&1
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-bili6
+          git add results
+          git commit -m "BiliNoNowPlaying.dylib build" || echo "nothing to commit"
+          git push -f origin results-bili6
