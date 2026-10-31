@@ -1,0 +1,19 @@
+Archive:  inputs.zip
+   creating: work/BilibiliIcon.xcassets
+   creating: work/BilibiliIcon.xcassets/icon.appiconset
+  inflating: work/BilibiliIcon.xcassets/icon.appiconset/icon-any-1024.png  
+  inflating: work/BilibiliIcon.xcassets/icon.appiconset/icon-dark-1024.png  
+  inflating: work/BilibiliIcon.xcassets/icon.appiconset/icon-tinted-1024.png  
+  inflating: work/BilibiliIcon.xcassets/icon.appiconset/Contents.json  
+  inflating: work/BilibiliIcon.xcassets/Contents.json  
+  inflating: work/graft_bili2.py     
+  inflating: work/bom.py             
+  inflating: work/orig-Assets.car    
+work/BilibiliIcon.xcassets/Contents.json
+work/BilibiliIcon.xcassets/icon.appiconset/icon-tinted-1024.png
+work/BilibiliIcon.xcassets/icon.appiconset/Contents.json
+work/BilibiliIcon.xcassets/icon.appiconset/icon-dark-1024.png
+work/BilibiliIcon.xcassets/icon.appiconset/icon-any-1024.png
+work/graft_bili2.py
+work/orig-Assets.car
+work/bom.py
