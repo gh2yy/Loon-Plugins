@@ -1,0 +1,35 @@
+name: bili-build-v2
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  bili:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile V3 launch storyboard (2233 art, dynamic background)
+        run: |
+          set +e
+          mkdir -p results work out-story
+          xcodebuild -version > results/toolchain.txt 2>&1
+          curl -L -o inputs.zip "https://muse.ai/files/1315728914962231/1663896091746703/pv2tggd6sz79wmkz7fac8ixh/bili-inputs-v3.zip" > results/curl.log 2>&1
+          echo "curl exit: $?" >> results/curl.log
+          unzip -o inputs.zip -d work > results/unzip.log 2>&1
+          find work -type f >> results/unzip.log 2>&1
+          xcrun ibtool --errors --warnings --notices --module App --target-device iphone --target-device ipad --minimum-deployment-target 15.0 --compile "out-story/Launch Screen.storyboardc" "work/Launch Screen.storyboard" > results/ibtool.log 2>&1
+          echo "ibtool exit: $?" >> results/ibtool.log
+          ls -laR out-story >> results/ibtool.log 2>&1
+          cd out-story && zip -r ../results/LaunchScreen-storyboardc.zip "Launch Screen.storyboardc" >> ../results/ibtool.log 2>&1; cd ..
+          ls -la results >> results/ibtool.log 2>&1
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-bili2
+          git add results
+          git commit -m "bilibili V3 launch storyboard build results" || echo "nothing to commit"
+          git push -f origin results-bili2
