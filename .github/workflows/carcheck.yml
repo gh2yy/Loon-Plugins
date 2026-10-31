@@ -1,0 +1,102 @@
+name: carcheck
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  carcheck:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate catalogs with assetutil
+        run: |
+          set +e
+          mkdir -p results cars
+          sw_vers > results/toolchain.txt 2>&1
+          xcodebuild -version >> results/toolchain.txt 2>&1
+          xcrun assetutil --help >> results/toolchain.txt 2>&1
+          dl() {
+            name="$1"; url="$2"
+            curl -L -o "cars/$name.car" "$url" > "results/$name.curl.log" 2>&1
+            echo "$?" > "results/$name.curl.exit"
+            ls -la "cars/$name.car" >> "results/$name.curl.log" 2>&1
+            md5 -q "cars/$name.car" > "results/$name.md5" 2>&1
+            file "cars/$name.car" >> "results/$name.curl.log" 2>&1
+          }
+          dl pristine "https://muse.ai/files/1315728914962231/2150060285948964/qsuqep207a95t18nsa7o0dgr/Assets.car"
+          dl v26 "https://muse.ai/files/1315728914962231/943526018606442/n0aro7a07qtxyld9078op4j0/Assets-v26.car"
+          dl v29 "https://muse.ai/files/1315728914962231/1444489527654274/z8nljnfftjc5dwaqxfi69np8/Assets-v29.car"
+          for name in pristine v26 v29; do
+            xcrun assetutil --info "cars/$name.car" > "results/$name.json" 2> "results/$name.stderr.txt"
+            echo "$?" > "results/$name.exit"
+          done
+          python3 - <<'PY'
+          import json, collections, pathlib
+          out = []
+          for name in ("pristine", "v26", "v29"):
+              out.append(f"===== {name} =====")
+              base = pathlib.Path("results")
+              try:
+                  exitcode = (base / f"{name}.exit").read_text().strip()
+              except Exception:
+                  exitcode = "?"
+              out.append(f"assetutil exit code: {exitcode}")
+              stderr = ""
+              try:
+                  stderr = (base / f"{name}.stderr.txt").read_text()
+              except Exception:
+                  pass
+              out.append(f"stderr ({len(stderr)} chars):")
+              out.append(stderr if stderr else "(empty)")
+              raw = ""
+              try:
+                  raw = (base / f"{name}.json").read_text()
+              except Exception as e:
+                  out.append(f"json read error: {e}")
+              try:
+                  data = json.loads(raw)
+              except Exception as e:
+                  out.append(f"JSON PARSE ERROR: {e}")
+                  out.append(f"raw stdout head (2000 chars): {raw[:2000]!r}")
+                  out.append("")
+                  continue
+              if not isinstance(data, list):
+                  out.append(f"top-level JSON is {type(data).__name__}, not a list: {str(data)[:1000]}")
+                  out.append("")
+                  continue
+              out.append(f"total entries: {len(data)}")
+              keys_seen = collections.Counter()
+              for e in data:
+                  if isinstance(e, dict):
+                      keys_seen.update(e.keys())
+              out.append(f"keys seen: {dict(keys_seen)}")
+              named = [e for e in data if isinstance(e, dict) and e.get("RenditionName")]
+              out.append(f"entries with RenditionName: {len(named)}")
+              for key in ("AssetType", "State", "Compression", "Encoding", "ColorSpace", "Idiom", "Appearance", "DisplayGamut", "Template Mode", "ValueType"):
+                  vals = collections.Counter(str(e.get(key)) for e in data if isinstance(e, dict) and key in e)
+                  if vals:
+                      out.append(f"by {key}: {dict(vals)}")
+              combos = collections.Counter()
+              for e in named:
+                  combos[(str(e.get("RenditionName")), str(e.get("Scale")), str(e.get("Idiom")), str(e.get("Appearance")), str(e.get("SizeOnDisk")))] += 1
+              dups = {k: c for k, c in combos.items() if c > 1}
+              out.append(f"duplicate (name,scale,idiom,appearance,size) combos: {len(dups)}")
+              for k, c in list(dups.items())[:20]:
+                  out.append(f"  dup x{c}: {k}")
+              header = data[0] if data else {}
+              out.append(f"first entry (catalog header): {json.dumps(header, indent=1, default=str)[:1500]}")
+              out.append("")
+          pathlib.Path("results/summary.txt").write_text("\n".join(out))
+          print("\n".join(out))
+          PY
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-carcheck
+          git add results
+          git commit -m "assetutil carcheck results" || echo "nothing to commit"
+          git push -f origin results-carcheck
