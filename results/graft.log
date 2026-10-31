@@ -1,0 +1,60 @@
+orig: 38320 blocks, keyformat 11 fields; donor: 256 blocks, keyformat 9 fields
+donor FACETKEYS (sequential index, not rendition id): 'icon' -> 15
+harvesting donor renditions with Identifier == 36422 (facet 'icon')
+donor icon renditions: 8
+  donor sig (218, 0, 1, 1, None, None) 236 B
+  donor sig (218, 0, 2, 1, None, None) 236 B
+  donor sig (220, 0, 1, 1, None, None) 376527 B
+  donor sig (220, 0, 2, 1, None, None) 376527 B
+  donor sig (220, 1, 1, 1, None, None) 251024 B
+  donor sig (220, 1, 2, 1, None, None) 251024 B
+  donor sig (220, 10, 1, 1, None, None) 103730 B
+  donor sig (220, 10, 2, 1, None, None) 103730 B
+orig renditions: 11229 | leaf sizes min 256 max 496
+template pool (all factory icon-set Any keys): 6 keys; own-facet templates for parts: [218, 220]
+new rendition: sig (218, 0, 1, 1, None, None) gamut 0 -> CSI block 38320, key block 38328
+new rendition: sig (218, 0, 2, 1, None, None) gamut 0 -> CSI block 38321, key block 38329
+new rendition: sig (220, 0, 1, 1, None, None) gamut 0 -> CSI block 38322, key block 38330
+new rendition: sig (220, 0, 2, 1, None, None) gamut 0 -> CSI block 38323, key block 38331
+new rendition: sig (220, 1, 1, 1, None, None) gamut 0 -> CSI block 38324, key block 38332
+new rendition: sig (220, 1, 1, 1, None, None) gamut 1 -> CSI block 38324, key block 38333
+new rendition: sig (220, 1, 2, 1, None, None) gamut 0 -> CSI block 38325, key block 38334
+new rendition: sig (220, 1, 2, 1, None, None) gamut 1 -> CSI block 38325, key block 38335
+new rendition: sig (220, 10, 1, 1, None, None) gamut 0 -> CSI block 38326, key block 38336
+new rendition: sig (220, 10, 1, 1, None, None) gamut 1 -> CSI block 38326, key block 38337
+new rendition: sig (220, 10, 2, 1, None, None) gamut 0 -> CSI block 38327, key block 38338
+new rendition: sig (220, 10, 2, 1, None, None) gamut 1 -> CSI block 38327, key block 38339
+fabricated 12 new keys; missing templates for: []
+dropped 2 old target-facet entries
+rebuilding tree: 11239 entries in 23 leaves of <=496
+RENDITIONS header: root -> 38363, count -> 11239
+CARHEADER total: 11229 -> 11239
+donor appearance registry: {'ISAppearanceTintable': 10, 'UIAppearanceAny': 0, 'UIAppearanceDark': 1}
+orig appearance registry: {'UIAppearanceAny': 0}
+APPEARANCEKEYS header: root -> 38368, count 3, keylen -1
+wrote results/Assets-grafted.car 29946448
+validation: chain entries 11239 (expect 11239)
+validation: true-descent findable 11239/11239
+validation: appearance registry: {'ISAppearanceTintable': 10, 'UIAppearanceAny': 0, 'UIAppearanceDark': 1}
+validation: target facet entries 12, appearances [0, 1, 10], parts [218, 220]
+SELF-VALIDATION: PASS
+graft exit: 0
+total 88024
+drwxr-xr-x  18 runner  staff       576 Oct 31 12:50 .
+drwxr-xr-x  24 runner  staff       768 Oct 31 12:49 ..
+-rw-r--r--   1 runner  staff       681 Oct 31 12:50 actool-icon.log
+-rw-r--r--   1 runner  staff  29946448 Oct 31 12:50 Assets-grafted.car
+-rw-r--r--   1 runner  staff       550 Oct 31 12:49 curl.log
+-rw-r--r--   1 runner  staff   1481400 Oct 31 12:50 donor-Assets.car
+-rw-r--r--   1 runner  staff         2 Oct 31 12:50 donor.exit
+-rw-r--r--   1 runner  staff      4789 Oct 31 12:50 donor.json
+-rw-r--r--   1 runner  staff         0 Oct 31 12:50 donor.stderr.txt
+-rw-r--r--   1 runner  staff      2634 Oct 31 12:50 graft.log
+-rw-r--r--   1 runner  staff         2 Oct 31 12:50 grafted.exit
+-rw-r--r--   1 runner  staff   6275101 Oct 31 12:50 grafted.json
+-rw-r--r--   1 runner  staff         0 Oct 31 12:50 grafted.stderr.txt
+-rw-r--r--   1 runner  staff         2 Oct 31 12:50 pristine.exit
+-rw-r--r--   1 runner  staff   6269473 Oct 31 12:50 pristine.json
+-rw-r--r--   1 runner  staff         0 Oct 31 12:50 pristine.stderr.txt
+-rw-r--r--   1 runner  staff       385 Oct 31 12:49 toolchain.txt
+-rw-r--r--   1 runner  staff       929 Oct 31 12:49 unzip.log
