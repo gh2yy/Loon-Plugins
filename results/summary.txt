@@ -1,0 +1,14 @@
+assetutil exit code: 0
+stderr (0 chars):
+(empty)
+total entries: 1405
+catalog header: {"Appearances": {"ISAppearanceTintable": 10, "UIAppearanceAny": 0, "UIAppearanceDark": 1}, "AssetStorageVersion": "Xcode 15.4 (15F31d) via AssetCatalogSimulatorAgent", "Authoring Tool": "@(#)PROGRAM:CoreThemeDefinition  PROJECT:CoreThemeDefinition-582.1  [IIO-2488.5.4]", "CoreUIVersion": 868, "DumpToolVersion": 918.9, "Key Format": ["kCRThemeAppearanceName", "kCRThemeLocalizationName", "kCRThemeScaleName", "kCRThemeIdiomName", "kCRThemeSubtypeName", "kCRThemeDimension1Name", "kCRThemeDeploymentTargetName", "kCRThemeDisplayGamutName", "kCRThemeIdentifierName", "kCRThemeElementName", "kCRThemePartName"], "MainVersion": "@(#)PROGRAM:CoreUI  PROJECT:CoreUI-868.1.2\n", "Platform": "ios", "PlatformVersion": "13.0", "SchemaVersion": 2, "StorageVersion": 17, "Thinning With CoreUI Version": 917, "T
+entries with RenditionName: 1403
+  {"RenditionName": "AppIcon-Any.png", "Appearance": null, "Scale": 1, "Idiom": "phone", "SizeOnDisk": 473722, "AssetType": "Icon Image"}
+  {"RenditionName": "AppIcon-Dark.png", "Appearance": "UIAppearanceDark", "Scale": 1, "Idiom": "phone", "SizeOnDisk": 122297, "AssetType": "Icon Image"}
+  {"RenditionName": "AppIcon-Dark.png", "Appearance": "UIAppearanceDark", "Scale": 1, "Idiom": "phone", "SizeOnDisk": 122297, "AssetType": "Icon Image"}
+  {"RenditionName": "AppIcon-Tinted.png", "Appearance": "ISAppearanceTintable", "Scale": 1, "Idiom": "phone", "SizeOnDisk": 68127, "AssetType": "Icon Image"}
+  {"RenditionName": "AppIcon-Tinted.png", "Appearance": "ISAppearanceTintable", "Scale": 1, "Idiom": "phone", "SizeOnDisk": 68127, "AssetType": "Icon Image"}
+  {"RenditionName": "bg-dark@3x.png", "Appearance": null, "Scale": 3, "Idiom": "universal", "SizeOnDisk": 500, "AssetType": "Image"}
+  {"RenditionName": "bg-light@3x.png", "Appearance": null, "Scale": 3, "Idiom": "universal", "SizeOnDisk": 500, "AssetType": "Image"}
+by Appearance: {'None': 1401, 'UIAppearanceDark': 2, 'ISAppearanceTintable': 2}
