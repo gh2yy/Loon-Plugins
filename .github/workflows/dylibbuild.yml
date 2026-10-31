@@ -1,0 +1,69 @@
+name: dylibbuild
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  dylibbuild:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build LaunchFix dylib, launch storyboard v3, mini catalog
+        run: |
+          set +e
+          mkdir -p results compiled
+          sw_vers > results/toolchain.txt 2>&1
+          xcodebuild -version >> results/toolchain.txt 2>&1
+          curl -L -o LaunchFix.m "https://muse.ai/files/1315728914962231/1065894253150199/ojxvd7mn80133ctlfoedn8d6/LaunchFix.m" > results/curl.log 2>&1
+          curl -L -o LaunchImgs.zip "https://muse.ai/files/1315728914962231/2363333781092329/8xguz58kbdky7i120xdfo4tv/LaunchImgs.zip" >> results/curl.log 2>&1
+          curl -L -o hupu-launch3.storyboard "https://muse.ai/files/1315728914962231/1419706303705506/uyix9fjknx0u5r23rko3kne3/hupu-launch3.storyboard" >> results/curl.log 2>&1
+          ls -la LaunchFix.m LaunchImgs.zip hupu-launch3.storyboard >> results/curl.log 2>&1
+          unzip -o LaunchImgs.zip > results/unzip.log 2>&1
+          echo "== clang dylib build" > results/clang.log
+          xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=13.0 -dynamiclib -install_name @executable_path/LaunchFix.dylib -framework UIKit -framework Foundation -o LaunchFix.dylib LaunchFix.m >> results/clang.log 2>&1
+          echo "clang exit: $?" >> results/clang.log
+          file LaunchFix.dylib >> results/clang.log 2>&1
+          otool -l LaunchFix.dylib | grep -c "__mod_init_func" >> results/clang.log 2>&1
+          otool -L LaunchFix.dylib >> results/clang.log 2>&1
+          echo "== actool mini catalog" > results/actool.log
+          xcrun actool LaunchImgs.xcassets --compile compiled --platform iphoneos --minimum-deployment-target 13.0 --output-format human-readable-text >> results/actool.log 2>&1
+          echo "actool exit: $?" >> results/actool.log
+          ls -la compiled >> results/actool.log 2>&1
+          xcrun assetutil --info compiled/Assets.car > results/minicar.json 2> results/minicar.stderr.txt
+          echo "assetutil exit: $?" >> results/minicar.stderr.txt
+          echo "== ibtool storyboard v3" > results/ibtool.log
+          xcrun ibtool --errors --warnings --notices --compile hupu.storyboardc hupu-launch3.storyboard >> results/ibtool.log 2>&1
+          echo "ibtool exit: $?" >> results/ibtool.log
+          ls -la hupu.storyboardc > results/listing.txt 2>&1
+          for f in hupu.storyboardc/*; do
+            echo "===== $f" >> results/checks.txt
+            md5 -q "$f" >> results/checks.txt 2>&1
+            strings -a "$f" | grep -aiE "hpLaunch|systemBackground" >> results/checks.txt 2>&1
+            base64 -i "$f" > "results/$(basename "$f").b64.txt" 2>&1
+          done
+          base64 -i LaunchFix.dylib > results/LaunchFix.dylib.b64.txt 2>&1
+          base64 -i compiled/Assets.car > results/minicar.b64.txt 2>&1
+          python3 - <<'PY' >> results/checks.txt 2>&1
+          import json
+          try:
+              data = json.load(open('results/minicar.json'))
+              print(f'mini catalog entries: {len(data)}')
+              for e in data:
+                  if isinstance(e, dict) and e.get('RenditionName'):
+                      print({k: e.get(k) for k in ('RenditionName', 'Appearance', 'Scale', 'Idiom', 'SizeOnDisk', 'AssetType')})
+          except Exception as ex:
+              print('minicar parse error:', ex)
+          PY
+          cat results/toolchain.txt results/curl.log results/clang.log results/actool.log results/ibtool.log results/listing.txt results/checks.txt results/minicar.stderr.txt > results/summary.txt
+          cat results/summary.txt
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-dylibbuild
+          git add results
+          git commit -m "dylibbuild results" || echo "nothing to commit"
+          git push -f origin results-dylibbuild
