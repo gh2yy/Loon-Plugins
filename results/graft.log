@@ -1,0 +1,50 @@
+orig: 38352 blocks, keyformat 11 fields; donor: 256 blocks, keyformat 9 fields
+donor icon CSIs: {(1, 1): 253995, (1, 2): 253995, (10, 1): 103730, (10, 2): 103730}
+orig renditions: 11243 | leaf sizes min 256 max 475
+orig Any icon templates for idioms: [1, 2]
+new rendition: idiom 1 appearance 1 gamut 0 -> CSI block 38352 (253995B), key block 38356
+new rendition: idiom 1 appearance 1 gamut 1 -> CSI block 38352 (253995B), key block 38357
+new rendition: idiom 1 appearance 10 gamut 0 -> CSI block 38354 (103730B), key block 38358
+new rendition: idiom 1 appearance 10 gamut 1 -> CSI block 38354 (103730B), key block 38359
+new rendition: idiom 2 appearance 1 gamut 0 -> CSI block 38353 (253995B), key block 38360
+new rendition: idiom 2 appearance 1 gamut 1 -> CSI block 38353 (253995B), key block 38361
+new rendition: idiom 2 appearance 10 gamut 0 -> CSI block 38355 (103730B), key block 38362
+new rendition: idiom 2 appearance 10 gamut 1 -> CSI block 38355 (103730B), key block 38363
+rebuilding tree: 11251 entries in 24 leaves of <=475
+RENDITIONS header: root -> 38388, count -> 11251
+CARHEADER total: 11243 -> 11251
+donor appearance registry: {'ISAppearanceTintable': 10, 'UIAppearanceAny': 0, 'UIAppearanceDark': 1}
+orig appearance registry: {'UIAppearanceAny': 0}
+APPEARANCEKEYS header: root -> 38393, count 3, keylen -1
+wrote results/Assets-grafted.car 31003208
+validation: chain entries 11251 (expect 11251)
+validation: true-descent findable 11251/11251
+validation: appearance registry: {'ISAppearanceTintable': 10, 'UIAppearanceAny': 0, 'UIAppearanceDark': 1}
+SELF-VALIDATION: PASS
+graft exit: 0
+total 89776
+drwxr-xr-x  25 runner  staff       800 Oct 31 12:50 .
+drwxr-xr-x  26 runner  staff       832 Oct 31 12:49 ..
+-rw-r--r--   1 runner  staff       687 Oct 31 12:49 actool-icon.log
+-rw-r--r--   1 runner  staff       500 Oct 31 12:49 actool-launch.log
+-rw-r--r--   1 runner  staff  31003208 Oct 31 12:50 Assets-grafted.car
+-rw-r--r--   1 runner  staff       583 Oct 31 12:49 curl.log
+-rw-r--r--   1 runner  staff   1242296 Oct 31 12:49 donor-Assets.car
+-rw-r--r--   1 runner  staff         2 Oct 31 12:50 donor.exit
+-rw-r--r--   1 runner  staff      4793 Oct 31 12:50 donor.json
+-rw-r--r--   1 runner  staff         0 Oct 31 12:50 donor.stderr.txt
+-rw-r--r--   1 runner  staff      1601 Oct 31 12:50 graft.log
+-rw-r--r--   1 runner  staff         2 Oct 31 12:50 grafted.exit
+-rw-r--r--   1 runner  staff   6281137 Oct 31 12:50 grafted.json
+-rw-r--r--   1 runner  staff         0 Oct 31 12:50 grafted.stderr.txt
+-rw-r--r--   1 runner  staff      1185 Oct 31 12:50 ibtool.log
+-rw-r--r--   1 runner  staff         2 Oct 31 12:50 launch.exit
+-rw-r--r--   1 runner  staff      3076 Oct 31 12:50 launch.json
+-rw-r--r--   1 runner  staff         0 Oct 31 12:50 launch.stderr.txt
+-rw-r--r--   1 runner  staff     43112 Oct 31 12:49 LaunchAssets.car
+-rw-r--r--   1 runner  staff      2867 Oct 31 12:50 LaunchScreen-storyboardc.zip
+-rw-r--r--   1 runner  staff         2 Oct 31 12:50 pristine.exit
+-rw-r--r--   1 runner  staff   6276428 Oct 31 12:50 pristine.json
+-rw-r--r--   1 runner  staff         0 Oct 31 12:50 pristine.stderr.txt
+-rw-r--r--   1 runner  staff       385 Oct 31 12:49 toolchain.txt
+-rw-r--r--   1 runner  staff      2074 Oct 31 12:49 unzip.log

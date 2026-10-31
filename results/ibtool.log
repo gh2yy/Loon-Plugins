@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.ibtool.document.errors</key>
+	<dict/>
+	<key>com.apple.ibtool.document.notices</key>
+	<dict/>
+	<key>com.apple.ibtool.document.warnings</key>
+	<dict/>
+</dict>
+</plist>
+ibtool exit: 0
+total 0
+drwxr-xr-x   3 runner  staff   96 Oct 31 12:50 .
+drwxr-xr-x  26 runner  staff  832 Oct 31 12:49 ..
+drwxr-xr-x   5 runner  staff  160 Oct 31 12:50 Launch Screen.storyboardc
+
+out-story/Launch Screen.storyboardc:
+total 24
+drwxr-xr-x  5 runner  staff   160 Oct 31 12:50 .
+drwxr-xr-x  3 runner  staff    96 Oct 31 12:50 ..
+-rw-r--r--  1 runner  staff  2105 Oct 31 12:50 01J-lp-oVM-view-Ze5-6b-2t3.nib
+-rw-r--r--  1 runner  staff   258 Oct 31 12:50 Info.plist
+-rw-r--r--  1 runner  staff   924 Oct 31 12:50 UIViewController-01J-lp-oVM.nib
+  adding: Launch Screen.storyboardc/ (stored 0%)
+  adding: Launch Screen.storyboardc/01J-lp-oVM-view-Ze5-6b-2t3.nib (deflated 42%)
+  adding: Launch Screen.storyboardc/UIViewController-01J-lp-oVM.nib (deflated 35%)
+  adding: Launch Screen.storyboardc/Info.plist (deflated 42%)

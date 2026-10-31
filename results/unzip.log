@@ -1,0 +1,39 @@
+Archive:  inputs.zip
+  inflating: work/icon-dark-1024.png  
+  inflating: work/icon-tinted-1024.png  
+   creating: work/BilibiliAppIcon.xcassets
+   creating: work/BilibiliAppIcon.xcassets/AppIcon.appiconset
+  inflating: work/BilibiliAppIcon.xcassets/AppIcon.appiconset/AppIcon-Any.png  
+  inflating: work/BilibiliAppIcon.xcassets/AppIcon.appiconset/AppIcon-Dark.png  
+  inflating: work/BilibiliAppIcon.xcassets/AppIcon.appiconset/AppIcon-Tinted.png  
+  inflating: work/BilibiliAppIcon.xcassets/AppIcon.appiconset/Contents.json  
+  inflating: work/BilibiliAppIcon.xcassets/Contents.json  
+   creating: work/Launch.xcassets
+  inflating: work/Launch.xcassets/Contents.json  
+   creating: work/Launch.xcassets/launcher_logo_2020.imageset
+  inflating: work/Launch.xcassets/launcher_logo_2020.imageset/logo@2x.png  
+  inflating: work/Launch.xcassets/launcher_logo_2020.imageset/logo@3x.png  
+  inflating: work/Launch.xcassets/launcher_logo_2020.imageset/logo-dark@2x.png  
+  inflating: work/Launch.xcassets/launcher_logo_2020.imageset/logo-dark@3x.png  
+  inflating: work/Launch.xcassets/launcher_logo_2020.imageset/Contents.json  
+  inflating: work/Launch Screen.storyboard  
+  inflating: work/bom.py             
+  inflating: work/graft_bili.py      
+  inflating: work/orig-Assets.car    
+work/BilibiliAppIcon.xcassets/AppIcon.appiconset/AppIcon-Dark.png
+work/BilibiliAppIcon.xcassets/AppIcon.appiconset/AppIcon-Tinted.png
+work/BilibiliAppIcon.xcassets/AppIcon.appiconset/AppIcon-Any.png
+work/BilibiliAppIcon.xcassets/AppIcon.appiconset/Contents.json
+work/BilibiliAppIcon.xcassets/Contents.json
+work/icon-tinted-1024.png
+work/graft_bili.py
+work/orig-Assets.car
+work/Launch.xcassets/launcher_logo_2020.imageset/logo-dark@2x.png
+work/Launch.xcassets/launcher_logo_2020.imageset/logo-dark@3x.png
+work/Launch.xcassets/launcher_logo_2020.imageset/logo@3x.png
+work/Launch.xcassets/launcher_logo_2020.imageset/logo@2x.png
+work/Launch.xcassets/launcher_logo_2020.imageset/Contents.json
+work/Launch.xcassets/Contents.json
+work/bom.py
+work/Launch Screen.storyboard
+work/icon-dark-1024.png
