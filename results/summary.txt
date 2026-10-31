@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.ibtool.document.errors</key>
+	<dict/>
+	<key>com.apple.ibtool.document.notices</key>
+	<dict/>
+	<key>com.apple.ibtool.document.warnings</key>
+	<dict/>
+</dict>
+</plist>
+ibtool exit: 0
+total 24
+drwxr-xr-x   5 runner  staff   160 Oct 31 12:51 .
+drwxr-xr-x  23 runner  staff   736 Oct 31 12:51 ..
+-rw-r--r--   1 runner  staff  2968 Oct 31 12:51 01J-lp-oVM-view-Ze5-6b-2t3.nib
+-rw-r--r--   1 runner  staff   258 Oct 31 12:51 Info.plist
+-rw-r--r--   1 runner  staff   924 Oct 31 12:51 UIViewController-01J-lp-oVM.nib
+===== hupu.storyboardc/01J-lp-oVM-view-Ze5-6b-2t3.nib
+39cafda76780d0327ecf755c365c7142
+hpLaunchLogo
+hpLaunchCertificate
+systemBackgroundColor
+===== hupu.storyboardc/Info.plist
+c35c440d4928d20d6919478391910ded
+===== hupu.storyboardc/UIViewController-01J-lp-oVM.nib
+346fc4729a8a62164afeb26abb26c7d3

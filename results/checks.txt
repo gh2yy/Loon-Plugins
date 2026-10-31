@@ -1,0 +1,9 @@
+===== hupu.storyboardc/01J-lp-oVM-view-Ze5-6b-2t3.nib
+39cafda76780d0327ecf755c365c7142
+hpLaunchLogo
+hpLaunchCertificate
+systemBackgroundColor
+===== hupu.storyboardc/Info.plist
+c35c440d4928d20d6919478391910ded
+===== hupu.storyboardc/UIViewController-01J-lp-oVM.nib
+346fc4729a8a62164afeb26abb26c7d3
