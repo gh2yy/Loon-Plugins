@@ -1,0 +1,56 @@
+name: bili-build
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  bili:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Bilibili dark icon donor, launch catalog, storyboard; graft and validate
+        run: |
+          set +e
+          mkdir -p results work out-icon out-launch out-story
+          xcodebuild -version > results/toolchain.txt 2>&1
+          xcrun actool --version >> results/toolchain.txt 2>&1
+          curl -L -o inputs.zip "https://muse.ai/files/1315728914962231/26863663293330668/bxki7r999bztmdom72gharc3/bili-inputs.zip" > results/curl.log 2>&1
+          echo "curl exit: $?" >> results/curl.log
+          ls -la inputs.zip >> results/curl.log 2>&1
+          md5 -q inputs.zip >> results/curl.log 2>&1
+          unzip -o inputs.zip -d work > results/unzip.log 2>&1
+          find work -type f >> results/unzip.log 2>&1
+          xcrun actool work/BilibiliAppIcon.xcassets --compile out-icon --platform iphoneos --minimum-deployment-target 15.0 --app-icon AppIcon --output-partial-info-plist out-icon/partial.plist > results/actool-icon.log 2>&1
+          echo "actool icon exit: $?" >> results/actool-icon.log
+          cp out-icon/Assets.car results/donor-Assets.car 2>/dev/null
+          xcrun actool work/Launch.xcassets --compile out-launch --platform iphoneos --minimum-deployment-target 15.0 --output-partial-info-plist out-launch/partial.plist > results/actool-launch.log 2>&1
+          echo "actool launch exit: $?" >> results/actool-launch.log
+          cp out-launch/Assets.car results/LaunchAssets.car 2>/dev/null
+          xcrun ibtool --errors --warnings --notices --module App --target-device iphone --target-device ipad --minimum-deployment-target 15.0 --compile "out-story/Launch Screen.storyboardc" "work/Launch Screen.storyboard" > results/ibtool.log 2>&1
+          echo "ibtool exit: $?" >> results/ibtool.log
+          ls -laR out-story >> results/ibtool.log 2>&1
+          cd out-story && zip -r ../results/LaunchScreen-storyboardc.zip "Launch Screen.storyboardc" >> ../results/ibtool.log 2>&1; cd ..
+          python3 work/graft_bili.py work/orig-Assets.car out-icon/Assets.car results/Assets-grafted.car > results/graft.log 2>&1
+          echo "graft exit: $?" >> results/graft.log
+          for name in pristine grafted donor launch; do
+            case $name in
+              pristine) f=work/orig-Assets.car ;;
+              grafted) f=results/Assets-grafted.car ;;
+              donor) f=results/donor-Assets.car ;;
+              launch) f=results/LaunchAssets.car ;;
+            esac
+            xcrun assetutil --info "$f" > "results/$name.json" 2> "results/$name.stderr.txt"
+            echo "$?" > "results/$name.exit"
+          done
+          ls -la results >> results/graft.log 2>&1
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-bili1
+          git add results
+          git commit -m "bilibili dark icon + launch build results" || echo "nothing to commit"
+          git push -f origin results-bili1
