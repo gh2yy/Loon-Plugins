@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.actool.compilation-results</key>
+	<dict>
+		<key>output-files</key>
+		<array>
+			<string>/Users/runner/work/Loon-Plugins/Loon-Plugins/out16/AppIcon60x60@2x.png</string>
+			<string>/Users/runner/work/Loon-Plugins/Loon-Plugins/out16/AppIcon76x76@2x~ipad.png</string>
+			<string>/Users/runner/work/Loon-Plugins/Loon-Plugins/out16/Assets.car</string>
+			<string>/Users/runner/work/Loon-Plugins/Loon-Plugins/out16/partial.plist</string>
+		</array>
+	</dict>
+</dict>
+</plist>
+actool exit: 0
+total 2736
+drwxr-xr-x   6 runner  staff      192 Oct 31 12:51 .
+drwxr-xr-x  22 runner  staff      704 Oct 31 12:51 ..
+-rw-r--r--   1 runner  staff    16727 Oct 31 12:51 AppIcon60x60@2x.png
+-rw-r--r--   1 runner  staff    24386 Oct 31 12:51 AppIcon76x76@2x~ipad.png
+-rw-r--r--   1 runner  staff  1349248 Oct 31 12:51 Assets.car
+-rw-r--r--   1 runner  staff      713 Oct 31 12:51 partial.plist
