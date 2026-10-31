@@ -1,0 +1,47 @@
+name: bili-build-v4
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  bili:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build icon donor (facet 'icon'), graft full stack into factory catalog facet 36422
+        run: |
+          set +e
+          mkdir -p results work out-icon
+          xcodebuild -version > results/toolchain.txt 2>&1
+          xcrun actool --version >> results/toolchain.txt 2>&1
+          curl -L -o inputs.zip "https://muse.ai/files/1315728914962231/1873093173704876/9z2mxe4g2v622i6fj63iuxvu/bili-inputs-v6.zip" > results/curl.log 2>&1
+          echo "curl exit: $?" >> results/curl.log
+          ls -la inputs.zip >> results/curl.log 2>&1
+          unzip -o inputs.zip -d work > results/unzip.log 2>&1
+          find work -type f >> results/unzip.log 2>&1
+          xcrun actool work/BilibiliIcon.xcassets --compile out-icon --platform iphoneos --minimum-deployment-target 15.0 --app-icon icon --output-partial-info-plist out-icon/partial.plist > results/actool-icon.log 2>&1
+          echo "actool icon exit: $?" >> results/actool-icon.log
+          cp out-icon/Assets.car results/donor-Assets.car 2>/dev/null
+          python3 work/graft_bili2.py work/orig-Assets.car out-icon/Assets.car results/Assets-grafted.car icon 36422 > results/graft.log 2>&1
+          echo "graft exit: $?" >> results/graft.log
+          for name in pristine grafted donor; do
+            case $name in
+              pristine) f=work/orig-Assets.car ;;
+              grafted) f=results/Assets-grafted.car ;;
+              donor) f=results/donor-Assets.car ;;
+            esac
+            xcrun assetutil --info "$f" > "results/$name.json" 2> "results/$name.stderr.txt"
+            echo "$?" > "results/$name.exit"
+          done
+          ls -la results >> results/graft.log 2>&1
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-bili4
+          git add results
+          git commit -m "bilibili V6 icon stack graft results" || echo "nothing to commit"
+          git push -f origin results-bili4
