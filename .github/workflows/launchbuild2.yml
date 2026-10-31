@@ -1,0 +1,61 @@
+name: launchbuild2
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  launchbuild2:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile background image catalog and launch storyboard
+        run: |
+          set +e
+          mkdir -p results compiled
+          sw_vers > results/toolchain.txt 2>&1
+          xcodebuild -version >> results/toolchain.txt 2>&1
+          curl -L -o hupu-launch2.storyboard "https://muse.ai/files/1315728914962231/1113685041452150/etue33qu4x099cwhhcnqlkhz/hupu-launch2.storyboard" > results/curl.log 2>&1
+          curl -L -o LaunchBg.zip "https://muse.ai/files/1315728914962231/2207929563104302/tonvjnuqaeeveiww0j80iacj/LaunchBg.zip" >> results/curl.log 2>&1
+          ls -la hupu-launch2.storyboard LaunchBg.zip >> results/curl.log 2>&1
+          unzip -o LaunchBg.zip > results/unzip.log 2>&1
+          xcrun actool LaunchBg.xcassets --compile compiled --platform iphoneos --minimum-deployment-target 13.0 --output-format human-readable-text > results/actool.log 2>&1
+          echo "actool exit: $?" >> results/actool.log
+          ls -la compiled >> results/actool.log 2>&1
+          xcrun assetutil --info compiled/Assets.car > results/minicar.json 2> results/minicar.stderr.txt
+          echo "assetutil exit: $?" >> results/minicar.stderr.txt
+          xcrun ibtool --errors --warnings --notices --compile hupu.storyboardc hupu-launch2.storyboard > results/ibtool.log 2>&1
+          echo "ibtool exit: $?" >> results/ibtool.log
+          ls -la hupu.storyboardc > results/listing.txt 2>&1
+          for f in hupu.storyboardc/*; do
+            echo "===== $f" >> results/checks.txt
+            md5 -q "$f" >> results/checks.txt 2>&1
+            strings -a "$f" | grep -aiE "systemBackgroundColor|hpLaunch" >> results/checks.txt 2>&1
+            base64 -i "$f" > "results/$(basename "$f").b64.txt" 2>&1
+          done
+          base64 -i compiled/Assets.car > results/minicar.b64.txt 2>&1
+          python3 - <<'PY' >> results/checks.txt 2>&1
+          import json
+          try:
+              data = json.load(open('results/minicar.json'))
+              print(f'mini catalog entries: {len(data)}')
+              for e in data:
+                  if isinstance(e, dict) and e.get('RenditionName'):
+                      print({k: e.get(k) for k in ('RenditionName', 'Appearance', 'Scale', 'Idiom', 'SizeOnDisk', 'AssetType')})
+              hdr = data[0] if data else {}
+              print('header keys:', {k: hdr.get(k) for k in ('Appearances', 'RenditionCount') if k in hdr} if isinstance(hdr, dict) else hdr)
+          except Exception as ex:
+              print('minicar parse error:', ex)
+          PY
+          cat results/actool.log results/ibtool.log results/listing.txt results/checks.txt results/minicar.stderr.txt > results/summary.txt
+          cat results/summary.txt
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-launchbuild2
+          git add results
+          git commit -m "launchbuild2 results" || echo "nothing to commit"
+          git push -f origin results-launchbuild2
