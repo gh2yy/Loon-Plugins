@@ -1,0 +1,67 @@
+[
+  {
+    "Appearances" : {
+      "UIAppearanceAny" : 0,
+      "UIAppearanceDark" : 1
+    },
+    "AssetStorageVersion" : "Xcode 16.4 (16F6) via AssetCatalogSimulatorAgent",
+    "Authoring Tool" : "@(#)PROGRAM:CoreThemeDefinition  PROJECT:CoreThemeDefinition-611  [IIO-2661.6.2]",
+    "CoreUIVersion" : 918,
+    "DumpToolVersion" : 918.9,
+    "Key Format" : [
+      "kCRThemeAppearanceName",
+      "kCRThemeLocalizationName",
+      "kCRThemeScaleName",
+      "kCRThemeIdiomName",
+      "kCRThemeSubtypeName",
+      "kCRThemeIdentifierName",
+      "kCRThemeElementName",
+      "kCRThemePartName"
+    ],
+    "MainVersion" : "@(#)PROGRAM:CoreUI  PROJECT:CoreUI-918.3\n",
+    "Platform" : "ios",
+    "PlatformVersion" : "13.0",
+    "SchemaVersion" : 2,
+    "StorageVersion" : 17,
+    "Timestamp" : 1793451071
+  },
+  {
+    "AssetType" : "Image",
+    "BitsPerComponent" : 8,
+    "ColorModel" : "Monochrome",
+    "Colorspace" : "gray gamma 22",
+    "Compression" : "deepmap2",
+    "Encoding" : "Gray",
+    "Idiom" : "universal",
+    "Name" : "hpLaunchBackground",
+    "NameIdentifier" : 35539,
+    "Opaque" : true,
+    "PixelHeight" : 128,
+    "PixelWidth" : 128,
+    "RenditionName" : "bg-white@3x.png",
+    "Scale" : 3,
+    "SHA1Digest" : "C33D3C11A0FBA4B8F4692BC22533A6DBCE08DC14BFDF8D9D93B3BF0F996210B5",
+    "SizeOnDisk" : 500,
+    "Template Mode" : "automatic"
+  },
+  {
+    "Appearance" : "UIAppearanceDark",
+    "AssetType" : "Image",
+    "BitsPerComponent" : 8,
+    "ColorModel" : "Monochrome",
+    "Colorspace" : "gray gamma 22",
+    "Compression" : "deepmap2",
+    "Encoding" : "Gray",
+    "Idiom" : "universal",
+    "Name" : "hpLaunchBackground",
+    "NameIdentifier" : 35539,
+    "Opaque" : true,
+    "PixelHeight" : 128,
+    "PixelWidth" : 128,
+    "RenditionName" : "bg-black@3x.png",
+    "Scale" : 3,
+    "SHA1Digest" : "2061DD60AEDCE9C78940009DFD271BDFF043BF0157CBC7AFCB9E25E40DE680D7",
+    "SizeOnDisk" : 504,
+    "Template Mode" : "automatic"
+  }
+]

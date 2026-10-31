@@ -1,0 +1,42 @@
+/* com.apple.actool.compilation-results */
+/Users/runner/work/Loon-Plugins/Loon-Plugins/compiled/Assets.car
+
+actool exit: 0
+total 48
+drwxr-xr-x   3 runner  staff     96 Oct 31 12:51 .
+drwxr-xr-x  25 runner  staff    800 Oct 31 12:50 ..
+-rw-r--r--   1 runner  staff  21104 Oct 31 12:51 Assets.car
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.ibtool.document.errors</key>
+	<dict/>
+	<key>com.apple.ibtool.document.notices</key>
+	<dict/>
+	<key>com.apple.ibtool.document.warnings</key>
+	<dict/>
+</dict>
+</plist>
+ibtool exit: 0
+total 24
+drwxr-xr-x   5 runner  staff   160 Oct 31 12:51 .
+drwxr-xr-x  26 runner  staff   832 Oct 31 12:51 ..
+-rw-r--r--   1 runner  staff  3294 Oct 31 12:51 01J-lp-oVM-view-Ze5-6b-2t3.nib
+-rw-r--r--   1 runner  staff   258 Oct 31 12:51 Info.plist
+-rw-r--r--   1 runner  staff   924 Oct 31 12:51 UIViewController-01J-lp-oVM.nib
+===== hupu.storyboardc/01J-lp-oVM-view-Ze5-6b-2t3.nib
+686f40698f8b63f6f8751a7c649d6260
+hpLaunchBackground
+hpLaunchLogo
+hpLaunchCertificate
+systemBackgroundColor
+===== hupu.storyboardc/Info.plist
+c35c440d4928d20d6919478391910ded
+===== hupu.storyboardc/UIViewController-01J-lp-oVM.nib
+346fc4729a8a62164afeb26abb26c7d3
+mini catalog entries: 3
+{'RenditionName': 'bg-white@3x.png', 'Appearance': None, 'Scale': 3, 'Idiom': 'universal', 'SizeOnDisk': 500, 'AssetType': 'Image'}
+{'RenditionName': 'bg-black@3x.png', 'Appearance': 'UIAppearanceDark', 'Scale': 3, 'Idiom': 'universal', 'SizeOnDisk': 504, 'AssetType': 'Image'}
+header keys: {'Appearances': {'UIAppearanceAny': 0, 'UIAppearanceDark': 1}}
+assetutil exit: 0
