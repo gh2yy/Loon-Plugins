@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.ibtool.document.errors</key>
+	<dict/>
+	<key>com.apple.ibtool.document.notices</key>
+	<dict/>
+	<key>com.apple.ibtool.document.warnings</key>
+	<dict/>
+</dict>
+</plist>
+ibtool exit: 0
+total 40
+drwxr-xr-x   7 runner  staff   224 Oct 31 12:51 .
+drwxr-xr-x  23 runner  staff   736 Oct 31 12:50 ..
+-rw-r--r--   1 runner  staff   409 Oct 31 12:50 curl.log
+-rw-r--r--   1 runner  staff   368 Oct 31 12:51 ibtool.log
+-rw-r--r--   1 runner  staff  2213 Oct 31 12:51 Launch Screen.nib
+-rw-r--r--   1 runner  staff    32 Oct 31 12:50 toolchain.txt
+-rw-r--r--   1 runner  staff    82 Oct 31 12:50 unzip.log
+results/Launch Screen.nib: data
