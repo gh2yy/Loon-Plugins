@@ -1,0 +1,58 @@
+name: carcheck9
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  carcheck:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate v36 catalog with assetutil
+        run: |
+          set +e
+          mkdir -p results
+          sw_vers > results/toolchain.txt 2>&1
+          xcodebuild -version >> results/toolchain.txt 2>&1
+          curl -L -o Assets-v36.car "https://muse.ai/files/1315728914962231/1842024673518969/fpmm0l4lvtfjcoa94q751nar/Assets-v37.car" > results/curl.log 2>&1
+          ls -la Assets-v36.car >> results/curl.log 2>&1
+          md5 -q Assets-v36.car > results/v36.md5 2>&1
+          xcrun assetutil --info Assets-v36.car > results/v36.json 2> results/v36.stderr.txt
+          echo "$?" > results/v36.exit
+          python3 - <<'PY'
+          import json, collections, pathlib
+          out = []
+          base = pathlib.Path("results")
+          exitcode = (base / "v36.exit").read_text().strip() if (base / "v36.exit").exists() else "?"
+          out.append(f"assetutil exit code: {exitcode}")
+          stderr = (base / "v36.stderr.txt").read_text() if (base / "v36.stderr.txt").exists() else ""
+          out.append(f"stderr ({len(stderr)} chars):")
+          out.append(stderr if stderr else "(empty)")
+          try:
+              data = json.loads((base / "v36.json").read_text())
+              out.append(f"total entries: {len(data)}")
+              header = data[0] if data else {}
+              out.append(f"catalog header: {json.dumps(header, default=str)[:800]}")
+              named = [e for e in data if isinstance(e, dict) and e.get("RenditionName")]
+              out.append(f"entries with RenditionName: {len(named)}")
+              for e in named:
+                  if "bg-" in str(e.get("RenditionName")) or "hpLaunch" in str(e.get("RenditionName")) or "AppIcon" in str(e.get("RenditionName")):
+                      out.append("  " + json.dumps({k: e.get(k) for k in ("RenditionName", "Appearance", "Scale", "Idiom", "SizeOnDisk", "AssetType")}, default=str))
+              apps = collections.Counter(str(e.get("Appearance")) for e in data if isinstance(e, dict))
+              out.append(f"by Appearance: {dict(apps)}")
+          except Exception as ex:
+              out.append(f"JSON parse error: {ex}")
+          pathlib.Path("results/summary.txt").write_text("\n".join(out))
+          print("\n".join(out))
+          PY
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-carcheck9
+          git add results
+          git commit -m "carcheck9 results" || echo "nothing to commit"
+          git push -f origin results-carcheck9
