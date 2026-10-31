@@ -1,0 +1,129 @@
+===== pristine =====
+assetutil exit code: 0
+stderr (0 chars):
+(empty)
+total entries: 1398
+keys seen: {'Appearances': 1, 'AssetStorageVersion': 1, 'Authoring Tool': 1, 'CoreUIVersion': 1, 'DumpToolVersion': 1, 'Key Format': 1, 'MainVersion': 1, 'Platform': 1, 'PlatformVersion': 1, 'SchemaVersion': 1, 'StorageVersion': 1, 'Thinning With CoreUI Version': 1, 'ThinningParameters': 1, 'Timestamp': 1, 'AssetType': 1397, 'BitsPerComponent': 1396, 'ColorModel': 1396, 'Colorspace': 1323, 'Compression': 1323, 'Encoding': 1396, 'Idiom': 1397, 'Name': 1397, 'NameIdentifier': 1195, 'Opaque': 1396, 'PixelHeight': 1396, 'PixelWidth': 1396, 'RenditionName': 1396, 'Scale': 1397, 'SHA1Digest': 1397, 'SizeOnDisk': 1397, 'Template Mode': 1193, 'DisplayGamut': 37, 'DeploymentTarget': 68, 'Sizes': 1, 'Dimension1': 199}
+entries with RenditionName: 1396
+by AssetType: {'Icon Image': 1, 'Image': 1193, 'MultiSized Image': 1, 'PackedImage': 202}
+by Compression: {'lzfse': 1, 'deepmap2': 1322}
+by Encoding: {'ARGB': 943, 'Gray': 343, 'ARGB-16': 37, 'JPEG': 5, 'HEIF': 68}
+by Idiom: {'phone': 3, 'universal': 1394}
+by DisplayGamut: {'P3': 37}
+by Template Mode: {'automatic': 1193}
+duplicate (name,scale,idiom,appearance,size) combos: 44
+  dup x2: ('common_teenagers_content.png', '3', 'universal', 'None', '334')
+  dup x2: ('图片查看器日间未推荐@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('编组@3x.png', '3', 'universal', 'None', '334')
+  dup x8: ('Image type@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('下一步@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('QQ@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('微信@3x.png', '3', 'universal', 'None', '334')
+  dup x4: ('展开@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('标题栏_后退箭头@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('hp_loading_image_4_3scale@3x.png', '3', 'universal', 'None', '2513')
+  dup x2: ('hp_loading_image_4_3scale_night@3x.png', '3', 'universal', 'None', '1806')
+  dup x2: ('conmmon_quote@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('conmmon_quoteright@3x.png', '3', 'universal', 'None', '334')
+  dup x3: ('close_btn@3x.png', '3', 'universal', 'None', '334')
+  dup x3: ('全屏@3x.png', '3', 'universal', 'None', '334')
+  dup x3: ('编组 16@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('虎扑评分@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('最早回复弹框箭头@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('椭圆形@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('标题栏_后退箭头_夜间@3x.png', '3', 'universal', 'None', '334')
+first entry (catalog header): {
+ "Appearances": {
+  "UIAppearanceAny": 0
+ },
+ "AssetStorageVersion": "Xcode 15.4 (15F31d) via AssetCatalogSimulatorAgent",
+ "Authoring Tool": "@(#)PROGRAM:CoreThemeDefinition  PROJECT:CoreThemeDefinition-582.1  [IIO-2488.5.4]",
+ "CoreUIVersion": 868,
+ "DumpToolVersion": 918.9,
+ "Key Format": [
+  "kCRThemeAppearanceName",
+  "kCRThemeLocalizationName",
+  "kCRThemeScaleName",
+  "kCRThemeIdiomName",
+  "kCRThemeSubtypeName",
+  "kCRThemeDimension1Name",
+  "kCRThemeDeploymentTargetName",
+  "kCRThemeDisplayGamutName",
+  "kCRThemeIdentifierName",
+  "kCRThemeElementName",
+  "kCRThemePartName"
+ ],
+ "MainVersion": "@(#)PROGRAM:CoreUI  PROJECT:CoreUI-868.1.2\n",
+ "Platform": "ios",
+ "PlatformVersion": "13.0",
+ "SchemaVersion": 2,
+ "StorageVersion": 17,
+ "Thinning With CoreUI Version": 917,
+ "ThinningParameters": "carutil 917.300000, thinned <mode app> <idiom 1> <subtype 2340> <subtypefallback *> <scale 3> <gamut 1> <graphics 8> <graphicsfallback *> <memory 3> <deployment- 7> <hostedIdioms (4)> <removed 1441>",
+ "Timestamp": 1793450986
+}
+
+===== w1 =====
+assetutil exit code: 0
+stderr (0 chars):
+(empty)
+total entries: 1398
+keys seen: {'Appearances': 1, 'AssetStorageVersion': 1, 'Authoring Tool': 1, 'CoreUIVersion': 1, 'DumpToolVersion': 1, 'Key Format': 1, 'MainVersion': 1, 'Platform': 1, 'PlatformVersion': 1, 'SchemaVersion': 1, 'StorageVersion': 1, 'Thinning With CoreUI Version': 1, 'ThinningParameters': 1, 'Timestamp': 1, 'AssetType': 1397, 'BitsPerComponent': 1396, 'ColorModel': 1396, 'Colorspace': 1323, 'Compression': 1323, 'Encoding': 1396, 'Idiom': 1397, 'Name': 1397, 'NameIdentifier': 1195, 'Opaque': 1396, 'PixelHeight': 1396, 'PixelWidth': 1396, 'RenditionName': 1396, 'Scale': 1397, 'SHA1Digest': 1397, 'SizeOnDisk': 1397, 'Template Mode': 1193, 'DisplayGamut': 37, 'DeploymentTarget': 68, 'Sizes': 1, 'Dimension1': 199}
+entries with RenditionName: 1396
+by AssetType: {'Icon Image': 1, 'Image': 1193, 'MultiSized Image': 1, 'PackedImage': 202}
+by Compression: {'lzfse': 1, 'deepmap2': 1322}
+by Encoding: {'ARGB': 943, 'Gray': 343, 'ARGB-16': 37, 'JPEG': 5, 'HEIF': 68}
+by Idiom: {'phone': 3, 'universal': 1394}
+by DisplayGamut: {'P3': 37}
+by Template Mode: {'automatic': 1193}
+duplicate (name,scale,idiom,appearance,size) combos: 44
+  dup x2: ('common_teenagers_content.png', '3', 'universal', 'None', '334')
+  dup x2: ('图片查看器日间未推荐@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('编组@3x.png', '3', 'universal', 'None', '334')
+  dup x8: ('Image type@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('下一步@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('QQ@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('微信@3x.png', '3', 'universal', 'None', '334')
+  dup x4: ('展开@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('标题栏_后退箭头@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('hp_loading_image_4_3scale@3x.png', '3', 'universal', 'None', '2513')
+  dup x2: ('hp_loading_image_4_3scale_night@3x.png', '3', 'universal', 'None', '1806')
+  dup x2: ('conmmon_quote@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('conmmon_quoteright@3x.png', '3', 'universal', 'None', '334')
+  dup x3: ('close_btn@3x.png', '3', 'universal', 'None', '334')
+  dup x3: ('全屏@3x.png', '3', 'universal', 'None', '334')
+  dup x3: ('编组 16@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('虎扑评分@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('最早回复弹框箭头@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('椭圆形@3x.png', '3', 'universal', 'None', '334')
+  dup x2: ('标题栏_后退箭头_夜间@3x.png', '3', 'universal', 'None', '334')
+first entry (catalog header): {
+ "Appearances": {
+  "UIAppearanceAny": 0
+ },
+ "AssetStorageVersion": "Xcode 15.4 (15F31d) via AssetCatalogSimulatorAgent",
+ "Authoring Tool": "@(#)PROGRAM:CoreThemeDefinition  PROJECT:CoreThemeDefinition-582.1  [IIO-2488.5.4]",
+ "CoreUIVersion": 868,
+ "DumpToolVersion": 918.9,
+ "Key Format": [
+  "kCRThemeAppearanceName",
+  "kCRThemeLocalizationName",
+  "kCRThemeScaleName",
+  "kCRThemeIdiomName",
+  "kCRThemeSubtypeName",
+  "kCRThemeDimension1Name",
+  "kCRThemeDeploymentTargetName",
+  "kCRThemeDisplayGamutName",
+  "kCRThemeIdentifierName",
+  "kCRThemeElementName",
+  "kCRThemePartName"
+ ],
+ "MainVersion": "@(#)PROGRAM:CoreUI  PROJECT:CoreUI-868.1.2\n",
+ "Platform": "ios",
+ "PlatformVersion": "13.0",
+ "SchemaVersion": 2,
+ "StorageVersion": 17,
+ "Thinning With CoreUI Version": 917,
+ "ThinningParameters": "carutil 917.300000, thinned <mode app> <idiom 1> <subtype 2340> <subtypefallback *> <scale 3> <gamut 1> <graphics 8> <graphicsfallback *> <memory 3> <deployment- 7> <hostedIdioms (4)> <removed 1441>",
+ "Timestamp": 1793450987
+}
