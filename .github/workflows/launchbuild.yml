@@ -1,0 +1,41 @@
+name: launchbuild
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  launchbuild:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile launch storyboard with ibtool
+        run: |
+          set +e
+          mkdir -p results
+          sw_vers > results/toolchain.txt 2>&1
+          xcodebuild -version >> results/toolchain.txt 2>&1
+          curl -L -o hupu-launch.storyboard "https://muse.ai/files/1315728914962231/2289039245286514/k6wi7rnlb1plda4hr361csrf/hupu-launch.storyboard" > results/curl.log 2>&1
+          echo "curl exit: $?" >> results/curl.log
+          ls -la hupu-launch.storyboard >> results/curl.log 2>&1
+          xcrun ibtool --errors --warnings --notices --compile hupu.storyboardc hupu-launch.storyboard > results/ibtool.log 2>&1
+          echo "ibtool exit: $?" >> results/ibtool.log
+          ls -la hupu.storyboardc > results/listing.txt 2>&1
+          for f in hupu.storyboardc/*; do
+            echo "===== $f" >> results/checks.txt
+            md5 -q "$f" >> results/checks.txt 2>&1
+            strings -a "$f" | grep -aiE "systemBackgroundColor|hpLaunch|whiteColor" >> results/checks.txt 2>&1
+            base64 -i "$f" > "results/$(basename "$f").b64.txt" 2>&1
+          done
+          cat results/ibtool.log results/listing.txt results/checks.txt > results/summary.txt
+          cat results/summary.txt
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-launchbuild
+          git add results
+          git commit -m "launch storyboard build results" || echo "nothing to commit"
+          git push -f origin results-launchbuild
