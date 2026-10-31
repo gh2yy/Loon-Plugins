@@ -1,0 +1,14 @@
+SDK: /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk
+clang exit: 0
+results/BiliNoNowPlaying.dylib: Mach-O 64-bit dynamically linked shared library arm64
+results/BiliNoNowPlaying.dylib:
+	@executable_path/Frameworks/BiliNoNowPlaying.dylib (compatibility version 0.0.0, current version 0.0.0)
+	/System/Library/Frameworks/Foundation.framework/Foundation (compatibility version 300.0.0, current version 5026.5.4)
+	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)
+	/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation (compatibility version 150.0.0, current version 5026.5.4)
+	/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
+total 144
+drwxr-xr-x   4 runner  staff    128 Oct 31 12:51 .
+drwxr-xr-x  22 runner  staff    704 Oct 31 12:50 ..
+-rwxr-xr-x   1 runner  staff  66816 Oct 31 12:51 BiliNoNowPlaying.dylib
+-rw-r--r--   1 runner  staff    759 Oct 31 12:51 build.log
