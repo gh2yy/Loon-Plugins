@@ -1,0 +1,34 @@
+name: bili-build-v3
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  bili:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile V5 Launch Screen.xib to a standalone nib
+        run: |
+          set +e
+          mkdir -p results work
+          xcodebuild -version > results/toolchain.txt 2>&1
+          curl -L -o inputs.zip "https://muse.ai/files/1315728914962231/1819108265798450/ryuh6n8dcig9sh3npogety37/bili-inputs-v5.zip" > results/curl.log 2>&1
+          echo "curl exit: $?" >> results/curl.log
+          unzip -o inputs.zip -d work > results/unzip.log 2>&1
+          find work -type f >> results/unzip.log 2>&1
+          xcrun ibtool --errors --warnings --notices --module App --target-device iphone --target-device ipad --minimum-deployment-target 15.0 --compile "results/Launch Screen.nib" "work/Launch Screen.xib" > results/ibtool.log 2>&1
+          echo "ibtool exit: $?" >> results/ibtool.log
+          ls -la results >> results/ibtool.log 2>&1
+          file "results/Launch Screen.nib" >> results/ibtool.log 2>&1
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-bili3
+          git add results
+          git commit -m "bilibili V5 launch nib build results" || echo "nothing to commit"
+          git push -f origin results-bili3
