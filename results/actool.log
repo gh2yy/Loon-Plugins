@@ -1,0 +1,9 @@
+== actool mini catalog
+/* com.apple.actool.compilation-results */
+/Users/runner/work/Loon-Plugins/Loon-Plugins/compiled/Assets.car
+
+actool exit: 0
+total 72
+drwxr-xr-x   3 runner  staff     96 Oct 31 12:50 .
+drwxr-xr-x  27 runner  staff    864 Oct 31 12:50 ..
+-rw-r--r--   1 runner  staff  35743 Oct 31 12:50 Assets.car

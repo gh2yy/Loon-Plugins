@@ -1,0 +1,71 @@
+ProductName:		macOS
+ProductVersion:		15.8.2
+BuildVersion:		24H232
+Xcode 16.4
+Build version 16F6
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100  2539  100  2539    0     0   3951      0 --:--:-- --:--:-- --:--:--  3948
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0 15963    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100 15963  100 15963    0     0  31558      0 --:--:-- --:--:-- --:--:-- 31547
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100  5453  100  5453    0     0  14944      0 --:--:-- --:--:-- --:--:-- 14980
+-rw-r--r--  1 runner  staff   5453 Oct 31 12:49 hupu-launch3.storyboard
+-rw-r--r--  1 runner  staff   2539 Oct 31 12:49 LaunchFix.m
+-rw-r--r--  1 runner  staff  15963 Oct 31 12:49 LaunchImgs.zip
+== clang dylib build
+clang exit: 0
+LaunchFix.dylib: Mach-O 64-bit dynamically linked shared library arm64
+1
+LaunchFix.dylib:
+	@executable_path/LaunchFix.dylib (compatibility version 0.0.0, current version 0.0.0)
+	/System/Library/Frameworks/UIKit.framework/UIKit (compatibility version 1.0.0, current version 8506.1.101)
+	/System/Library/Frameworks/Foundation.framework/Foundation (compatibility version 300.0.0, current version 3502.0.0)
+	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)
+	/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation (compatibility version 150.0.0, current version 3502.0.0)
+	/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
+== actool mini catalog
+/* com.apple.actool.compilation-results */
+/Users/runner/work/Loon-Plugins/Loon-Plugins/compiled/Assets.car
+
+actool exit: 0
+total 72
+drwxr-xr-x   3 runner  staff     96 Oct 31 12:50 .
+drwxr-xr-x  27 runner  staff    864 Oct 31 12:50 ..
+-rw-r--r--   1 runner  staff  35743 Oct 31 12:50 Assets.car
+== ibtool storyboard v3
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.ibtool.document.errors</key>
+	<dict/>
+	<key>com.apple.ibtool.document.notices</key>
+	<dict/>
+	<key>com.apple.ibtool.document.warnings</key>
+	<dict/>
+</dict>
+</plist>
+ibtool exit: 0
+total 24
+drwxr-xr-x   5 runner  staff   160 Oct 31 12:50 .
+drwxr-xr-x  28 runner  staff   896 Oct 31 12:50 ..
+-rw-r--r--   1 runner  staff  3351 Oct 31 12:50 01J-lp-oVM-view-Ze5-6b-2t3.nib
+-rw-r--r--   1 runner  staff   258 Oct 31 12:50 Info.plist
+-rw-r--r--   1 runner  staff   924 Oct 31 12:50 UIViewController-01J-lp-oVM.nib
+===== hupu.storyboardc/01J-lp-oVM-view-Ze5-6b-2t3.nib
+78e610dd118680444b7130b816a3a446
+hpLaunchBgDark
+hpLaunchLogo
+hpLaunchCertificate
+===== hupu.storyboardc/Info.plist
+c35c440d4928d20d6919478391910ded
+===== hupu.storyboardc/UIViewController-01J-lp-oVM.nib
+346fc4729a8a62164afeb26abb26c7d3
+mini catalog entries: 4
+{'RenditionName': 'bg-dark@3x.png', 'Appearance': None, 'Scale': 3, 'Idiom': 'universal', 'SizeOnDisk': 500, 'AssetType': 'Image'}
+{'RenditionName': 'bg-light@3x.png', 'Appearance': None, 'Scale': 3, 'Idiom': 'universal', 'SizeOnDisk': 500, 'AssetType': 'Image'}
+{'RenditionName': 'cert-dark@3x.png', 'Appearance': None, 'Scale': 3, 'Idiom': 'universal', 'SizeOnDisk': 12495, 'AssetType': 'Image'}
+assetutil exit: 0

@@ -1,0 +1,13 @@
+===== hupu.storyboardc/01J-lp-oVM-view-Ze5-6b-2t3.nib
+78e610dd118680444b7130b816a3a446
+hpLaunchBgDark
+hpLaunchLogo
+hpLaunchCertificate
+===== hupu.storyboardc/Info.plist
+c35c440d4928d20d6919478391910ded
+===== hupu.storyboardc/UIViewController-01J-lp-oVM.nib
+346fc4729a8a62164afeb26abb26c7d3
+mini catalog entries: 4
+{'RenditionName': 'bg-dark@3x.png', 'Appearance': None, 'Scale': 3, 'Idiom': 'universal', 'SizeOnDisk': 500, 'AssetType': 'Image'}
+{'RenditionName': 'bg-light@3x.png', 'Appearance': None, 'Scale': 3, 'Idiom': 'universal', 'SizeOnDisk': 500, 'AssetType': 'Image'}
+{'RenditionName': 'cert-dark@3x.png', 'Appearance': None, 'Scale': 3, 'Idiom': 'universal', 'SizeOnDisk': 12495, 'AssetType': 'Image'}

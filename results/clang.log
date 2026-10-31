@@ -1,0 +1,11 @@
+== clang dylib build
+clang exit: 0
+LaunchFix.dylib: Mach-O 64-bit dynamically linked shared library arm64
+1
+LaunchFix.dylib:
+	@executable_path/LaunchFix.dylib (compatibility version 0.0.0, current version 0.0.0)
+	/System/Library/Frameworks/UIKit.framework/UIKit (compatibility version 1.0.0, current version 8506.1.101)
+	/System/Library/Frameworks/Foundation.framework/Foundation (compatibility version 300.0.0, current version 3502.0.0)
+	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)
+	/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation (compatibility version 150.0.0, current version 3502.0.0)
+	/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
