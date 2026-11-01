@@ -1,12 +1,13 @@
 // Txvideoad-loon.js — 腾讯视频去广告脚本（Loon 适配版）
 // 原作者：ZenmoFeiShi（TG @ZenMoFiShi）
-// 修改日期：2026-10-27
+// 修改日期：2026-11-02
 // 修改日志：
 // - 2026-10-27 Muse：Loon 适配版：原版用 QX 专属 bodyBytes 读/回二进制 body，在 Loon 下完全不生效；main() 4 处改为读 bodyBytes||body、回 {body}，业务逻辑未动。另含本地补丁 fixSplashConfig（关热启动开屏、关长期开屏订单合并）；同日同步上游新增的暂停广告与信息流瀑布流清理。重套上游更新时适配与补丁须一并保留。
+// - 2026-11-02 上游更新（原版 2026-11-1）：底部 tab 清理新增会员专区（vip_entrance／会员专区），TAB_CUT_WHITELIST 改为 0;4；新增 getNaviPage 底部 data_identifier 刷新处理。已重套 Loon 适配与 fixSplashConfig 补丁。
 (() => {
-  const TAB_DROP_KEYS = ["smallvideo_entrance", "goods_entrance"];
-  const TAB_DROP_TITLES = ["短剧", "好物"];
-  const TAB_CUT_WHITELIST = "0;2;4";
+  const TAB_DROP_KEYS = ["smallvideo_entrance", "goods_entrance", "vip_entrance"];
+  const TAB_DROP_TITLES = ["短剧", "好物", "会员专区"];
+  const TAB_CUT_WHITELIST = "0;4";
   const AD_ANY = ["AdResponseInfo", "InnerAdPromotionEventList", "InnerAdCommonPromotionEventActivityList", "LoadingConfig", "PreloadResourceInfo", "AdFeedInfo"];
   const DROP_MODULES = ["user_center_more_function"];
   const AD_MODULE_IDS = ["outerPaster"];
@@ -471,6 +472,23 @@
     if (!fr) return null;
     const hd = parse(u8, fr.hs, fr.he), fn = hd && hd.find(x => x.f === 7 && x.w === 2);
     const func = fn ? ascii(u8, fn.vs, fn.e) : null;
+    if (func && /\/getNaviPage$/.test(func) && find(u8, utf8("page_id"), fr.he, u8.length) >= 0 && find(u8, utf8("bottom"), fr.he, u8.length) >= 0) {
+      const key = utf8("data_identifier"), kp = find(u8, key, fr.he, u8.length);
+      if (kp >= 0) {
+        const out = u8.slice();
+        let p = kp + key.length;
+        while (p < out.length && (out[p] < 48 || out[p] > 57)) p++;
+        const s = p;
+        while (p < out.length && out[p] >= 48 && out[p] <= 57) p++;
+        if (p > s) {
+          const id = utf8(("0000000000000000000" + Date.now()).slice(-(p - s)));
+          if (id.length === p - s) {
+            out.set(id, s);
+            return gz ? gzip(out) : out;
+          }
+        }
+      }
+    }
     if (!func || BLOCK_FUNCS.indexOf(func) < 0) return null;
     const nb = utf8(func.slice(func.lastIndexOf("/") + 1)), out = u8.slice();
     for (let p = fr.hs; (p = find(out, nb, p, fr.he)) >= 0; p += nb.length) out[p] = out[p] === 0x58 ? 0x59 : 0x58;
