@@ -1,13 +1,14 @@
 // Txvideoad-loon.js — 腾讯视频去广告脚本（Loon 适配版）
 // 原作者：ZenmoFeiShi（TG @ZenMoFiShi）
-// 修改日期：2026-11-02
+// 修改日期：2026-11-03
 // 修改日志：
 // - 2026-10-27 Muse：Loon 适配版：原版用 QX 专属 bodyBytes 读/回二进制 body，在 Loon 下完全不生效；main() 4 处改为读 bodyBytes||body、回 {body}，业务逻辑未动。另含本地补丁 fixSplashConfig（关热启动开屏、关长期开屏订单合并）；同日同步上游新增的暂停广告与信息流瀑布流清理。重套上游更新时适配与补丁须一并保留。
 // - 2026-11-02 上游更新（原版 2026-11-1）：底部 tab 清理新增会员专区（vip_entrance／会员专区），TAB_CUT_WHITELIST 改为 0;4；新增 getNaviPage 底部 data_identifier 刷新处理。已重套 Loon 适配与 fixSplashConfig 补丁。
+// - 2026-11-03 上游更新（原版 2026-11-03）：底部 tab 改动回退——TAB_DROP_KEYS/TITLES 不再含 vip_entrance/会员专区、TAB_CUT_WHITELIST 回到 0;2;4；新增 JCE 129279 fixSplash（开屏广告字段清零）。已重套 Loon 适配与 fixSplashConfig 补丁。
 (() => {
-  const TAB_DROP_KEYS = ["smallvideo_entrance", "goods_entrance", "vip_entrance"];
-  const TAB_DROP_TITLES = ["短剧", "好物", "会员专区"];
-  const TAB_CUT_WHITELIST = "0;4";
+  const TAB_DROP_KEYS = ["smallvideo_entrance", "goods_entrance"];
+  const TAB_DROP_TITLES = ["短剧", "好物"];
+  const TAB_CUT_WHITELIST = "0;2;4";
   const AD_ANY = ["AdResponseInfo", "InnerAdPromotionEventList", "InnerAdCommonPromotionEventActivityList", "LoadingConfig", "PreloadResourceInfo", "AdFeedInfo"];
   const DROP_MODULES = ["user_center_more_function"];
   const AD_MODULE_IDS = ["outerPaster"];
@@ -37,6 +38,7 @@
   const JCE_ROLL_ADS = [129278, 130273];
   // 暂停广告，body tag1.tag1 为包着广告单列表的 simple list
   const JCE_PAUSE_AD = 129196;
+  const JCE_SPLASH = 129279;
   // 广告 SDK 总配置（含 splashConfig）——本地补丁，见文件头修改日志（2026-10-27）
   const JCE_SPLASH_CONFIG = 129513;
   const DROP = {};
@@ -637,6 +639,31 @@
     edits.set(l, concat([new Uint8Array(jHeadEnc(2, 9)), jIntEnc(0, 0)]));
     return jRebuild(b, s, e, fs, edits);
   }
+  function fixPauseAd(b, s, e) {
+    const fs = jFields(b, s, e), w = fs.find(x => x.tag === 1 && x.t === 10);
+    if (!w || b[w.e - 1] !== 0x0b) return null;
+    const ws = jFields(b, w.vs, w.e - 1), l = ws.find(x => x.tag === 1 && x.t === 13);
+    if (!l) return null;
+    jHead(b, l.vs);
+    const n = jInt(b, VP), ds = VP;
+    if (ds + n !== l.e) return null;
+    const inner = jFields(b, ds, l.e), list = inner.find(x => x.tag === 0 && x.t === 9);
+    if (!list || jInt(b, list.vs) <= 0 || find(b, utf8("livemsg"), list.vs, list.e) < 0) return null;
+    const le = new Map();
+    le.set(l, jSimpleList(1, concat([new Uint8Array(jHeadEnc(0, 9)), jIntEnc(0, 0)])));
+    const nw = concat([b.subarray(w.s, w.vs), jRebuild(b, w.vs, w.e - 1, ws, le), new Uint8Array([0x0b])]);
+    const edits = new Map();
+    edits.set(w, nw);
+    return jRebuild(b, s, e, fs, edits);
+  }
+  function fixSplash(b, s, e) {
+    if (find(b, utf8("ad_splash"), s, e) < 0 && find(b, utf8("SpaServerData"), s, e) < 0) return null;
+    const fs = jFields(b, s, e), edits = new Map();
+    for (const x of fs) {
+      if ((x.tag === 2 || x.tag === 3 || x.tag === 4) && x.t === 9 && jInt(b, x.vs) > 0) edits.set(x, concat([new Uint8Array(jHeadEnc(x.tag, 9)), jIntEnc(0, 0)]));
+    }
+    return edits.size ? jRebuild(b, s, e, fs, edits) : null;
+  }
   function fixSplashConfig(b, s, e) {
     // body 载荷 = 0x0c + 0x17(tag1 string4) + u32be 长度 + JSON；只翻两个开关并同步修正长度头，结构不符返回 null。
     if (e - s < 7 || b[s] !== 0x0c || b[s + 1] !== 0x17) return null;
@@ -657,28 +684,11 @@
     put32(out, 2, jl + delta);
     return out;
   }
-  function fixPauseAd(b, s, e) {
-    const fs = jFields(b, s, e), w = fs.find(x => x.tag === 1 && x.t === 10);
-    if (!w || b[w.e - 1] !== 0x0b) return null;
-    const ws = jFields(b, w.vs, w.e - 1), l = ws.find(x => x.tag === 1 && x.t === 13);
-    if (!l) return null;
-    jHead(b, l.vs);
-    const n = jInt(b, VP), ds = VP;
-    if (ds + n !== l.e) return null;
-    const inner = jFields(b, ds, l.e), list = inner.find(x => x.tag === 0 && x.t === 9);
-    if (!list || jInt(b, list.vs) <= 0 || find(b, utf8("livemsg"), list.vs, list.e) < 0) return null;
-    const le = new Map();
-    le.set(l, jSimpleList(1, concat([new Uint8Array(jHeadEnc(0, 9)), jIntEnc(0, 0)])));
-    const nw = concat([b.subarray(w.s, w.vs), jRebuild(b, w.vs, w.e - 1, ws, le), new Uint8Array([0x0b])]);
-    const edits = new Map();
-    edits.set(w, nw);
-    return jRebuild(b, s, e, fs, edits);
-  }
   function onJce(raw) {
     const b = raw, n = b.length;
     if (n < 100 || b[0] !== 0x13 || u32(b, 1) !== n || b[n - 1] !== 0x03) return null;
     const cmd = (b[8] << 16) | (b[9] << 8) | b[10];
-    const fix = cmd === JCE_TEEN_CONFIG ? fixTeenConfig : cmd === JCE_PLAY_TIPS ? fixPlayTips : JCE_ROLL_ADS.indexOf(cmd) >= 0 ? fixRollAds : cmd === JCE_PAUSE_AD ? fixPauseAd : cmd === JCE_SPLASH_CONFIG ? fixSplashConfig : null;
+    const fix = cmd === JCE_TEEN_CONFIG ? fixTeenConfig : cmd === JCE_PLAY_TIPS ? fixPlayTips : JCE_ROLL_ADS.indexOf(cmd) >= 0 ? fixRollAds : cmd === JCE_PAUSE_AD ? fixPauseAd : cmd === JCE_SPLASH ? fixSplash : cmd === JCE_SPLASH_CONFIG ? fixSplashConfig : null;
     if (!fix) return null;
     const gz = find(b, new Uint8Array([0x1f, 0x8b, 0x08]), 60, Math.min(n, 140));
     if (gz < 4) return null;
