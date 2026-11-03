@@ -5,6 +5,10 @@
 		{
 			"name": "海雀",
 			"url": "https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/icon/haique.png"
+		},
+		{
+			"name": "腾讯体育",
+			"url": "https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/icon/txsports.png"
 		}
 	]
 }
