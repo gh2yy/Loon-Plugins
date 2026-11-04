@@ -1,33 +1,28 @@
-#!name = 腾讯视频净化 v3
+#!name = 腾讯视频净化 v4
 #!desc = 去开屏/片头广告、底部多余 tab 等
 #!author = ZenmoFeiShi（TG @ZenMoFiShi）
 #!date = 2026-11-04
-#!tag = 腾讯视频,去广告,界面净化
+#!tag = 腾讯视频，去广告，界面净化
 
-# 修改日志：
-# - 2026-10-27 Muse：由 QX 版 TxvideoAD.snippet 转为 Loon 格式：新增拦 QUIC 的 UDP 规则、脚本匹配放宽、超时 30 秒；脚本改指自托管适配版 Txvideoad-loon.js（修复 QX 专属 bodyBytes 在 Loon 下不生效，另含热启动开屏补丁）；同日同步上游更新（暂停广告、信息流瀑布流广告清理）。
-# - 2026-11-02 上游更新（原版 2026-11-1）：snippet 仅更新日期、规则无变化；Txvideoad.js 新增会员专区 tab 清理与 getNaviPage 处理，已同步重套适配。
-# - 2026-11-03 上游更新（原版 2026-11-03）：snippet 仅更新日期、规则无变化；Txvideoad.js 回退会员专区 tab 清理（白名单回到 0;2;4），新增 JCE 129279 开屏广告清零，已同步重套适配与开屏补丁。
-# - 2026-11-04 本地修复（QUIC 绕行定案）：关抓包时底部 tab 与我的页广告全部复发、开抓包即恢复，定案为腾讯视频走 QUIC 绕过 MITM 与脚本——服务器响应带 alt-svc: quic 广告，Loon 将 QUIC 流量的协议识别为 QUIC 而非 UDP，原 AND+PROTOCOL,UDP 拦截匹配不上、静默失效（抓包模式靠 QUIC 回退保护才偶然生效）。[Rule] 改为每域名双保险：PROTOCOL,QUIC 一条、PROTOCOL,UDP+DST-PORT,443 一条（防自研 gQUIC 未被识别为 QUIC 的情况，Loon 官方建议拦 UDP 443）。脚本未动。
+# 修改日志（同一天多次修改合并为一条）：
+# - 2026-10-27 上游 TxvideoAD（Quantumult X）转 Loon：Quantumult X 原版脚本用了 Loon 不支持的 bodyBytes 接口、在 Loon 下完全不生效；已适配为 Txvideoad-loon.js（读 body、回 body），业务逻辑与上游一致并通过模拟验证；另加本地补丁：广告 SDK 开屏配置（JCE 129513）两开关关闭，堵原版放行的热启动/合并长开屏广告。规则、Mitm 按上游转入；另拦腾讯的 QUIC 流量，避免其绕过规则直连。
+# - 2026-11-02 随上游更新重转：开屏配置的适配已同步上游自身的新增（JCE 129279 fixSplash），本地 129513 补丁保留并已同步；拦 QUIC 的规则改为 Loon 的双协议写法（PROTOCOL,UDP/DST-PORT,443）。
+# - 2026-11-03 随上游 2026-11-03 更新重转：回退 11-01 的会员专区 tab 清理（与上游一致保留会员专区），新增开屏计数清零；接口/域名脚本规则放宽到整个 /trpc 命名空间，rdelivery 补二进制模式。本地验证：合成用例 21 项全过、真实抓包回放通过。
+# - 2026-11-04 全量重构 v4（用户报更新后标签页全恢复、我的页仍有广告后彻查并重做）：定案问题不在脚本内容——脚本对三批真实抓包逐条回放全部正确改写（底部标签页砍到只剩首页/VIP/我的、我的页广告清空），且仓库文件与本地逐字节一致；根因是腾讯自研 QUIC 绕过改写：服务器经 alt-svc 告知 App 改走 QUIC（UDP)，Loon 对这类流量取不到域名，先前按域名写的拦 QUIC 规则（含 QUIC/UDP 双写）匹配不上、静默失效；只有开 Loon 抓包时靠其回退保护才偶然生效。故 v4 从头重构：①规则层改用不限域名的全局 UDP 443 拦截逼 QUIC 回落普通连接（插件文档确认 disable-udp-ports 不能由插件下发，故用规则实现）；②脚本由上游原版经固定 4 处适配+本地补丁重新生成、与现行文件逐字节一致；③脚本规则、Mitm、网关拦截按脚本路由表与上游清单从零核对。 QUIC 修复以真机实测为准。
 
 [Rule]
+# 腾讯视频自研 QUIC 走 UDP 443 绕过 MITM 与脚本，且该流量上取不到域名、按域名拦不住；
+# 这里用不限域名的 UDP 443 全局拦截逼其回落普通连接（本插件启用期间对所有应用生效，影响仅为 QUIC 回落 TCP）。
+AND,((PROTOCOL,UDP),(DST-PORT,443)),REJECT
+# 广告网关接口域名（源自 ZenmoFeiShi/Qx 上游 snippet），直接拦截。
 DOMAIN,iacc.stgw.qq.com,REJECT
 DOMAIN,tacc.video.qq.com,REJECT
-AND,((DOMAIN,i.video.qq.com),(PROTOCOL,QUIC)),REJECT
-AND,((DOMAIN,i.video.qq.com),(PROTOCOL,UDP),(DST-PORT,443)),REJECT
-AND,((DOMAIN,iacc.qq.com),(PROTOCOL,QUIC)),REJECT
-AND,((DOMAIN,iacc.qq.com),(PROTOCOL,UDP),(DST-PORT,443)),REJECT
-AND,((DOMAIN,config.ab.qq.com),(PROTOCOL,QUIC)),REJECT
-AND,((DOMAIN,config.ab.qq.com),(PROTOCOL,UDP),(DST-PORT,443)),REJECT
-AND,((DOMAIN,rdelivery.qq.com),(PROTOCOL,QUIC)),REJECT
-AND,((DOMAIN,rdelivery.qq.com),(PROTOCOL,UDP),(DST-PORT,443)),REJECT
 
 [Script]
-http-request ^https?:\/\/i\.video\.qq\.com\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, requires-body=true, binary-body-mode=true, timeout=30, tag=腾讯视频-请求拦广告函数
-http-response ^https?:\/\/i\.video\.qq\.com\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, requires-body=true, binary-body-mode=true, timeout=30, tag=腾讯视频-响应清广告和底部tab
-http-response ^https?:\/\/iacc\.qq\.com\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, requires-body=true, binary-body-mode=true, timeout=30, tag=腾讯视频-JCE去广告
-http-response ^https?:\/\/config\.ab\.qq\.com\/tab\/GetTabRemoteConfig(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, requires-body=true, binary-body-mode=true, timeout=30, tag=腾讯视频-底部tab精简配置
-http-response ^https:\/\/rdelivery\.qq\.com\/v1\/sdkconfig\/get(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, requires-body=true, tag=腾讯视频-关闭tab_gray
+http-request ^https?:\/\/(i\.video|iacc)\.qq\.com\/.*(?:trpc|proxyhttp) script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, binary-body-mode=false, timeout=30, tag=txvideo-req, enable=true
+http-response ^https?:\/\/(i\.video|iacc)\.qq\.com\/.*(?:trpc|proxyhttp) script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, binary-body-mode=true, timeout=30, tag=txvideo-jce, enable=true
+http-response ^https://config\.ab\.qq\.com\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, binary-body-mode=false, timeout=30, tag=txvideo-ab, enable=true
+http-response ^https:\/\/rdelivery\.qq\.com\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Txvideoad-loon.js, binary-body-mode=true, timeout=30, tag=txvideo-delivery, enable=true
 
 [MITM]
 hostname = i.video.qq.com, iacc.qq.com, config.ab.qq.com, rdelivery.qq.com
