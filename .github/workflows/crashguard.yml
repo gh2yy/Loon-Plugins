@@ -2,7 +2,7 @@ name: crashguard
 on:
   push:
     branches: [appicon-build]
-    paths: ['.github/workflows/crashguard.yml']
+    paths: ['.github/workflows/crashguard.yml', 'crashguard/**']
   workflow_dispatch:
 permissions:
   contents: write
@@ -18,11 +18,10 @@ jobs:
           mkdir -p results
           sw_vers > results/toolchain.txt 2>&1
           xcodebuild -version >> results/toolchain.txt 2>&1
-          curl -L -o DCDCrashGuard.m "https://muse.ai/files/1315728914962231/1426884722758446/2y3qe76232s4ohxpawduokm5/DCDCrashGuard.m" > results/curl.log 2>&1
-          ls -la DCDCrashGuard.m >> results/curl.log 2>&1
-          head -5 DCDCrashGuard.m >> results/curl.log 2>&1
+          ls -la crashguard/ > results/curl.log 2>&1
+          head -5 crashguard/DCDCrashGuard.m >> results/curl.log 2>&1
           echo "== clang dylib build" > results/clang.log
-          xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=13.0 -dynamiclib -install_name @executable_path/DCDCrashGuard.dylib -framework UIKit -framework Foundation -o DCDCrashGuard.dylib DCDCrashGuard.m >> results/clang.log 2>&1
+          xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=13.0 -dynamiclib -install_name @executable_path/DCDCrashGuard.dylib -framework UIKit -framework Foundation -o DCDCrashGuard.dylib crashguard/DCDCrashGuard.m >> results/clang.log 2>&1
           echo "clang exit: $?" >> results/clang.log
           file DCDCrashGuard.dylib >> results/clang.log 2>&1
           otool -l DCDCrashGuard.dylib | grep -c "__mod_init_func" >> results/clang.log 2>&1
