@@ -20,6 +20,15 @@
 //   exit, _exit                     -> no-op (log + return)
 //   kill, pthread_kill, raise       -> no-op when aimed at this process
 //                                      with a fatal signal
+//   abort, __assert_rtn             -> no-op (v2: the v1 test proved the
+//                                      exit is not via exit/kill — with
+//                                      SIGABRT delivery blocked by the
+//                                      raise/pthread_kill interposes,
+//                                      an abort() in early init falls
+//                                      back to libSystem's internal _exit
+//                                      (intra-library, not interposable)
+//                                      and dies with no crash report,
+//                                      which matches the symptom exactly)
 // Swizzled in the constructor:
 //   -[UIApplication terminateWithSuccess] -> no-op
 // Blocked attempts are appended to $TMPDIR/HupuCrashGuard.log.
@@ -33,6 +42,8 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <objc/runtime.h>
+
+extern void __assert_rtn(const char *, const char *, int, const char *);
 
 // ---------------------------------------------------------------- log
 
@@ -98,6 +109,21 @@ static int hp_raise(int sig) {
     return raise(sig);
 }
 
+// ---------------------------------------------------------------- abort
+
+static void hp_abort(void) {
+    hp_log("abort", 0);
+    // Return instead of dying. The caller (an assert / anti-tamper
+    // bail) continues with whatever state it had; if that state is
+    // fatal on its own, the resulting genuine crash will at least
+    // leave a report this time.
+}
+
+static void hp_assert_rtn(const char *func, const char *file, int line, const char *expr) {
+    (void)func; (void)file; (void)expr;
+    hp_log("__assert_rtn", line);
+}
+
 // ---------------------------------------------------------------- interpose
 
 struct hp_interpose {
@@ -115,6 +141,10 @@ __attribute__((used, section("__DATA,__interpose"))) static const struct hp_inte
     { (void *)hp_pthread_kill, (void *)pthread_kill };
 __attribute__((used, section("__DATA,__interpose"))) static const struct hp_interpose hp_ip_raise =
     { (void *)hp_raise, (void *)raise };
+__attribute__((used, section("__DATA,__interpose"))) static const struct hp_interpose hp_ip_abort =
+    { (void *)hp_abort, (void *)abort };
+__attribute__((used, section("__DATA,__interpose"))) static const struct hp_interpose hp_ip_assert_rtn =
+    { (void *)hp_assert_rtn, (void *)__assert_rtn };
 
 // ---------------------------------------------------------------- UIApplication
 
