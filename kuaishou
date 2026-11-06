@@ -1,19 +1,21 @@
-#!name = 快手去红包挂件
-#!desc = 去掉视频页左侧的红包挂件（看视频挂件）：清空 unionTask/startup 下发的 widgetList。点红包打开的任务中心本身不受影响，从「我」页等正常入口仍可进入。
+#!name = 快手去红包挂件与信息流广告
+#!desc = 去掉视频页左侧红包挂件（清空 unionTask/startup 的 widgetList），并过滤信息流里带 ad 字段的广告条目（瓜子二手车、途虎养车那类）。任务中心本身不受影响。
 #!author = gh2yy
 #!date = 2026-11-06
-#!tag = 快手,界面
+#!tag = 快手,去广告
 
 # 修改日志：
-# - 2026-11-06 Muse：首版，v2 同日修订。定位（快手 14.9.10.10022、Loon 抓包 354 + 录屏）：红包挂件由冷启动接口 POST /rest/n/encourage/unionTask/startup 的 data.widgetInfo.widgetList 唯一一条 WATCH_PHOTO 挂件下发——样式 RP（红包）、初始位置左侧 y=133、跳转 encourage.kuaishou.com/kwai/task?source=pendant（任务中心），与录屏逐项对上；全量抓包无第二处下发。v1 用户实测无效（同期所试 IPA 内 KSLite 的 HideRedpacketTask/HideRedpacketBg 开关亦无效，其 hook 的是旧原生挂件类、非这一代 TK 挂件）。v2 三处加固：① host 从写死 az1 放宽为任意 *.ksapisrv.com 分片（快手 API 按网络轮换 az 编号）；② 脚本每次命中打日志 KS-Pendant 到 Loon 日志，可据此确认脚本是否运行；③ 新增一条 jq 改写与脚本做同一件事，两条机制任一生效即可（jq 表达式已用抓包原响应验证：widgetList 清空、其余不变）。脚本本地验证：widgetList 1→0、其余字段等价、异常输入全过。待用户更新插件后冷启动实测，并回传启用状态下的冷启动抓包定性（送达未生效 / 未送达）。
+# - 2026-11-06 Muse：首版及同日两次修订，合并记一条。挂件定位（抓包 354）：红包挂件由冷启动接口 POST /rest/n/encourage/unionTask/startup 的 data.widgetInfo.widgetList 唯一一条 WATCH_PHOTO 挂件下发（样式 RP、左侧 y=133、跳转任务中心 source=pendant）。广告定位（抓包 355）：feed 接口（selection/profile/position、scroll、selectionFast、myfollow、profile2）为明文 JSON、顶层 feeds 数组，广告条目带顶层 ad 对象、正常条目无此字段；样本 position 16 条含 1 条瓜子、scroll 12 条含 2 条、myfollow 7 条含 1 条。处理：脚本 Kuaishou-loon.js 对挂件清空 widgetList、对 feed 整项丢弃 ad 非空条目（游标不动），另各配一条 jq 改写做同一件事双保险（均已用抓包原响应验证：条数 16→15、12→10、7→6，其余逐项等价）。host 覆盖 *.ksapisrv.com 与 *.gifshow.com 全部 API 分片；脚本每次命中打日志 KS-Pendant / KS-Feed 到 Loon 日志。实测史：v1（仅 az1+脚本）与 IPA 内 KSLite 的红包开关均无效（KSLite hook 的是旧原生挂件类、与本代 KSUnionWidget* 不沾边）；v2 加固后用户一度报挂件消失、随后报复现，355 抓包（v2 后冷启动）里该响应 widgetList 仍为满值、归因未定（Loon 抓包所示为改写前原文与否未证）。本版把信息流广告并入同一插件一次复测两项，以日志有无 KS 字样先定脚本是否运行。
 #
-# 实测要点：先在 Loon 里更新本插件、确认启用，杀快手冷启动（挂件配置是冷启动预取的）；红包若还在，保持插件启用抓一份冷启动包发回——抓包里这条响应的 widgetList 若已被清空即改写已送达、问题在客户端缓存侧；若仍是满的即改写未送达，按日志与命中情况继续查。
+# 实测要点：在 Loon 里更新本插件、确认启用，杀快手冷启动后刷精选信息流多翻几屏：①左侧红包挂件是否还在；②瓜子/途虎/消消乐类广告条目是否还出现。若两项都没变化，去 Loon 日志搜 KS-Pendant / KS-Feed：有日志=脚本在跑、问题在改写送达后客户端一侧；无日志=插件没进处理链。把结果（最好带新抓包）发回即可分岔到改包路线。
 
 [Script]
-http-response ^https:\/\/[^\/]+\.ksapisrv\.com\/rest\/n\/encourage\/unionTask\/startup(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Kuaishou-loon.js, requires-body=true, timeout=10, tag=快手-去红包挂件
+http-response ^https:\/\/[^\/]+\.(?:ksapisrv\.com|gifshow\.com)\/rest\/n\/encourage\/unionTask\/startup(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Kuaishou-loon.js, requires-body=true, timeout=10, tag=快手-去红包挂件
+http-response ^https:\/\/[^\/]+\.(?:ksapisrv\.com|gifshow\.com)\/rest\/n\/feed\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Kuaishou-loon.js, requires-body=true, timeout=10, tag=快手-去信息流广告
 
 [Rewrite]
-^https:\/\/[^\/]+\.ksapisrv\.com\/rest\/n\/encourage\/unionTask\/startup(?:\?.*)?$ response-body-json-jq 'if .data.widgetInfo then .data.widgetInfo.widgetList = [] else . end'
+^https:\/\/[^\/]+\.(?:ksapisrv\.com|gifshow\.com)\/rest\/n\/encourage\/unionTask\/startup(?:\?.*)?$ response-body-json-jq 'if .data.widgetInfo then .data.widgetInfo.widgetList = [] else . end'
+^https:\/\/[^\/]+\.(?:ksapisrv\.com|gifshow\.com)\/rest\/n\/feed\/.* response-body-json-jq 'if .feeds then .feeds |= map(select(.ad == null)) else . end'
 
 [Mitm]
-hostname = *.ksapisrv.com
+hostname = *.ksapisrv.com, *.gifshow.com
