@@ -1,0 +1,38 @@
+name: eleclean-build
+on:
+  push:
+    branches: [appicon-build]
+    paths:
+      - 'eleclean/**'
+      - '.github/workflows/eleclean.yml'
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build EleCleanMine.dylib
+        run: |
+          mkdir -p out
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          clang -target arm64-apple-ios14.0 -isysroot "$SDK" \
+            -fobjc-arc -fblocks \
+            -framework Foundation \
+            -dynamiclib -install_name @executable_path/Frameworks/EleCleanMine.dylib \
+            -o out/EleCleanMine.dylib eleclean/EleCleanMine.m 2>&1 | tee out/build-log.txt
+          ls -la out >> out/build-log.txt
+          file out/EleCleanMine.dylib >> out/build-log.txt 2>&1 || true
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-eleclean
+          mkdir -p results
+          cp out/EleCleanMine.dylib results/ 2>/dev/null || true
+          cp out/build-log.txt results/ 2>/dev/null || true
+          git add results
+          git commit -m "eleclean build results" || echo "nothing to commit"
+          git push -f origin results-eleclean
