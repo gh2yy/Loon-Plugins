@@ -138,12 +138,80 @@ static BOOL ELInstall(void) {
     return YES;
 }
 
+// ---------------------------------------------------------------------------
+// Homepage banner strip ("广告场景卡"): the strip is a card in the LMagex
+// page data (bizCode home_sceneCard*_advertisement*, templateId 3102). Every
+// LMagex page's raw data passes through
+// -[LMXTransformerParser parse:data:completion:] before card models are
+// built, so stripping the card dicts there kills the strip regardless of
+// which transport/prefetch/cache path delivered the data. Matching is on
+// the card dict's own bizCode only, so shop cards are untouched.
+
+static BOOL ECIsAdSceneCard(id obj) {
+    if (![obj isKindOfClass:[NSDictionary class]]) return NO;
+    id biz = [(NSDictionary *)obj objectForKey:@"bizCode"];
+    if (![biz isKindOfClass:[NSString class]]) return NO;
+    NSString *b = (NSString *)biz;
+    return [b hasPrefix:@"home_sceneCard"] &&
+           [b rangeOfString:@"advertisement"].location != NSNotFound;
+}
+
+static id ECSanitizePageData(id obj, int depth) {
+    if (obj == nil || depth > 12) return obj;
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *out = [NSMutableDictionary dictionaryWithCapacity:((NSDictionary *)obj).count];
+        for (id k in (NSDictionary *)obj) {
+            out[k] = ECSanitizePageData(((NSDictionary *)obj)[k], depth + 1);
+        }
+        return out;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        NSMutableArray *out = [NSMutableArray arrayWithCapacity:((NSArray *)obj).count];
+        for (id e in (NSArray *)obj) {
+            if (ECIsAdSceneCard(e)) continue;
+            [out addObject:ECSanitizePageData(e, depth + 1)];
+        }
+        return out;
+    }
+    return obj;
+}
+
+typedef void (*ECParseIMP)(id, SEL, id, id, id);
+static ECParseIMP gOrigParse = NULL;
+
+static void ECParseReplacement(id self, SEL _cmd, id page, id data, id completion) {
+    id clean = data;
+    @try {
+        if ([data isKindOfClass:[NSDictionary class]] || [data isKindOfClass:[NSArray class]]) {
+            clean = ECSanitizePageData(data, 0);
+        }
+    } @catch (NSException *e) {
+        clean = data;
+    }
+    if (gOrigParse) gOrigParse(self, _cmd, page, clean, completion);
+}
+
+static BOOL ECInstallParse(void) {
+    if (gOrigParse != NULL) return YES;
+    Class cls = objc_getClass("LMXTransformerParser");
+    if (cls == Nil) return NO;
+    SEL sel = NSSelectorFromString(@"parse:data:completion:");
+    Method m = class_getInstanceMethod(cls, sel);
+    if (m == NULL) return NO;
+    gOrigParse = (ECParseIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)ECParseReplacement);
+    return YES;
+}
+
 __attribute__((constructor)) static void ELEntry(void) {
     @autoreleasepool {
-        if (!ELInstall()) {
+        BOOL a = ELInstall();
+        BOOL b = ECInstallParse();
+        if (!a || !b) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 ELInstall();
+                ECInstallParse();
             });
         }
     }
