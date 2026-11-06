@@ -19,6 +19,7 @@
 // non-matching APIs are not even wrapped.
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <dispatch/dispatch.h>
 
 static BOOL ELTextHasMarker(NSString *s) {
@@ -176,6 +177,61 @@ static id ECSanitizePageData(id obj, int depth) {
     return obj;
 }
 
+// ---------------------------------------------------------------------------
+// Personal center, second hook point (the v3 build's WindVane-bridge hook
+// did not fire for this page on device): every MTOP response in the app is
+// an MtopExtResponse, and its -json is what callers consume. The response
+// knows its own request, hence the API name, so filtering here covers the
+// WindVane, Weex/MUS and native senders alike.
+
+static NSString *ECApiNameFromObject(id obj, int depth) {
+    if (obj == nil || depth > 3) return nil;
+    SEL getApi = NSSelectorFromString(@"getApiName");
+    if ([obj respondsToSelector:getApi]) {
+        id v = ((id (*)(id, SEL))objc_msgSend)(obj, getApi);
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return v;
+    }
+    SEL apiNameSel = NSSelectorFromString(@"apiName");
+    if ([obj respondsToSelector:apiNameSel]) {
+        id v = ((id (*)(id, SEL))objc_msgSend)(obj, apiNameSel);
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return v;
+    }
+    if ([obj respondsToSelector:@selector(request)]) {
+        return ECApiNameFromObject([obj request], depth + 1);
+    }
+    return nil;
+}
+
+typedef id (*ECJsonIMP)(id, SEL);
+static ECJsonIMP gOrigJson = NULL;
+
+static id ECJsonReplacement(id self, SEL _cmd) {
+    id json = gOrigJson ? gOrigJson(self, _cmd) : nil;
+    @try {
+        if ([json isKindOfClass:[NSDictionary class]]) {
+            NSString *api = ECApiNameFromObject(self, 0);
+            if (api != nil &&
+                ([api hasPrefix:@"mtop.alsc.personal.queryMineCenter"] ||
+                 [api hasPrefix:@"mtop.alsc.personal.collectMineCenterFeeds"])) {
+                return ELProcessResult(api, json);
+            }
+        }
+    } @catch (NSException *e) {
+    }
+    return json;
+}
+
+static BOOL ECInstallJson(void) {
+    if (gOrigJson != NULL) return YES;
+    Class cls = objc_getClass("MtopExtResponse");
+    if (cls == Nil) return NO;
+    Method m = class_getInstanceMethod(cls, @selector(json));
+    if (m == NULL) return NO;
+    gOrigJson = (ECJsonIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)ECJsonReplacement);
+    return YES;
+}
+
 typedef void (*ECParseIMP)(id, SEL, id, id, id);
 static ECParseIMP gOrigParse = NULL;
 
@@ -207,11 +263,13 @@ __attribute__((constructor)) static void ELEntry(void) {
     @autoreleasepool {
         BOOL a = ELInstall();
         BOOL b = ECInstallParse();
-        if (!a || !b) {
+        BOOL c = ECInstallJson();
+        if (!a || !b || !c) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 ELInstall();
                 ECInstallParse();
+                ECInstallJson();
             });
         }
     }
