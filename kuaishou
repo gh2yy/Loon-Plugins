@@ -5,12 +5,15 @@
 #!tag = 快手,界面
 
 # 修改日志：
-# - 2026-11-06 Muse：首版。定位（快手 14.9.10.10022、Loon 抓包 354 + 录屏）：红包挂件由冷启动接口 POST /rest/n/encourage/unionTask/startup 的 data.widgetInfo.widgetList 唯一一条 WATCH_PHOTO 挂件下发——样式 RP（红包）、初始位置左侧 y=133、跳转 encourage.kuaishou.com/kwai/task?source=pendant（任务中心），与录屏逐项对上；全量抓包无第二处下发。脚本 Kuaishou-loon.js 只清空 widgetList，其余字段原样保留，解析失败原样放行。本地用抓包原响应验证：widgetList 1→0、其余字段 JSON 层逐一等价，异常输入 4 项全过。待用户真机实测。
+# - 2026-11-06 Muse：首版，v2 同日修订。定位（快手 14.9.10.10022、Loon 抓包 354 + 录屏）：红包挂件由冷启动接口 POST /rest/n/encourage/unionTask/startup 的 data.widgetInfo.widgetList 唯一一条 WATCH_PHOTO 挂件下发——样式 RP（红包）、初始位置左侧 y=133、跳转 encourage.kuaishou.com/kwai/task?source=pendant（任务中心），与录屏逐项对上；全量抓包无第二处下发。v1 用户实测无效（同期所试 IPA 内 KSLite 的 HideRedpacketTask/HideRedpacketBg 开关亦无效，其 hook 的是旧原生挂件类、非这一代 TK 挂件）。v2 三处加固：① host 从写死 az1 放宽为任意 *.ksapisrv.com 分片（快手 API 按网络轮换 az 编号）；② 脚本每次命中打日志 KS-Pendant 到 Loon 日志，可据此确认脚本是否运行；③ 新增一条 jq 改写与脚本做同一件事，两条机制任一生效即可（jq 表达式已用抓包原响应验证：widgetList 清空、其余不变）。脚本本地验证：widgetList 1→0、其余字段等价、异常输入全过。待用户更新插件后冷启动实测，并回传启用状态下的冷启动抓包定性（送达未生效 / 未送达）。
 #
-# 实测要点：装后杀快手冷启动（挂件配置是冷启动预取的，热切回来不会刷新）；若红包还在，保持插件启用再抓一份冷启动包发回，先确认改写是否送达，再谈内容。
+# 实测要点：先在 Loon 里更新本插件、确认启用，杀快手冷启动（挂件配置是冷启动预取的）；红包若还在，保持插件启用抓一份冷启动包发回——抓包里这条响应的 widgetList 若已被清空即改写已送达、问题在客户端缓存侧；若仍是满的即改写未送达，按日志与命中情况继续查。
 
 [Script]
-http-response ^https:\/\/az1-api\.ksapisrv\.com\/rest\/n\/encourage\/unionTask\/startup(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Kuaishou-loon.js, requires-body=true, timeout=10, tag=快手-去红包挂件
+http-response ^https:\/\/[^\/]+\.ksapisrv\.com\/rest\/n\/encourage\/unionTask\/startup(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Kuaishou-loon.js, requires-body=true, timeout=10, tag=快手-去红包挂件
+
+[Rewrite]
+^https:\/\/[^\/]+\.ksapisrv\.com\/rest\/n\/encourage\/unionTask\/startup(?:\?.*)?$ response-body-json-jq 'if .data.widgetInfo then .data.widgetInfo.widgetList = [] else . end'
 
 [Mitm]
-hostname = az1-api.ksapisrv.com
+hostname = *.ksapisrv.com
