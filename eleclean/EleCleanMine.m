@@ -18,16 +18,32 @@
 // Fail-open: any unexpected shape passes data through untouched, and
 // non-matching APIs are not even wrapped.
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+
+// ---- v5 diagnostics: counters surfaced in an on-device alert ----
+static int gJsonCalls = 0, gBodyCalls = 0, gParseCalls = 0, gParseCardsCalls = 0, gBridgeCalls = 0;
+static BOOL gPersonalSeen = NO;
+static NSMutableString *gSeenApis = nil;
+static NSString *gSubclassInfo = @"";
+static void ECNoteApi(NSString *api) {
+    if (api == nil) return;
+    if (gSeenApis == nil) gSeenApis = [NSMutableString string];
+    if ([gSeenApis rangeOfString:api].location == NSNotFound && [gSeenApis length] < 400) {
+        [gSeenApis appendFormat:@"%@ ", api];
+    }
+    if ([api hasPrefix:@"mtop.alsc.personal."]) gPersonalSeen = YES;
+}
 #import <dispatch/dispatch.h>
 
 static BOOL ELTextHasMarker(NSString *s) {
     if (![s isKindOfClass:[NSString class]]) return NO;
     return [s containsString:@"互动中心"] ||
-           [s containsString:@"口味档案"] ||
-           [s containsString:@"口味偏好"] ||
+           [s containsString:@"口味"] ||
            [s containsString:@"ai_profile"] ||
+           [s containsString:@"interact_center"] ||
+           [s containsString:@"INTERACT"] ||
            [s rangeOfString:@"flavor" options:NSCaseInsensitiveSearch].location != NSNotFound;
 }
 
@@ -92,9 +108,13 @@ static id ELProcessResult(NSString *api, id result) {
         if (!isFeeds && !isMain) return result;
         NSMutableDictionary *res = [((NSDictionary *)result) mutableCopy];
         id data = res[@"data"];
+        if (data == nil) {
+            // Result IS the payload (no wrapper): filter/empty it directly.
+            return isFeeds ? ELEmptyFeedsData(res) : ELFilterModules(res, 0);
+        }
         if (isFeeds) {
             res[@"data"] = ELEmptyFeedsData(data);
-        } else if (data != nil) {
+        } else {
             res[@"data"] = ELFilterModules(data, 0);
         }
         return res;
@@ -108,6 +128,7 @@ typedef void (*ELSendIMP)(id, SEL, id, ELWVCallBack, id);
 static ELSendIMP gOrigSend = NULL;
 
 static void ELSendMtopRequest(id self, SEL _cmd, id request, ELWVCallBack callBack, id ext) {
+    gBridgeCalls++;
     NSString *api = nil;
     if ([request isKindOfClass:[NSDictionary class]]) {
         id a = ((NSDictionary *)request)[@"api"];
@@ -205,20 +226,50 @@ static NSString *ECApiNameFromObject(id obj, int depth) {
 typedef id (*ECJsonIMP)(id, SEL);
 static ECJsonIMP gOrigJson = NULL;
 
+static id ECFilterResponseObject(id self, id payload) {
+    if (![payload isKindOfClass:[NSDictionary class]]) return payload;
+    NSString *api = ECApiNameFromObject(self, 0);
+    ECNoteApi(api);
+    if (api != nil &&
+        ([api hasPrefix:@"mtop.alsc.personal.queryMineCenter"] ||
+         [api hasPrefix:@"mtop.alsc.personal.collectMineCenterFeeds"])) {
+        return ELProcessResult(api, payload);
+    }
+    return payload;
+}
+
 static id ECJsonReplacement(id self, SEL _cmd) {
+    gJsonCalls++;
     id json = gOrigJson ? gOrigJson(self, _cmd) : nil;
     @try {
-        if ([json isKindOfClass:[NSDictionary class]]) {
-            NSString *api = ECApiNameFromObject(self, 0);
-            if (api != nil &&
-                ([api hasPrefix:@"mtop.alsc.personal.queryMineCenter"] ||
-                 [api hasPrefix:@"mtop.alsc.personal.collectMineCenterFeeds"])) {
-                return ELProcessResult(api, json);
-            }
-        }
+        return ECFilterResponseObject(self, json);
     } @catch (NSException *e) {
     }
     return json;
+}
+
+typedef id (*ECBodyIMP)(id, SEL);
+static ECBodyIMP gOrigBody = NULL;
+
+static id ECBodyReplacement(id self, SEL _cmd) {
+    gBodyCalls++;
+    id body = gOrigBody ? gOrigBody(self, _cmd) : nil;
+    @try {
+        return ECFilterResponseObject(self, body);
+    } @catch (NSException *e) {
+    }
+    return body;
+}
+
+static BOOL ECInstallBody(void) {
+    if (gOrigBody != NULL) return YES;
+    Class cls = objc_getClass("MtopExtResponse");
+    if (cls == Nil) return NO;
+    Method m = class_getInstanceMethod(cls, @selector(body));
+    if (m == NULL) return NO;
+    gOrigBody = (ECBodyIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)ECBodyReplacement);
+    return YES;
 }
 
 static BOOL ECInstallJson(void) {
@@ -236,6 +287,7 @@ typedef void (*ECParseIMP)(id, SEL, id, id, id);
 static ECParseIMP gOrigParse = NULL;
 
 static void ECParseReplacement(id self, SEL _cmd, id page, id data, id completion) {
+    gParseCalls++;
     id clean = data;
     @try {
         if ([data isKindOfClass:[NSDictionary class]] || [data isKindOfClass:[NSArray class]]) {
@@ -259,18 +311,87 @@ static BOOL ECInstallParse(void) {
     return YES;
 }
 
+typedef id (*ECParseCardsIMP)(id, SEL, id);
+static ECParseCardsIMP gOrigParseCards = NULL;
+
+static id ECParseCardsReplacement(id self, SEL _cmd, id cards) {
+    gParseCardsCalls++;
+    id clean = cards;
+    @try {
+        if ([cards isKindOfClass:[NSArray class]] &&
+            ([(NSArray *)cards count] == 0 || [[(NSArray *)cards firstObject] isKindOfClass:[NSDictionary class]])) {
+            clean = ECSanitizePageData(cards, 0);
+        }
+    } @catch (NSException *e) {
+        clean = cards;
+    }
+    return gOrigParseCards ? gOrigParseCards(self, _cmd, clean) : clean;
+}
+
+static BOOL ECInstallParseCards(void) {
+    if (gOrigParseCards != NULL) return YES;
+    Class cls = objc_getClass("LMXTransformerParser");
+    if (cls == Nil) return NO;
+    SEL sel = NSSelectorFromString(@"parseCardModels:");
+    Method m = class_getInstanceMethod(cls, sel);
+    if (m == NULL) return NO;
+    gOrigParseCards = (ECParseCardsIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)ECParseCardsReplacement);
+    return YES;
+}
+
+static void ECShowDiag(void) {
+    NSString *msg = [NSString stringWithFormat:
+        @"json=%d body=%d parse=%d parseCards=%d bridge=%d\npersonalAPI=%@\n%@\napis: %@",
+        gJsonCalls, gBodyCalls, gParseCalls, gParseCardsCalls, gBridgeCalls,
+        gPersonalSeen ? @"YES" : @"NO", gSubclassInfo,
+        gSeenApis ?: @""];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"EleClean v5 诊断"
+        message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+    UIWindow *key = nil;
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.isKeyWindow) { key = w; break; }
+    }
+    if (key == nil) key = [[UIApplication sharedApplication].windows firstObject];
+    UIViewController *top = key.rootViewController;
+    while (top.presentedViewController) top = top.presentedViewController;
+    if (top) [top presentViewController:ac animated:YES completion:nil];
+}
+
 __attribute__((constructor)) static void ELEntry(void) {
     @autoreleasepool {
         BOOL a = ELInstall();
         BOOL b = ECInstallParse();
         BOOL c = ECInstallJson();
+        ECInstallBody();
+        ECInstallParseCards();
         if (!a || !b || !c) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 ELInstall();
                 ECInstallParse();
                 ECInstallJson();
+                ECInstallBody();
+                ECInstallParseCards();
             });
         }
+        // Subclass override check for the diagnostic readout.
+        {
+            Class base = objc_getClass("MtopExtResponse");
+            IMP baseJson = base ? method_getImplementation(class_getInstanceMethod(base, @selector(json))) : NULL;
+            NSMutableString *info = [NSMutableString string];
+            for (NSString *name in @[@"LTFMtopExtResponse", @"LUEFMtopExtResponse"]) {
+                Class sub = objc_getClass(name.UTF8String);
+                if (sub == Nil) { [info appendFormat:@"%@:none ", name]; continue; }
+                IMP ij = method_getImplementation(class_getInstanceMethod(sub, @selector(json)));
+                [info appendFormat:@"%@:%@ ", name, (ij == baseJson) ? @"inherited" : @"OWN"];
+            }
+            gSubclassInfo = [info copy];
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ECShowDiag();
+        });
     }
 }
