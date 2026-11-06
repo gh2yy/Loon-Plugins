@@ -341,22 +341,40 @@ static BOOL ECInstallParseCards(void) {
 }
 
 static void ECShowDiag(void) {
+    // Fully dynamic UIKit access: the CI link line only has Foundation.
     NSString *msg = [NSString stringWithFormat:
         @"json=%d body=%d parse=%d parseCards=%d bridge=%d\npersonalAPI=%@\n%@\napis: %@",
         gJsonCalls, gBodyCalls, gParseCalls, gParseCardsCalls, gBridgeCalls,
         gPersonalSeen ? @"YES" : @"NO", gSubclassInfo,
         gSeenApis ?: @""];
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"EleClean v5 诊断"
-        message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [ac addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
-    UIWindow *key = nil;
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow) { key = w; break; }
+    Class acCls = objc_getClass("UIAlertController");
+    Class aaCls = objc_getClass("UIAlertAction");
+    Class appCls = objc_getClass("UIApplication");
+    if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
+    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
+        NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
+        @"EleClean v5 诊断", msg, 1L);
+    id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
+        NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
+    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
+    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
+    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
+    id key = nil;
+    for (id w in windows) {
+        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
+        if (isKey) { key = w; break; }
     }
-    if (key == nil) key = [[UIApplication sharedApplication].windows firstObject];
-    UIViewController *top = key.rootViewController;
-    while (top.presentedViewController) top = top.presentedViewController;
-    if (top) [top presentViewController:ac animated:YES completion:nil];
+    if (key == nil) key = [windows firstObject];
+    id top = ((id (*)(id, SEL))objc_msgSend)(key, NSSelectorFromString(@"rootViewController"));
+    while (top != nil) {
+        id presented = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"presentedViewController"));
+        if (presented == nil) break;
+        top = presented;
+    }
+    if (top != nil) {
+        ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
+            NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
+    }
 }
 
 __attribute__((constructor)) static void ELEntry(void) {
