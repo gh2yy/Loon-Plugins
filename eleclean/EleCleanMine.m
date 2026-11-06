@@ -22,10 +22,13 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-// ---- v5 diagnostics: counters surfaced in an on-device alert ----
+// ---- diagnostics: counters surfaced in an on-device alert ----
 static int gJsonCalls = 0, gBodyCalls = 0, gParseCalls = 0, gParseCardsCalls = 0, gBridgeCalls = 0;
+static int gJsonSubCalls = 0, gTsfmCalls = 0, gMistCalls = 0;
 static BOOL gPersonalSeen = NO;
 static NSMutableString *gSeenApis = nil;
+static NSMutableString *gPersonalVia = nil;
+static NSMutableString *gDroppedBiz = nil;
 static NSString *gSubclassInfo = @"";
 static void ECNoteApi(NSString *api) {
     if (api == nil) return;
@@ -34,6 +37,19 @@ static void ECNoteApi(NSString *api) {
         [gSeenApis appendFormat:@"%@ ", api];
     }
     if ([api hasPrefix:@"mtop.alsc.personal."]) gPersonalSeen = YES;
+}
+static void ECNotePersonalVia(NSString *clsName) {
+    if (gPersonalVia == nil) gPersonalVia = [NSMutableString string];
+    if ([gPersonalVia rangeOfString:clsName].location == NSNotFound) {
+        [gPersonalVia appendFormat:@"%@ ", clsName];
+    }
+}
+static void ECNoteDropped(NSString *biz) {
+    if (biz == nil) biz = @"?";
+    if (gDroppedBiz == nil) gDroppedBiz = [NSMutableString string];
+    if ([gDroppedBiz rangeOfString:biz].location == NSNotFound && [gDroppedBiz length] < 300) {
+        [gDroppedBiz appendFormat:@"%@ ", biz];
+    }
 }
 #import <dispatch/dispatch.h>
 
@@ -131,8 +147,17 @@ static void ELSendMtopRequest(id self, SEL _cmd, id request, ELWVCallBack callBa
     gBridgeCalls++;
     NSString *api = nil;
     if ([request isKindOfClass:[NSDictionary class]]) {
-        id a = ((NSDictionary *)request)[@"api"];
-        if ([a isKindOfClass:[NSString class]]) api = a;
+        for (NSString *key in @[@"api", @"apiName", @"name", @"method"]) {
+            id a = ((NSDictionary *)request)[key];
+            if ([a isKindOfClass:[NSString class]] && [(NSString *)a hasPrefix:@"mtop."]) { api = a; break; }
+        }
+        if (api == nil) {
+            // Fall back to scanning values for a personal API name.
+            for (id v in [(NSDictionary *)request allValues]) {
+                if ([v isKindOfClass:[NSString class]] &&
+                    [(NSString *)v rangeOfString:@"queryMineCenter"].location != NSNotFound) { api = v; break; }
+            }
+        }
     }
     BOOL target = api != nil &&
         ([api hasPrefix:@"mtop.alsc.personal.queryMineCenter"] ||
@@ -174,8 +199,7 @@ static BOOL ECIsAdSceneCard(id obj) {
     id biz = [(NSDictionary *)obj objectForKey:@"bizCode"];
     if (![biz isKindOfClass:[NSString class]]) return NO;
     NSString *b = (NSString *)biz;
-    return [b hasPrefix:@"home_sceneCard"] &&
-           [b rangeOfString:@"advertisement"].location != NSNotFound;
+    return [b rangeOfString:@"advertisement"].location != NSNotFound;
 }
 
 static id ECSanitizePageData(id obj, int depth) {
@@ -190,7 +214,10 @@ static id ECSanitizePageData(id obj, int depth) {
     if ([obj isKindOfClass:[NSArray class]]) {
         NSMutableArray *out = [NSMutableArray arrayWithCapacity:((NSArray *)obj).count];
         for (id e in (NSArray *)obj) {
-            if (ECIsAdSceneCard(e)) continue;
+            if (ECIsAdSceneCard(e)) {
+                ECNoteDropped([(NSDictionary *)e objectForKey:@"bizCode"]);
+                continue;
+            }
             [out addObject:ECSanitizePageData(e, depth + 1)];
         }
         return out;
@@ -233,9 +260,50 @@ static id ECFilterResponseObject(id self, id payload) {
     if (api != nil &&
         ([api hasPrefix:@"mtop.alsc.personal.queryMineCenter"] ||
          [api hasPrefix:@"mtop.alsc.personal.collectMineCenterFeeds"])) {
+        ECNotePersonalVia(NSStringFromClass([self class]));
         return ELProcessResult(api, payload);
     }
     return payload;
+}
+
+// LTF/LUEF response subclasses have their OWN -json/-body (v5 diag: OWN),
+// so the base-class hooks never see their payloads. Install per-class too.
+static NSMutableDictionary *gOrigMap = nil;
+static int gBodySubCalls = 0;
+
+static id ECJsonSubReplacement(id self, SEL _cmd) {
+    gJsonSubCalls++;
+    NSString *key = [NSStringFromClass([self class]) stringByAppendingString:@":json"];
+    IMP orig = (IMP)[gOrigMap[key] pointerValue];
+    id v = orig ? ((id (*)(id, SEL))orig)(self, _cmd) : nil;
+    @try { return ECFilterResponseObject(self, v); } @catch (NSException *e) { }
+    return v;
+}
+
+static id ECBodySubReplacement(id self, SEL _cmd) {
+    gBodySubCalls++;
+    NSString *key = [NSStringFromClass([self class]) stringByAppendingString:@":body"];
+    IMP orig = (IMP)[gOrigMap[key] pointerValue];
+    id v = orig ? ((id (*)(id, SEL))orig)(self, _cmd) : nil;
+    @try { return ECFilterResponseObject(self, v); } @catch (NSException *e) { }
+    return v;
+}
+
+static void ECInstallSubclassHooks(void) {
+    if (gOrigMap == nil) gOrigMap = [NSMutableDictionary dictionary];
+    for (NSString *name in @[@"LTFMtopExtResponse", @"LUEFMtopExtResponse"]) {
+        Class cls = objc_getClass(name.UTF8String);
+        if (cls == Nil) continue;
+        for (NSString *selName in @[@"json", @"body"]) {
+            NSString *key = [name stringByAppendingFormat:@":%@", selName];
+            if (gOrigMap[key] != nil) continue;
+            Method m = class_getInstanceMethod(cls, NSSelectorFromString(selName));
+            if (m == NULL) continue;
+            gOrigMap[key] = [NSValue valueWithPointer:method_getImplementation(m)];
+            method_setImplementation(m, (IMP)([selName isEqualToString:@"json"]
+                ? ECJsonSubReplacement : ECBodySubReplacement));
+        }
+    }
 }
 
 static id ECJsonReplacement(id self, SEL _cmd) {
@@ -340,12 +408,88 @@ static BOOL ECInstallParseCards(void) {
     return YES;
 }
 
+// ---------------------------------------------------------------------------
+// LMagex page data entry points actually used by this build (v5 diag:
+// LMXTransformerParser parse* were never called; home runs on TSFM data).
+// -[LMXLoadTask setTsfmPageData:] receives the whole page dict;
+// -[LMagexController loadMistPageWithData:completion:] / refresh variant
+// cover the non-TSFM Mist pages. Sanitize at these doors instead.
+
+typedef void (*ECSetDataIMP)(id, SEL, id);
+static ECSetDataIMP gOrigSetTsfm = NULL;
+
+static void ECSetTsfmReplacement(id self, SEL _cmd, id data) {
+    gTsfmCalls++;
+    id clean = data;
+    @try {
+        if ([data isKindOfClass:[NSDictionary class]] || [data isKindOfClass:[NSArray class]]) {
+            clean = ECSanitizePageData(data, 0);
+        }
+    } @catch (NSException *e) { clean = data; }
+    if (gOrigSetTsfm) gOrigSetTsfm(self, _cmd, clean);
+}
+
+typedef void (*ECLoadMistIMP)(id, SEL, id, id);
+static ECSetDataIMP gOrigLoadMist = NULL;
+static ECSetDataIMP gOrigRefreshMist = NULL;
+
+static void ECLoadMistReplacement(id self, SEL _cmd, id data, id completion) {
+    gMistCalls++;
+    id clean = data;
+    @try {
+        if ([data isKindOfClass:[NSDictionary class]] || [data isKindOfClass:[NSArray class]]) {
+            clean = ECSanitizePageData(data, 0);
+        }
+    } @catch (NSException *e) { clean = data; }
+    if (gOrigLoadMist) ((ECLoadMistIMP)gOrigLoadMist)(self, _cmd, clean, completion);
+}
+
+static void ECRefreshMistReplacement(id self, SEL _cmd, id data, id completion) {
+    gMistCalls++;
+    id clean = data;
+    @try {
+        if ([data isKindOfClass:[NSDictionary class]] || [data isKindOfClass:[NSArray class]]) {
+            clean = ECSanitizePageData(data, 0);
+        }
+    } @catch (NSException *e) { clean = data; }
+    if (gOrigRefreshMist) ((ECLoadMistIMP)gOrigRefreshMist)(self, _cmd, clean, completion);
+}
+
+static void ECInstallPageDataHooks(void) {
+    if (gOrigSetTsfm == NULL) {
+        Class cls = objc_getClass("LMXLoadTask");
+        Method m = cls ? class_getInstanceMethod(cls, NSSelectorFromString(@"setTsfmPageData:")) : NULL;
+        if (m) {
+            gOrigSetTsfm = (ECSetDataIMP)method_getImplementation(m);
+            method_setImplementation(m, (IMP)ECSetTsfmReplacement);
+        }
+    }
+    Class ctl = objc_getClass("LMagexController");
+    if (ctl != Nil) {
+        if (gOrigLoadMist == NULL) {
+            Method m = class_getInstanceMethod(ctl, NSSelectorFromString(@"loadMistPageWithData:completion:"));
+            if (m) {
+                gOrigLoadMist = (ECSetDataIMP)method_getImplementation(m);
+                method_setImplementation(m, (IMP)ECLoadMistReplacement);
+            }
+        }
+        if (gOrigRefreshMist == NULL) {
+            Method m = class_getInstanceMethod(ctl, NSSelectorFromString(@"refreshMistPageWithData:completion:"));
+            if (m) {
+                gOrigRefreshMist = (ECSetDataIMP)method_getImplementation(m);
+                method_setImplementation(m, (IMP)ECRefreshMistReplacement);
+            }
+        }
+    }
+}
+
 static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d body=%d parse=%d parseCards=%d bridge=%d\npersonalAPI=%@\n%@\napis: %@",
-        gJsonCalls, gBodyCalls, gParseCalls, gParseCardsCalls, gBridgeCalls,
-        gPersonalSeen ? @"YES" : @"NO", gSubclassInfo,
+        @"json=%d body=%d jsonSub=%d bodySub=%d tsfm=%d mist=%d bridge=%d\npersonal=%@ via:%@\ndropped: %@\napis: %@",
+        gJsonCalls, gBodyCalls, gJsonSubCalls, gBodySubCalls, gTsfmCalls, gMistCalls, gBridgeCalls,
+        gPersonalSeen ? @"YES" : @"NO", gPersonalVia ?: @"",
+        gDroppedBiz ?: @"(none)",
         gSeenApis ?: @""];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
@@ -353,7 +497,7 @@ static void ECShowDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v5 诊断", msg, 1L);
+        @"EleClean v6 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
@@ -384,6 +528,8 @@ __attribute__((constructor)) static void ELEntry(void) {
         BOOL c = ECInstallJson();
         ECInstallBody();
         ECInstallParseCards();
+        ECInstallSubclassHooks();
+        ECInstallPageDataHooks();
         if (!a || !b || !c) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -392,6 +538,8 @@ __attribute__((constructor)) static void ELEntry(void) {
                 ECInstallJson();
                 ECInstallBody();
                 ECInstallParseCards();
+                ECInstallSubclassHooks();
+                ECInstallPageDataHooks();
             });
         }
         // Subclass override check for the diagnostic readout.
