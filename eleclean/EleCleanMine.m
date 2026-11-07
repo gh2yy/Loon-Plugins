@@ -75,9 +75,6 @@ static void ECNoteDropped(NSString *biz) {
 static BOOL ELTextHasMarker(NSString *s) {
     if (![s isKindOfClass:[NSString class]]) return NO;
     return [s containsString:@"互动中心"] ||
-           [s containsString:@"借钱"] ||
-           [s containsString:@"生意贷"] ||
-           [s containsString:@"先享后付"] ||
            [s containsString:@"我的钱包"] ||
            [s containsString:@"我的关注"] ||
            [s containsString:@"常点的店"] ||
@@ -107,68 +104,12 @@ static BOOL ELSubtreeHasMarker(id obj, int depth) {
     return NO;
 }
 
-static void ELCollectFinanceLabels(id obj, int depth, NSMutableSet *acc) {
-    if (obj == nil || depth > 10) return;
-    if ([obj isKindOfClass:[NSString class]]) {
-        static NSArray *labels = nil;
-        if (labels == nil) labels = @[@"零钱", @"生意贷", @"超时赔", @"先享后付",
-                                      @"礼品卡", @"外卖红包", @"支付权益", @"借钱"];
-        for (NSString *l in labels) {
-            if ([(NSString *)obj containsString:l]) [acc addObject:l];
-        }
-        return;
-    }
-    if ([obj isKindOfClass:[NSDictionary class]]) {
-        for (id k in (NSDictionary *)obj) {
-            ELCollectFinanceLabels(k, depth + 1, acc);
-            ELCollectFinanceLabels(((NSDictionary *)obj)[k], depth + 1, acc);
-        }
-        return;
-    }
-    if ([obj isKindOfClass:[NSArray class]]) {
-        for (id e in (NSArray *)obj) ELCollectFinanceLabels(e, depth + 1, acc);
-    }
-}
-static BOOL ELIsFinanceModule(id obj) {
-    NSMutableSet *acc = [NSMutableSet set];
-    ELCollectFinanceLabels(obj, 0, acc);
-    return [acc count] >= 2;
-}
-
-static BOOL ELSubtreeHasDeniedCode(id obj, int depth) {
-    if (obj == nil || depth > 5) return NO;
-    if ([obj isKindOfClass:[NSDictionary class]]) {
-        id code = ((NSDictionary *)obj)[@"code"] ?: ((NSDictionary *)obj)[@"bizCode"];
-        if ([code isKindOfClass:[NSString class]] &&
-            ([code isEqualToString:@"personal_my_wallet"] ||
-             [code isEqualToString:@"eat_personal_operation_strip"] ||
-             [code isEqualToString:@"eleme_personal_game_center"] ||
-             [code isEqualToString:@"eat_personal_myfollow"])) {
-            return YES;
-        }
-        for (id k in (NSDictionary *)obj) {
-            if (ELSubtreeHasDeniedCode(((NSDictionary *)obj)[k], depth + 1)) return YES;
-        }
-        return NO;
-    }
-    if ([obj isKindOfClass:[NSArray class]]) {
-        for (id e in (NSArray *)obj) {
-            if (ELSubtreeHasDeniedCode(e, depth + 1)) return YES;
-        }
-    }
-    return NO;
-}
-
 static id ELFilterModules(id obj, int depth) {
     if (obj == nil || depth > 10) return obj;
     if ([obj isKindOfClass:[NSArray class]]) {
         NSMutableArray *out = [NSMutableArray arrayWithCapacity:((NSArray *)obj).count];
         for (id e in (NSArray *)obj) {
-            if ([e isKindOfClass:[NSDictionary class]] && ELSubtreeHasDeniedCode(e, 0)) {
-                continue;
-            }
             if (ELSubtreeHasMarker(e, depth + 1)) continue;
-            if (ELIsFinanceModule(e)) continue;
             [out addObject:ELFilterModules(e, depth + 1)];
         }
         return out;
@@ -335,40 +276,6 @@ static NSString *ECApiNameFromObject(id obj, int depth) {
 typedef id (*ECJsonIMP)(id, SEL);
 static ECJsonIMP gOrigJson = NULL;
 
-// v12 diag: record module/card identities to find stable keys.
-static NSMutableString *gIdentityInfo = nil;
-static void ECNoteIdentity(NSString *tag, id dictNode) {
-    if (![dictNode isKindOfClass:[NSDictionary class]]) return;
-    NSDictionary *d = (NSDictionary *)dictNode;
-    NSString *ident = nil;
-    for (NSString *k in @[@"bizCode", @"code", @"type", @"templateId", @"name", @"moduleName", @"title"]) {
-        id v = d[k];
-        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) {
-            ident = [NSString stringWithFormat:@"%@=%@", k, v];
-            break;
-        }
-    }
-    if (ident == nil) return;
-    if (gIdentityInfo == nil) gIdentityInfo = [NSMutableString string];
-    NSString *entry = [NSString stringWithFormat:@"%@:%@ ", tag, ident];
-    if ([gIdentityInfo rangeOfString:entry].location == NSNotFound && [gIdentityInfo length] < 600) {
-        [gIdentityInfo appendString:entry];
-    }
-}
-static void ECRecordModuleIdentities(id node, int depth) {
-    if (node == nil || depth > 4) return;
-    if ([node isKindOfClass:[NSArray class]]) {
-        for (id e in (NSArray *)node) {
-            ECNoteIdentity(@"M", e);
-            ECRecordModuleIdentities(e, depth + 1);
-        }
-        return;
-    }
-    if ([node isKindOfClass:[NSDictionary class]]) {
-        for (id k in (NSDictionary *)node) ECRecordModuleIdentities(((NSDictionary *)node)[k], depth + 1);
-    }
-}
-
 // v9: home top-banner hunt. The creative copy must travel inside SOME mtop
 // payload that passes -json. Fingerprint-scan every dict payload; record the
 // carrier api; strip fingerprinted elements on the two suspect APIs.
@@ -404,7 +311,7 @@ static id ECStripFingerprinted(id node, int depth) {
         NSMutableArray *out = [NSMutableArray array];
         for (id el in node) {
             int b = 300;
-            if (ECNodeContainsFingerprint(el, 0, &b)) { ECNoteIdentity(@"S", el); continue; }
+            if (ECNodeContainsFingerprint(el, 0, &b)) continue;
             [out addObject:ECStripFingerprinted(el, depth + 1)];
         }
         return out;
@@ -412,16 +319,7 @@ static id ECStripFingerprinted(id node, int depth) {
     if ([node isKindOfClass:[NSDictionary class]]) {
         NSMutableDictionary *out = [NSMutableDictionary dictionary];
         for (id k in node) {
-            id v = node[k];
-            if ([v isKindOfClass:[NSArray class]]) {
-                out[k] = ECStripFingerprinted(v, depth + 1);
-                continue;
-            }
-            if (depth >= 1) {
-                int b = 300;
-                if (ECNodeContainsFingerprint(v, 0, &b)) continue;
-            }
-            out[k] = ECStripFingerprinted(v, depth + 1);
+            out[k] = ECStripFingerprinted(node[k], depth + 1);
         }
         return out;
     }
@@ -443,7 +341,6 @@ static id ECFilterResponseObject(id self, id payload) {
     if (api != nil && [apiL hasPrefix:@"mtop.alsc.personal."]) {
         ECNotePersonalApi(api);
         ECNotePersonalVia(NSStringFromClass([self class]));
-        ECRecordModuleIdentities(payload, 0);
         id out = ELProcessResult(api, payload);
         if (out != payload) gFilteredCount++;
         return out;
@@ -452,8 +349,7 @@ static id ECFilterResponseObject(id self, id payload) {
     int budget = 4000;
     if (ECNodeContainsFingerprint(payload, 0, &budget)) {
         BOOL suspect = [apiL containsString:@"tsfm.non.build"] ||
-                       [apiL containsString:@"querymaterialinfo"] ||
-                       [apiL containsString:@"carddatarecallfacade"];
+                       [apiL containsString:@"querymaterialinfo"];
         ECNoteBannerHit(api, suspect ? @"STRIPPED" : @"seen");
         if (suspect) {
             return ECStripFingerprinted(payload, 0);
@@ -772,538 +668,19 @@ static void ECInstallMusProbe(void) {
     }
 }
 
-// v15: master door — every JSON response in the app is parsed through
-// NSJSONSerialization, including the Weex/TMS pages' data (which never
-// touches MtopExtResponse) and the storedcard formwork behind the rotating
-// finance strip. Pre-check the raw text for rare trigger tokens, then run
-// the existing filters on the parsed object and return the filtered copy.
-static int gSerCalls = 0, gSerFiltered = 0;
-typedef id (*ECSerIMP)(id, SEL, id, NSUInteger, id *);
-static ECSerIMP gOrigSer = NULL;
-
-static id ECSerReplacement(id cls, SEL _cmd, id data, NSUInteger options, id *error) {
-    id result = gOrigSer ? gOrigSer(cls, _cmd, data, options, error) : nil;
-    @try {
-        if (result == nil || ![result isKindOfClass:[NSDictionary class]]) return result;
-        if (![data isKindOfClass:[NSData class]] || [data length] > 3 * 1024 * 1024) return result;
-        gSerCalls++;
-        NSString *raw = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        if (raw == nil) return result;
-        BOOL personalish = [raw containsString:@"eat_personal"] ||
-                           [raw containsString:@"personal_my_wallet"] ||
-                           [raw containsString:@"queryminecenter"];
-        BOOL financeish = [raw containsString:@"storedcard"] ||
-                          [raw containsString:@"生意贷"] || [raw containsString:@"超时赔"];
-        if (personalish || financeish) {
-            NSString *api = [raw containsString:@"queryminecenterfeeds"]
-                ? @"mtop.alsc.personal.queryminecenterfeeds"
-                : @"mtop.alsc.personal.queryminecenter";
-            id out = ELProcessResult(api, result);
-            if (out != result) { gSerFiltered++; result = out; }
-        }
-        int budget = 4000;
-        if (ECNodeContainsFingerprint(result, 0, &budget)) {
-            ECNoteBannerHit(@"jsonser", @"STRIPPED");
-            gSerFiltered++;
-            result = ECStripFingerprinted(result, 0);
-        }
-    } @catch (NSException *e) { }
-    return result;
-}
-
-static void ECInstallSerHook(void) {
-    if (gOrigSer != NULL) return;
-    Class cls = objc_getClass("NSJSONSerialization");
-    if (cls == Nil) return;
-    Method m = class_getClassMethod(cls, NSSelectorFromString(@"JSONObjectWithData:options:error:"));
-    if (m == NULL) return;
-    gOrigSer = (ECSerIMP)method_getImplementation(m);
-    method_setImplementation(m, (IMP)ECSerReplacement);
-}
-
-// v16: MUS framework doors. The home/mine pages are MUS (TMS) pages; their
-// JS-side fetches are parsed by MST_MUSFetchModule's own _JSONObjFromData:
-// and mtop calls cross MUSMtopBridge. Filter at both.
-static int gMusJsonCalls = 0, gMusBridgeCalls = 0;
-
-static BOOL ECSubtreeContainsToken(id obj, NSString *token, int depth) {
-    if (obj == nil || depth > 8) return NO;
-    if ([obj isKindOfClass:[NSString class]]) {
-        return [(NSString *)obj containsString:token];
-    }
-    if ([obj isKindOfClass:[NSDictionary class]]) {
-        for (id k in (NSDictionary *)obj) {
-            if (ECSubtreeContainsToken(k, token, depth + 1)) return YES;
-            if (ECSubtreeContainsToken(((NSDictionary *)obj)[k], token, depth + 1)) return YES;
-        }
-        return NO;
-    }
-    if ([obj isKindOfClass:[NSArray class]]) {
-        for (id e in (NSArray *)obj) {
-            if (ECSubtreeContainsToken(e, token, depth + 1)) return YES;
-        }
-    }
-    return NO;
-}
-
-static id ECFilterAnyPayload(id result) {
-    if (result == nil) return result;
-    @try {
-        BOOL personalish = ECSubtreeContainsToken(result, @"eat_personal", 0) ||
-                           ECSubtreeContainsToken(result, @"personal_my_wallet", 0) ||
-                           ECSubtreeContainsToken(result, @"queryminecenter", 0);
-        BOOL financeish = ECSubtreeContainsToken(result, @"storedcard", 0);
-        if ((personalish || financeish) && [result isKindOfClass:[NSDictionary class]]) {
-            NSString *api = ECSubtreeContainsToken(result, @"queryminecenterfeeds", 0)
-                ? @"mtop.alsc.personal.queryminecenterfeeds"
-                : @"mtop.alsc.personal.queryminecenter";
-            result = ELProcessResult(api, result);
-        } else if (personalish && [result isKindOfClass:[NSArray class]]) {
-            result = ELFilterModules(result, 0);
-        }
-        int budget = 4000;
-        if (ECNodeContainsFingerprint(result, 0, &budget)) {
-            ECNoteBannerHit(@"musjson", @"STRIPPED");
-            result = ECStripFingerprinted(result, 0);
-        }
-    } @catch (NSException *e) { }
-    return result;
-}
-
-typedef id (*ECMusJsonIMP)(id, SEL, id);
-static ECMusJsonIMP gOrigMusJson = NULL;
-static id ECMusJsonReplacement(id self, SEL _cmd, id data) {
-    gMusJsonCalls++;
-    id result = gOrigMusJson ? gOrigMusJson(self, _cmd, data) : nil;
-    return ECFilterAnyPayload(result);
-}
-
-static void ECInstallMusJsonHook(void) {
-    if (gOrigMusJson != NULL) return;
-    Class cls = objc_getClass("MST_MUSFetchModule");
-    if (cls == Nil) return;
-    Method m = class_getInstanceMethod(cls, NSSelectorFromString(@"_JSONObjFromData:"));
-    if (m == NULL) return;
-    gOrigMusJson = (ECMusJsonIMP)method_getImplementation(m);
-    method_setImplementation(m, (IMP)ECMusJsonReplacement);
-}
-
-typedef void (*ECMusBridgeIMP)(id, SEL, id, id, id);
-static ECMusBridgeIMP gOrigMusBridge = NULL;
-static void ECMusBridgeReplacement(id self, SEL _cmd, id request, id success, id failure) {
-    gMusBridgeCalls++;
-    id wrapped = success;
-    @try {
-        if (success != nil) {
-            wrapped = ^(id resp) {
-                id filtered = ECFilterAnyPayload(resp);
-                ((void (^)(id))success)(filtered);
-            };
-        }
-    } @catch (NSException *e) { wrapped = success; }
-    if (gOrigMusBridge) gOrigMusBridge(self, _cmd, request, wrapped, failure);
-}
-
-static void ECInstallMusBridgeHook(void) {
-    if (gOrigMusBridge != NULL) return;
-    Class cls = objc_getClass("MUSMtopBridge");
-    if (cls == Nil) return;
-    Method m = class_getInstanceMethod(cls, NSSelectorFromString(@"didSendRequest:success:failure:"));
-    if (m == NULL) return;
-    gOrigMusBridge = (ECMusBridgeIMP)method_getImplementation(m);
-    method_setImplementation(m, (IMP)ECMusBridgeReplacement);
-}
-
-// v17: passive logging NSURLProtocol. Weex-stream / xtop traffic is plain
-// HTTPS; if the banner/strip payloads travel that way, this sees their URLs
-// and fingerprint tokens even though the payloads are parsed inside JS.
-static NSMutableString *gProtoHits = nil;
-static void ECNoteProtoHit(NSString *url, NSString *token) {
-    if (gProtoHits == nil) gProtoHits = [NSMutableString string];
-    NSString *entry = [NSString stringWithFormat:@"%@~%@ ", token, url];
-    if ([gProtoHits rangeOfString:entry].location == NSNotFound && [gProtoHits length] < 500) {
-        [gProtoHits appendString:entry];
-    }
-}
-
-@interface ECLogProtocol : NSURLProtocol <NSURLConnectionDataDelegate> {
-    NSURLConnection *_conn;
-    NSMutableData *_data;
-}
-@end
-@implementation ECLogProtocol
-+ (BOOL)canInitWithRequest:(NSURLRequest *)request {
-    if ([NSURLProtocol propertyForKey:@"ECLogHandled" inRequest:request]) return NO;
-    NSString *scheme = [[request URL] scheme];
-    return [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"];
-}
-+ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
-- (void)startLoading {
-    NSMutableURLRequest *req = [self.request mutableCopy];
-    [NSURLProtocol setProperty:@YES forKey:@"ECLogHandled" inRequest:req];
-    _data = [NSMutableData data];
-    _conn = [[NSURLConnection alloc] initWithRequest:req delegate:self];
-}
-- (void)stopLoading { [_conn cancel]; }
-- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
-    [[self client] URLProtocol:self didReceiveResponse:response
-        cacheStoragePolicy:NSURLCacheStorageNotAllowed];
-}
-- (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data {
-    [_data appendData:data];
-    [[self client] URLProtocol:self didLoadData:data];
-}
-- (void)connectionDidFinishLoading:(NSURLConnection *)connection {
-    @try {
-        if (_data.length > 0 && _data.length < 4 * 1024 * 1024) {
-            NSString *text = [[NSString alloc] initWithData:_data encoding:NSUTF8StringEncoding];
-            if (text != nil) {
-                NSString *url = [[self.request URL] host] ?: @"?";
-                for (NSString *tok in @[@"爆好价", @"personal_my_wallet",
-                                        @"eat_personal_operation_strip", @"超时赔",
-                                        @"礼品卡", @"queryminecenter"]) {
-                    if ([text containsString:tok]) ECNoteProtoHit(url, tok);
-                }
-            }
-        }
-    } @catch (NSException *e) { }
-    [[self client] URLProtocolDidFinishLoading:self];
-}
-- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
-    [[self client] URLProtocol:self didFailWithError:error];
-}
-@end
-
-static void ECInstallProtoHook(void) {
-    [NSURLProtocol registerClass:[ECLogProtocol class]];
-}
-
-// v18: view-layer enforcer. Every data channel is exhausted (proto sensor
-// saw nothing: payloads ride the private AMNet/TNET stack and are parsed
-// inside JS). Collapse the two remaining modules in the rendered view
-// tree: the Mine finance strip is identified by its rotating title label
-// (礼品卡 / 借钱 / 我的钱包), the home top banner by geometry (first
-// full-width block under the header inside the home TMS page).
-static NSMutableString *gCollapsed = nil;
-static NSTimer *gEnforcer = nil;
-
-static void ECNoteCollapsed(NSString *what, id view) {
-    if (gCollapsed == nil) gCollapsed = [NSMutableString string];
-    NSString *entry = [NSString stringWithFormat:@"%@:%@ ", what, NSStringFromClass([view class])];
-    if ([gCollapsed rangeOfString:entry].location == NSNotFound && [gCollapsed length] < 300) {
-        [gCollapsed appendString:entry];
-    }
-}
-
-static BOOL ECIsUIViewClass(id o) {
-    Class uiview = objc_getClass("UIView");
-    return uiview != Nil && [o isKindOfClass:uiview];
-}
-static CGRect ECViewFrame(id v) {
-    return ((CGRect (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"frame"));
-}
-static NSArray *ECSubviews(id v) {
-    return ((NSArray * (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"subviews")) ?: @[];
-}
-static id ECSuperviewOf(id v) {
-    return ((id (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"superview"));
-}
-static void ECSetHidden(id v, BOOL h) {
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(v, NSSelectorFromString(@"setHidden:"), h);
-}
-static BOOL ECIsHidden(id v) {
-    return ((BOOL (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"isHidden"));
-}
-static void ECSetFrame(id v, CGRect f) {
-    ((void (*)(id, SEL, CGRect))objc_msgSend)(v, NSSelectorFromString(@"setFrame:"), f);
-}
-static NSString *ECTextOfView(id v) {
-    @try {
-        Class label = objc_getClass("UILabel");
-        if (label != Nil && [v isKindOfClass:label]) {
-            return ((NSString * (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"text"));
-        }
-        SEL tsel = NSSelectorFromString(@"text");
-        if ([v respondsToSelector:tsel]) {
-            id t = ((id (*)(id, SEL))objc_msgSend)(v, tsel);
-            if ([t isKindOfClass:[NSString class]] && [t length] > 0) return t;
-        }
-        SEL asel = NSSelectorFromString(@"attributedText");
-        if ([v respondsToSelector:asel]) {
-            id at = ((id (*)(id, SEL))objc_msgSend)(v, asel);
-            if (at != nil && [at respondsToSelector:NSSelectorFromString(@"string")]) {
-                id str = ((id (*)(id, SEL))objc_msgSend)(at, NSSelectorFromString(@"string"));
-                if ([str isKindOfClass:[NSString class]] && [str length] > 0) return str;
-            }
-        }
-    } @catch (NSException *e) { }
-    return nil;
-}
-
-static NSString *ECLabelText(id v) {
-    Class label = objc_getClass("UILabel");
-    if (label == Nil || ![v isKindOfClass:label]) return nil;
-    return ((NSString * (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"text"));
-}
-
-// Collapse a container: zero its height, hide it, pull later siblings up.
-static void ECCollapseView(id target, NSString *what) {
-    if (!ECIsUIViewClass(target)) return;
-    CGRect f = ECViewFrame(target);
-    if (f.size.height < 5 || ECIsHidden(target)) return;
-    id parent = ECSuperviewOf(target);
-    CGFloat delta = f.size.height;
-    ECSetHidden(target, YES);
-    ECSetFrame(target, CGRectMake(f.origin.x, f.origin.y, f.size.width, 0));
-    if (parent != nil) {
-        for (id sib in ECSubviews(parent)) {
-            if (sib == target) continue;
-            CGRect sf = ECViewFrame(sib);
-            if (sf.origin.y >= f.origin.y + 1) {
-                ECSetFrame(sib, CGRectMake(sf.origin.x, sf.origin.y - delta, sf.size.width, sf.size.height));
-            }
-        }
-    }
-    ECNoteCollapsed(what, target);
-}
-
-static int gEnforcePasses = 0;
-static NSString *gPageVCs = nil;
-static NSMutableString *gTreeDump = nil;
-
-static void ECDumpTree(id view, NSMutableString *out, int depth, int *budget) {
-    if (view == nil || depth > 13 || *budget <= 0) return;
-    (*budget)--;
-    CGRect f = ECViewFrame(view);
-    CGRect inWin = [view convertRect:[view bounds] toView:nil];
-    NSString *text = ECLabelText(view);
-    NSMutableString *indent = [NSMutableString string];
-    for (int i = 0; i < depth; i++) [indent appendString:@"·"];
-    [out appendFormat:@"%@%@ y=%.0f h=%.0f w=%.0f%@\n", indent,
-        NSStringFromClass([view class]), inWin.origin.y, f.size.height, f.size.width,
-        text ? [NSString stringWithFormat:@" 「%@」", [text substringToIndex:MIN(text.length, 8)]] : @""];
-    for (id sub in ECSubviews(view)) ECDumpTree(sub, out, depth + 1, budget);
-}
-
-// Find a label with any of the given titles inside root (depth-limited);
-// return the enclosing module container: the highest ancestor (below the
-// page root) that spans ~full width.
-static id ECFindModuleByLabel(id root, NSArray *titles, int depth) {
-    if (root == nil || depth > 24) return nil;
-    NSString *text = ECTextOfView(root);
-    if (text != nil) {
-        for (NSString *t in titles) {
-            if ([text isEqualToString:t] || [text hasPrefix:t]) {
-                id node = root;
-                id best = ECSuperviewOf(root);
-                for (int i = 0; i < 8; i++) {
-                    id up = ECSuperviewOf(node);
-                    if (up == nil) break;
-                    CGRect uf = ECViewFrame(up);
-                    CGRect nf = ECViewFrame(node);
-                    if (uf.size.width >= 340 && uf.size.height >= nf.size.height + 2 &&
-                        uf.size.height <= 400) {
-                        best = up;
-                        node = up;
-                    } else break;
-                }
-                return best;
-            }
-        }
-    }
-    for (id sub in ECSubviews(root)) {
-        id hit = ECFindModuleByLabel(sub, titles, depth + 1);
-        if (hit != nil) return hit;
-    }
-    return nil;
-}
-
-// All TMS page views currently in any window.
-static void ECCollectTMSViews(id view, NSMutableArray *out, int depth) {
-    if (view == nil || depth > 30) return;
-    if ([NSStringFromClass([view class]) containsString:@"TMSPageView"]) {
-        [out addObject:view];
-        return;
-    }
-    for (id sub in ECSubviews(view)) ECCollectTMSViews(sub, out, depth + 1);
-}
-
-static BOOL ECSubtreeContainsText(id obj, NSString *text, int depth) {
-    if (obj == nil || depth > 22) return NO;
-    NSString *t = ECTextOfView(obj);
-    if (t != nil && [t containsString:text]) return YES;
-    for (id sub in ECSubviews(obj)) {
-        if (ECSubtreeContainsText(sub, text, depth + 1)) return YES;
-    }
-    return NO;
-}
-
-static int ECSubtreeTextCount(id obj, int depth, int budget) {
-    if (obj == nil || depth > 12 || budget <= 0) return 0;
-    int n = (ECTextOfView(obj) != nil) ? 1 : 0;
-    for (id sub in ECSubviews(obj)) {
-        n += ECSubtreeTextCount(sub, depth + 1, budget - n);
-        if (n > 8) return n;
-    }
-    return n;
-}
-
-static BOOL ECSubtreeHasFullImage(id obj, CGFloat minW, int depth) {
-    if (obj == nil || depth > 10) return NO;
-    NSString *cls = NSStringFromClass([obj class]);
-    if ([cls containsString:@"ImageView"]) {
-        if (ECViewFrame(obj).size.width >= minW) return YES;
-    }
-    for (id sub in ECSubviews(obj)) {
-        if (ECSubtreeHasFullImage(sub, minW, depth + 1)) return YES;
-    }
-    return NO;
-}
-
-// Find the banner: among all descendants, the topmost view whose window
-// frame sits in the band under the search bar, spans the page width,
-// holds a full-bleed image and few text elements, and does not contain
-// the kingkong entries.
-static id ECFindBannerCandidate(id page, id node, CGFloat winW, int depth) {
-    if (node == nil || depth > 18) return nil;
-    id best = nil;
-    CGFloat bestY = 1e9;
-    NSMutableArray *stack = [NSMutableArray arrayWithObject:node];
-    while (stack.count > 0) {
-        id v = stack.lastObject; [stack removeLastObject];
-        @try {
-            CGRect w = [v convertRect:[v bounds] toView:nil];
-            CGRect f = ECViewFrame(v);
-            if (w.origin.y >= 165 && w.origin.y <= 295 && f.size.height >= 45 &&
-                f.size.height <= 155 && f.size.width >= winW * 0.86 &&
-                !ECIsHidden(v)) {
-                if (!ECSubtreeContainsText(v, @"美食外卖", 0) &&
-                    ECSubtreeTextCount(v, 0, 9) <= 5 &&
-                    ECSubtreeHasFullImage(v, winW * 0.7, 0)) {
-                    if (w.origin.y < bestY) { best = v; bestY = w.origin.y; }
-                }
-            }
-            for (id sub in ECSubviews(v)) [stack addObject:sub];
-        } @catch (NSException *e) { }
-    }
-    return best;
-}
-
-static void ECEnforcePass(void) {
-    gEnforcePasses++;
-    @try {
-        id app = ((id (*)(id, SEL))objc_msgSend)(objc_getClass("UIApplication"),
-                     NSSelectorFromString(@"sharedApplication"));
-        NSArray *windows = ((NSArray * (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
-        NSMutableArray *pages = [NSMutableArray array];
-        for (id w in windows) ECCollectTMSViews(w, pages, 0);
-        CGFloat winW = 0;
-        if (windows.count > 0) winW = ECViewFrame(windows.firstObject).size.width;
-        if (winW < 300) winW = 400;
-        for (id page in pages) {
-            // Which tab's page is this? Walk the responder chain to its VC.
-            NSString *vcName = nil;
-            id resp = page;
-            for (int i = 0; i < 20 && resp != nil; i++) {
-                Class vcCls = objc_getClass("UIViewController");
-                if (vcCls != Nil && [resp isKindOfClass:vcCls]) {
-                    vcName = NSStringFromClass([resp class]);
-                    break;
-                }
-                resp = ((id (*)(id, SEL))objc_msgSend)(resp, NSSelectorFromString(@"nextResponder"));
-            }
-            if (vcName != nil) gPageVCs = vcName;
-            // One-time hierarchy dump of the first page that looks like home.
-            if (gTreeDump == nil && (vcName == nil || [vcName containsString:@"Home"] ||
-                [vcName containsString:@"Tab"] || [vcName containsString:@"Main"])) {
-                NSMutableString *dump = [NSMutableString string];
-                int budget = 110;
-                ECDumpTree(page, dump, 0, &budget);
-                if ([dump length] > 20) gTreeDump = dump;
-            }
-            (void)vcName;
-            // Page signatures from rendered texts.
-            BOOL hasHome = ECSubtreeContainsText(page, @"美食外卖", 0);
-            BOOL hasMine = ECSubtreeContainsText(page, @"我的订单", 0);
-            // Mine finance strip by rotating title.
-            if (hasMine || (!hasHome && !hasMine)) {
-                id strip = ECFindModuleByLabel(page, @[@"礼品卡", @"借钱"], 0);
-                if (strip != nil) ECCollapseView(strip, @"strip");
-            }
-            // Home top banner: deepest scan, topmost full-width block with a
-            // full-bleed image sitting right under the search header.
-            if (hasHome || (!hasHome && !hasMine)) {
-                id banner = ECFindBannerCandidate(page, page, winW, 0);
-                if (banner != nil) ECCollapseView(banner, @"banner");
-            }
-        }
-    } @catch (NSException *e) { }
-}
-
-static void ECStartEnforcer(void) {
-    if (gEnforcer != nil) return;
-    gEnforcer = [NSTimer scheduledTimerWithTimeInterval:0.6
-        repeats:YES block:^(NSTimer *t) { ECEnforcePass(); }];
-}
-
-// v13: walk the view tree and record classes of views sitting in the home
-// top-banner band (between the search bar and the category icons).
-static NSMutableString *gViewInfo = nil;
-static void ECWalkViews(id view, id window, int depth) {
-    if (view == nil || depth > 22) return;
-    @try {
-        CGRect bounds = ((CGRect (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"bounds"));
-        CGRect inWin = ((CGRect (*)(id, SEL, CGRect, id))objc_msgSend)(view, NSSelectorFromString(@"convertRect:toView:"), bounds, window);
-        // banner band: full-width-ish, 50..160pt tall, top area of the screen
-        NSString *clsName = NSStringFromClass([view class]);
-        BOOL nameHint = [clsName containsString:@"Banner"] || [clsName containsString:@"Mist"] ||
-                        [clsName containsString:@"Weex"] || [clsName containsString:@"WX"] ||
-                        [clsName containsString:@"Cube"] || [clsName containsString:@"Operation"];
-        if (nameHint && inWin.size.width > 200 && inWin.size.height > 20) {
-            if (gViewInfo == nil) gViewInfo = [NSMutableString string];
-            NSString *entry = [NSString stringWithFormat:@"[%@ y=%.0f h=%.0f] ", clsName, inWin.origin.y, inWin.size.height];
-            if ([gViewInfo rangeOfString:entry].location == NSNotFound && [gViewInfo length] < 550) {
-                [gViewInfo appendString:entry];
-            }
-        }
-        if (inWin.size.width > 300 && inWin.size.height > 45 && inWin.size.height < 170 &&
-            inWin.origin.y > 80 && inWin.origin.y < 330) {
-            if (gViewInfo == nil) gViewInfo = [NSMutableString string];
-            NSString *entry = [NSString stringWithFormat:@"%@(y=%.0f,h=%.0f) ",
-                NSStringFromClass([view class]), inWin.origin.y, inWin.size.height];
-            if ([gViewInfo rangeOfString:entry].location == NSNotFound && [gViewInfo length] < 550) {
-                [gViewInfo appendString:entry];
-            }
-        }
-        NSArray *subs = ((id (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"subviews"));
-        for (id sv in subs) ECWalkViews(sv, window, depth + 1);
-    } @catch (NSException *e) { }
-}
-static void ECProbeHomeViews(void) {
-    Class appCls = objc_getClass("UIApplication");
-    if (appCls == Nil) return;
-    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
-    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
-    for (id w in windows) {
-        ECWalkViews(w, w, 0);
-    }
-}
-
 static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
-    ECProbeHomeViews();
     NSString *msg = [NSString stringWithFormat:
-        @"pass=%d vc=%@\ncollapsed: %@\ntree:\n%@",
-        gEnforcePasses, gPageVCs ?: @"?",
-        gCollapsed ?: @"(none)",
-        gTreeDump ?: @"(none)"];
+        @"json=%d filt=%d\nbannerHits: %@",
+        gJsonCalls, gFilteredCount,
+        gBannerHits ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
     Class appCls = objc_getClass("UIApplication");
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v20 诊断", msg, 1L);
+        @"EleClean v10 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
@@ -1338,11 +715,6 @@ __attribute__((constructor)) static void ELEntry(void) {
         ECInstallPageDataHooks();
         ECInstallCardProbe();
         ECInstallMusProbe();
-        ECInstallSerHook();
-        ECInstallMusJsonHook();
-        ECInstallMusBridgeHook();
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
-            dispatch_get_main_queue(), ^{ ECStartEnforcer(); });
         if (!a || !b || !c) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -1355,9 +727,6 @@ __attribute__((constructor)) static void ELEntry(void) {
                 ECInstallPageDataHooks();
                 ECInstallCardProbe();
                 ECInstallMusProbe();
-                ECInstallSerHook();
-                ECInstallMusJsonHook();
-                ECInstallMusBridgeHook();
             });
         }
         // Subclass override check for the diagnostic readout.
@@ -1373,10 +742,6 @@ __attribute__((constructor)) static void ELEntry(void) {
             }
             gSubclassInfo = [info copy];
         }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            ECShowDiag();
-        });
     }
 }
 
