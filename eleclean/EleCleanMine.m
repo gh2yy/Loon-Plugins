@@ -821,6 +821,99 @@ static void ECInstallSerHook(void) {
     method_setImplementation(m, (IMP)ECSerReplacement);
 }
 
+// v16: MUS framework doors. The home/mine pages are MUS (TMS) pages; their
+// JS-side fetches are parsed by MST_MUSFetchModule's own _JSONObjFromData:
+// and mtop calls cross MUSMtopBridge. Filter at both.
+static int gMusJsonCalls = 0, gMusBridgeCalls = 0;
+
+static BOOL ECSubtreeContainsToken(id obj, NSString *token, int depth) {
+    if (obj == nil || depth > 8) return NO;
+    if ([obj isKindOfClass:[NSString class]]) {
+        return [(NSString *)obj containsString:token];
+    }
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        for (id k in (NSDictionary *)obj) {
+            if (ECSubtreeContainsToken(k, token, depth + 1)) return YES;
+            if (ECSubtreeContainsToken(((NSDictionary *)obj)[k], token, depth + 1)) return YES;
+        }
+        return NO;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) {
+            if (ECSubtreeContainsToken(e, token, depth + 1)) return YES;
+        }
+    }
+    return NO;
+}
+
+static id ECFilterAnyPayload(id result) {
+    if (result == nil) return result;
+    @try {
+        BOOL personalish = ECSubtreeContainsToken(result, @"eat_personal", 0) ||
+                           ECSubtreeContainsToken(result, @"personal_my_wallet", 0) ||
+                           ECSubtreeContainsToken(result, @"queryminecenter", 0);
+        BOOL financeish = ECSubtreeContainsToken(result, @"storedcard", 0);
+        if ((personalish || financeish) && [result isKindOfClass:[NSDictionary class]]) {
+            NSString *api = ECSubtreeContainsToken(result, @"queryminecenterfeeds", 0)
+                ? @"mtop.alsc.personal.queryminecenterfeeds"
+                : @"mtop.alsc.personal.queryminecenter";
+            result = ELProcessResult(api, result);
+        } else if (personalish && [result isKindOfClass:[NSArray class]]) {
+            result = ELFilterModules(result, 0);
+        }
+        int budget = 4000;
+        if (ECNodeContainsFingerprint(result, 0, &budget)) {
+            ECNoteBannerHit(@"musjson", @"STRIPPED");
+            result = ECStripFingerprinted(result, 0);
+        }
+    } @catch (NSException *e) { }
+    return result;
+}
+
+typedef id (*ECMusJsonIMP)(id, SEL, id);
+static ECMusJsonIMP gOrigMusJson = NULL;
+static id ECMusJsonReplacement(id self, SEL _cmd, id data) {
+    gMusJsonCalls++;
+    id result = gOrigMusJson ? gOrigMusJson(self, _cmd, data) : nil;
+    return ECFilterAnyPayload(result);
+}
+
+static void ECInstallMusJsonHook(void) {
+    if (gOrigMusJson != NULL) return;
+    Class cls = objc_getClass("MST_MUSFetchModule");
+    if (cls == Nil) return;
+    Method m = class_getInstanceMethod(cls, NSSelectorFromString(@"_JSONObjFromData:"));
+    if (m == NULL) return;
+    gOrigMusJson = (ECMusJsonIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)ECMusJsonReplacement);
+}
+
+typedef void (*ECMusBridgeIMP)(id, SEL, id, id, id);
+static ECMusBridgeIMP gOrigMusBridge = NULL;
+static void ECMusBridgeReplacement(id self, SEL _cmd, id request, id success, id failure) {
+    gMusBridgeCalls++;
+    id wrapped = success;
+    @try {
+        if (success != nil) {
+            wrapped = ^(id resp) {
+                id filtered = ECFilterAnyPayload(resp);
+                ((void (^)(id))success)(filtered);
+            };
+        }
+    } @catch (NSException *e) { wrapped = success; }
+    if (gOrigMusBridge) gOrigMusBridge(self, _cmd, request, wrapped, failure);
+}
+
+static void ECInstallMusBridgeHook(void) {
+    if (gOrigMusBridge != NULL) return;
+    Class cls = objc_getClass("MUSMtopBridge");
+    if (cls == Nil) return;
+    Method m = class_getInstanceMethod(cls, NSSelectorFromString(@"didSendRequest:success:failure:"));
+    if (m == NULL) return;
+    gOrigMusBridge = (ECMusBridgeIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)ECMusBridgeReplacement);
+}
+
 // v13: walk the view tree and record classes of views sitting in the home
 // top-banner band (between the search bar and the category icons).
 static NSMutableString *gViewInfo = nil;
@@ -868,8 +961,8 @@ static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
     ECProbeHomeViews();
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d filt=%d ser=%d/%d\nbannerHits: %@\nviews: %@",
-        gJsonCalls, gFilteredCount, gSerFiltered, gSerCalls,
+        @"json=%d filt=%d ser=%d/%d musJ=%d musB=%d\nbannerHits: %@\nviews: %@",
+        gJsonCalls, gFilteredCount, gSerFiltered, gSerCalls, gMusJsonCalls, gMusBridgeCalls,
         gBannerHits ?: @"(none)",
         gViewInfo ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
@@ -878,7 +971,7 @@ static void ECShowDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v15 诊断", msg, 1L);
+        @"EleClean v16 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
@@ -914,6 +1007,8 @@ __attribute__((constructor)) static void ELEntry(void) {
         ECInstallCardProbe();
         ECInstallMusProbe();
         ECInstallSerHook();
+        ECInstallMusJsonHook();
+        ECInstallMusBridgeHook();
         if (!a || !b || !c) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -927,6 +1022,8 @@ __attribute__((constructor)) static void ELEntry(void) {
                 ECInstallCardProbe();
                 ECInstallMusProbe();
                 ECInstallSerHook();
+                ECInstallMusJsonHook();
+                ECInstallMusBridgeHook();
             });
         }
         // Subclass override check for the diagnostic readout.
