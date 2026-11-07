@@ -1088,6 +1088,7 @@ static void ECCollectTMSViews(id view, NSMutableArray *out, int depth) {
 }
 
 static void ECEnforcePass(void) {
+    gEnforcePasses++;
     @try {
         id app = ((id (*)(id, SEL))objc_msgSend)(objc_getClass("UIApplication"),
                      NSSelectorFromString(@"sharedApplication"));
@@ -1108,6 +1109,15 @@ static void ECEnforcePass(void) {
                     break;
                 }
                 resp = ((id (*)(id, SEL))objc_msgSend)(resp, NSSelectorFromString(@"nextResponder"));
+            }
+            if (vcName != nil) gPageVCs = vcName;
+            // One-time hierarchy dump of the first page that looks like home.
+            if (gTreeDump == nil && (vcName == nil || [vcName containsString:@"Home"] ||
+                [vcName containsString:@"Tab"] || [vcName containsString:@"Main"])) {
+                NSMutableString *dump = [NSMutableString string];
+                int budget = 110;
+                ECDumpTree(page, dump, 0, &budget);
+                if ([dump length] > 20) gTreeDump = dump;
             }
             BOOL isHome = vcName == nil || [vcName containsString:@"Home"];
             BOOL isMine = vcName == nil || [vcName containsString:@"Personal"];
@@ -1136,6 +1146,24 @@ static void ECEnforcePass(void) {
             }
         }
     } @catch (NSException *e) { }
+}
+
+static int gEnforcePasses = 0;
+static NSString *gPageVCs = nil;
+static NSMutableString *gTreeDump = nil;
+
+static void ECDumpTree(id view, NSMutableString *out, int depth, int *budget) {
+    if (view == nil || depth > 13 || *budget <= 0) return;
+    (*budget)--;
+    CGRect f = ECViewFrame(view);
+    CGRect inWin = [view convertRect:[view bounds] toView:nil];
+    NSString *text = ECLabelText(view);
+    NSMutableString *indent = [NSMutableString string];
+    for (int i = 0; i < depth; i++) [indent appendString:@"·"];
+    [out appendFormat:@"%@%@ y=%.0f h=%.0f w=%.0f%@\n", indent,
+        NSStringFromClass([view class]), inWin.origin.y, f.size.height, f.size.width,
+        text ? [NSString stringWithFormat:@" 「%@」", [text substringToIndex:MIN(text.length, 8)]] : @""];
+    for (id sub in ECSubviews(view)) ECDumpTree(sub, out, depth + 1, budget);
 }
 
 static void ECStartEnforcer(void) {
@@ -1191,18 +1219,17 @@ static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
     ECProbeHomeViews();
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d filt=%d ser=%d/%d musJ=%d musB=%d\ncollapsed: %@\nbannerHits: %@\nviews: %@",
-        gJsonCalls, gFilteredCount, gSerFiltered, gSerCalls, gMusJsonCalls, gMusBridgeCalls,
+        @"pass=%d vc=%@\ncollapsed: %@\ntree:\n%@",
+        gEnforcePasses, gPageVCs ?: @"?",
         gCollapsed ?: @"(none)",
-        gBannerHits ?: @"(none)",
-        gViewInfo ?: @"(none)"];
+        gTreeDump ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
     Class appCls = objc_getClass("UIApplication");
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v18 诊断", msg, 1L);
+        @"EleClean v19 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
