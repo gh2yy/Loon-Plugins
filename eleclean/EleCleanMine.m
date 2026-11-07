@@ -75,6 +75,9 @@ static void ECNoteDropped(NSString *biz) {
 static BOOL ELTextHasMarker(NSString *s) {
     if (![s isKindOfClass:[NSString class]]) return NO;
     return [s containsString:@"互动中心"] ||
+           [s containsString:@"借钱"] ||
+           [s containsString:@"生意贷"] ||
+           [s containsString:@"先享后付"] ||
            [s containsString:@"我的钱包"] ||
            [s containsString:@"我的关注"] ||
            [s containsString:@"常点的店"] ||
@@ -319,7 +322,16 @@ static id ECStripFingerprinted(id node, int depth) {
     if ([node isKindOfClass:[NSDictionary class]]) {
         NSMutableDictionary *out = [NSMutableDictionary dictionary];
         for (id k in node) {
-            out[k] = ECStripFingerprinted(node[k], depth + 1);
+            id v = node[k];
+            if ([v isKindOfClass:[NSArray class]]) {
+                out[k] = ECStripFingerprinted(v, depth + 1);
+                continue;
+            }
+            if (depth >= 1) {
+                int b = 300;
+                if (ECNodeContainsFingerprint(v, 0, &b)) continue;
+            }
+            out[k] = ECStripFingerprinted(v, depth + 1);
         }
         return out;
     }
@@ -349,7 +361,8 @@ static id ECFilterResponseObject(id self, id payload) {
     int budget = 4000;
     if (ECNodeContainsFingerprint(payload, 0, &budget)) {
         BOOL suspect = [apiL containsString:@"tsfm.non.build"] ||
-                       [apiL containsString:@"querymaterialinfo"];
+                       [apiL containsString:@"querymaterialinfo"] ||
+                       [apiL containsString:@"carddatarecallfacade"];
         ECNoteBannerHit(api, suspect ? @"STRIPPED" : @"seen");
         if (suspect) {
             return ECStripFingerprinted(payload, 0);
@@ -680,7 +693,7 @@ static void ECShowDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v10 诊断", msg, 1L);
+        @"EleClean v11 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
