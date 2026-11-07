@@ -984,6 +984,24 @@ static void ECInstallProtoHook(void) {
 // tree: the Mine finance strip is identified by its rotating title label
 // (礼品卡 / 借钱 / 我的钱包), the home top banner by geometry (first
 // full-width block under the header inside the home TMS page).
+static int gEnforcePasses = 0;
+static NSString *gPageVCs = nil;
+static NSMutableString *gTreeDump = nil;
+
+static void ECDumpTree(id view, NSMutableString *out, int depth, int *budget) {
+    if (view == nil || depth > 13 || *budget <= 0) return;
+    (*budget)--;
+    CGRect f = ECViewFrame(view);
+    CGRect inWin = [view convertRect:[view bounds] toView:nil];
+    NSString *text = ECLabelText(view);
+    NSMutableString *indent = [NSMutableString string];
+    for (int i = 0; i < depth; i++) [indent appendString:@"·"];
+    [out appendFormat:@"%@%@ y=%.0f h=%.0f w=%.0f%@\n", indent,
+        NSStringFromClass([view class]), inWin.origin.y, f.size.height, f.size.width,
+        text ? [NSString stringWithFormat:@" 「%@」", [text substringToIndex:MIN(text.length, 8)]] : @""];
+    for (id sub in ECSubviews(view)) ECDumpTree(sub, out, depth + 1, budget);
+}
+
 static NSMutableString *gCollapsed = nil;
 static NSTimer *gEnforcer = nil;
 
@@ -1146,24 +1164,6 @@ static void ECEnforcePass(void) {
             }
         }
     } @catch (NSException *e) { }
-}
-
-static int gEnforcePasses = 0;
-static NSString *gPageVCs = nil;
-static NSMutableString *gTreeDump = nil;
-
-static void ECDumpTree(id view, NSMutableString *out, int depth, int *budget) {
-    if (view == nil || depth > 13 || *budget <= 0) return;
-    (*budget)--;
-    CGRect f = ECViewFrame(view);
-    CGRect inWin = [view convertRect:[view bounds] toView:nil];
-    NSString *text = ECLabelText(view);
-    NSMutableString *indent = [NSMutableString string];
-    for (int i = 0; i < depth; i++) [indent appendString:@"·"];
-    [out appendFormat:@"%@%@ y=%.0f h=%.0f w=%.0f%@\n", indent,
-        NSStringFromClass([view class]), inWin.origin.y, f.size.height, f.size.width,
-        text ? [NSString stringWithFormat:@" 「%@」", [text substringToIndex:MIN(text.length, 8)]] : @""];
-    for (id sub in ECSubviews(view)) ECDumpTree(sub, out, depth + 1, budget);
 }
 
 static void ECStartEnforcer(void) {
