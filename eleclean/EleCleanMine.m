@@ -273,16 +273,84 @@ static NSString *ECApiNameFromObject(id obj, int depth) {
 typedef id (*ECJsonIMP)(id, SEL);
 static ECJsonIMP gOrigJson = NULL;
 
+// v9: home top-banner hunt. The creative copy must travel inside SOME mtop
+// payload that passes -json. Fingerprint-scan every dict payload; record the
+// carrier api; strip fingerprinted elements on the two suspect APIs.
+static NSMutableString *gBannerHits = nil;
+static NSArray *ECFingerprints(void) {
+    return @[@"爆好价", @"猜谜抽奖", @"周末爆款", @"大券包", @"天猫双11"];
+}
+static BOOL ECNodeContainsFingerprint(id node, int depth, int *budget) {
+    if (node == nil || depth > 8 || *budget <= 0) return NO;
+    (*budget)--;
+    if ([node isKindOfClass:[NSString class]]) {
+        for (NSString *fp in ECFingerprints()) {
+            if ([node containsString:fp]) return YES;
+        }
+        return NO;
+    }
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        for (id v in [node allValues]) {
+            if (ECNodeContainsFingerprint(v, depth + 1, budget)) return YES;
+        }
+        return NO;
+    }
+    if ([node isKindOfClass:[NSArray class]]) {
+        for (id v in node) {
+            if (ECNodeContainsFingerprint(v, depth + 1, budget)) return YES;
+        }
+    }
+    return NO;
+}
+static id ECStripFingerprinted(id node, int depth) {
+    if (depth > 8 || node == nil) return node;
+    if ([node isKindOfClass:[NSArray class]]) {
+        NSMutableArray *out = [NSMutableArray array];
+        for (id el in node) {
+            int b = 300;
+            if (ECNodeContainsFingerprint(el, 0, &b)) continue;
+            [out addObject:ECStripFingerprinted(el, depth + 1)];
+        }
+        return out;
+    }
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *out = [NSMutableDictionary dictionary];
+        for (id k in node) {
+            out[k] = ECStripFingerprinted(node[k], depth + 1);
+        }
+        return out;
+    }
+    return node;
+}
+static void ECNoteBannerHit(NSString *api, NSString *how) {
+    if (gBannerHits == nil) gBannerHits = [NSMutableString string];
+    NSString *entry = [NSString stringWithFormat:@"%@(%@) ", api ?: @"?", how];
+    if ([gBannerHits rangeOfString:entry].location == NSNotFound && [gBannerHits length] < 450) {
+        [gBannerHits appendString:entry];
+    }
+}
+
 static id ECFilterResponseObject(id self, id payload) {
     if (![payload isKindOfClass:[NSDictionary class]]) return payload;
     NSString *api = ECApiNameFromObject(self, 0);
     ECNoteApi(api);
-    if (api != nil && [[api lowercaseString] hasPrefix:@"mtop.alsc.personal."]) {
+    NSString *apiL = [api lowercaseString];
+    if (api != nil && [apiL hasPrefix:@"mtop.alsc.personal."]) {
         ECNotePersonalApi(api);
         ECNotePersonalVia(NSStringFromClass([self class]));
         id out = ELProcessResult(api, payload);
         if (out != payload) gFilteredCount++;
         return out;
+    }
+    // banner trap (read-only scan on all apis; strip on the two suspects)
+    int budget = 4000;
+    if (ECNodeContainsFingerprint(payload, 0, &budget)) {
+        BOOL suspect = [apiL containsString:@"tsfm.non.build"] ||
+                       [apiL containsString:@"querymaterialinfo"];
+        ECNoteBannerHit(api, suspect ? @"STRIPPED" : @"seen");
+        if (suspect) {
+            return ECStripFingerprinted(payload, 0);
+        }
     }
     return payload;
 }
@@ -600,18 +668,16 @@ static void ECInstallMusProbe(void) {
 static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d sub=%d tsfm=%d mist=%d bridge=%d mus=%d cards=%d filt=%d\npersonalApis: %@\ncardBiz: %@",
-        gJsonCalls, gJsonSubCalls, gTsfmCalls, gMistCalls, gBridgeCalls, gMusCalls,
-        gCardModelCalls, gFilteredCount,
-        gPersonalApis ?: @"(none)",
-        gCardBiz ?: @"(none)"];
+        @"json=%d filt=%d\nbannerHits: %@",
+        gJsonCalls, gFilteredCount,
+        gBannerHits ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
     Class appCls = objc_getClass("UIApplication");
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v7 诊断", msg, 1L);
+        @"EleClean v9 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
@@ -673,7 +739,10 @@ __attribute__((constructor)) static void ELEntry(void) {
             }
             gSubclassInfo = [info copy];
         }
-
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ECShowDiag();
+        });
     }
 }
 
