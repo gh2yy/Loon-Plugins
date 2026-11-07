@@ -762,7 +762,7 @@ static void ECWalkViews(id view, id window, int depth) {
     if (view == nil || depth > 14) return;
     @try {
         CGRect frame = ((CGRect (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"frame"));
-        CGRect inWin = ((CGRect (*)(id, SEL, id))objc_msgSend)(view, NSSelectorFromString(@"convertRect:toView:"), frame, window);
+        CGRect inWin = ((CGRect (*)(id, SEL, CGRect, id))objc_msgSend)(view, NSSelectorFromString(@"convertRect:toView:"), frame, window);
         // banner band: full-width-ish, 50..160pt tall, top area of the screen
         if (inWin.size.width > 300 && inWin.size.height > 45 && inWin.size.height < 170 &&
             inWin.origin.y > 80 && inWin.origin.y < 330) {
