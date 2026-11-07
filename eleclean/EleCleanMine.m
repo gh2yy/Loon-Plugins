@@ -136,7 +136,7 @@ static BOOL ELIsFinanceModule(id obj) {
 }
 
 static BOOL ELSubtreeHasDeniedCode(id obj, int depth) {
-    if (obj == nil || depth > 3) return NO;
+    if (obj == nil || depth > 5) return NO;
     if ([obj isKindOfClass:[NSDictionary class]]) {
         id code = ((NSDictionary *)obj)[@"code"] ?: ((NSDictionary *)obj)[@"bizCode"];
         if ([code isKindOfClass:[NSString class]] &&
@@ -772,6 +772,55 @@ static void ECInstallMusProbe(void) {
     }
 }
 
+// v15: master door — every JSON response in the app is parsed through
+// NSJSONSerialization, including the Weex/TMS pages' data (which never
+// touches MtopExtResponse) and the storedcard formwork behind the rotating
+// finance strip. Pre-check the raw text for rare trigger tokens, then run
+// the existing filters on the parsed object and return the filtered copy.
+static int gSerCalls = 0, gSerFiltered = 0;
+typedef id (*ECSerIMP)(id, SEL, id, NSUInteger, id *);
+static ECSerIMP gOrigSer = NULL;
+
+static id ECSerReplacement(id cls, SEL _cmd, id data, NSUInteger options, id *error) {
+    id result = gOrigSer ? gOrigSer(cls, _cmd, data, options, error) : nil;
+    @try {
+        if (result == nil || ![result isKindOfClass:[NSDictionary class]]) return result;
+        if (![data isKindOfClass:[NSData class]] || [data length] > 3 * 1024 * 1024) return result;
+        gSerCalls++;
+        NSString *raw = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (raw == nil) return result;
+        BOOL personalish = [raw containsString:@"eat_personal"] ||
+                           [raw containsString:@"personal_my_wallet"] ||
+                           [raw containsString:@"queryminecenter"];
+        BOOL financeish = [raw containsString:@"storedcard"] ||
+                          [raw containsString:@"生意贷"] || [raw containsString:@"超时赔"];
+        if (personalish || financeish) {
+            NSString *api = [raw containsString:@"queryminecenterfeeds"]
+                ? @"mtop.alsc.personal.queryminecenterfeeds"
+                : @"mtop.alsc.personal.queryminecenter";
+            id out = ELProcessResult(api, result);
+            if (out != result) { gSerFiltered++; result = out; }
+        }
+        int budget = 4000;
+        if (ECNodeContainsFingerprint(result, 0, &budget)) {
+            ECNoteBannerHit(@"jsonser", @"STRIPPED");
+            gSerFiltered++;
+            result = ECStripFingerprinted(result, 0);
+        }
+    } @catch (NSException *e) { }
+    return result;
+}
+
+static void ECInstallSerHook(void) {
+    if (gOrigSer != NULL) return;
+    Class cls = objc_getClass("NSJSONSerialization");
+    if (cls == Nil) return;
+    Method m = class_getClassMethod(cls, NSSelectorFromString(@"JSONObjectWithData:options:error:"));
+    if (m == NULL) return;
+    gOrigSer = (ECSerIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)ECSerReplacement);
+}
+
 // v13: walk the view tree and record classes of views sitting in the home
 // top-banner band (between the search bar and the category icons).
 static NSMutableString *gViewInfo = nil;
@@ -819,8 +868,8 @@ static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
     ECProbeHomeViews();
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d filt=%d\nbannerHits: %@\nviews: %@",
-        gJsonCalls, gFilteredCount,
+        @"json=%d filt=%d ser=%d/%d\nbannerHits: %@\nviews: %@",
+        gJsonCalls, gFilteredCount, gSerFiltered, gSerCalls,
         gBannerHits ?: @"(none)",
         gViewInfo ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
@@ -829,7 +878,7 @@ static void ECShowDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v14 诊断", msg, 1L);
+        @"EleClean v15 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
@@ -864,6 +913,7 @@ __attribute__((constructor)) static void ELEntry(void) {
         ECInstallPageDataHooks();
         ECInstallCardProbe();
         ECInstallMusProbe();
+        ECInstallSerHook();
         if (!a || !b || !c) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -876,6 +926,7 @@ __attribute__((constructor)) static void ELEntry(void) {
                 ECInstallPageDataHooks();
                 ECInstallCardProbe();
                 ECInstallMusProbe();
+                ECInstallSerHook();
             });
         }
         // Subclass override check for the diagnostic readout.
