@@ -978,6 +978,172 @@ static void ECInstallProtoHook(void) {
     [NSURLProtocol registerClass:[ECLogProtocol class]];
 }
 
+// v18: view-layer enforcer. Every data channel is exhausted (proto sensor
+// saw nothing: payloads ride the private AMNet/TNET stack and are parsed
+// inside JS). Collapse the two remaining modules in the rendered view
+// tree: the Mine finance strip is identified by its rotating title label
+// (礼品卡 / 借钱 / 我的钱包), the home top banner by geometry (first
+// full-width block under the header inside the home TMS page).
+static NSMutableString *gCollapsed = nil;
+static NSTimer *gEnforcer = nil;
+
+static void ECNoteCollapsed(NSString *what, id view) {
+    if (gCollapsed == nil) gCollapsed = [NSMutableString string];
+    NSString *entry = [NSString stringWithFormat:@"%@:%@ ", what, NSStringFromClass([view class])];
+    if ([gCollapsed rangeOfString:entry].location == NSNotFound && [gCollapsed length] < 300) {
+        [gCollapsed appendString:entry];
+    }
+}
+
+static BOOL ECIsUIViewClass(id o) {
+    Class uiview = objc_getClass("UIView");
+    return uiview != Nil && [o isKindOfClass:uiview];
+}
+static CGRect ECViewFrame(id v) {
+    return ((CGRect (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"frame"));
+}
+static NSArray *ECSubviews(id v) {
+    return ((NSArray * (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"subviews")) ?: @[];
+}
+static id ECSuperviewOf(id v) {
+    return ((id (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"superview"));
+}
+static void ECSetHidden(id v, BOOL h) {
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(v, NSSelectorFromString(@"setHidden:"), h);
+}
+static BOOL ECIsHidden(id v) {
+    return ((BOOL (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"isHidden"));
+}
+static void ECSetFrame(id v, CGRect f) {
+    ((void (*)(id, SEL, CGRect))objc_msgSend)(v, NSSelectorFromString(@"setFrame:"), f);
+}
+static NSString *ECLabelText(id v) {
+    Class label = objc_getClass("UILabel");
+    if (label == Nil || ![v isKindOfClass:label]) return nil;
+    return ((NSString * (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"text"));
+}
+
+// Collapse a container: zero its height, hide it, pull later siblings up.
+static void ECCollapseView(id target, NSString *what) {
+    if (!ECIsUIViewClass(target)) return;
+    CGRect f = ECViewFrame(target);
+    if (f.size.height < 5 || ECIsHidden(target)) return;
+    id parent = ECSuperviewOf(target);
+    CGFloat delta = f.size.height;
+    ECSetHidden(target, YES);
+    ECSetFrame(target, CGRectMake(f.origin.x, f.origin.y, f.size.width, 0));
+    if (parent != nil) {
+        for (id sib in ECSubviews(parent)) {
+            if (sib == target) continue;
+            CGRect sf = ECViewFrame(sib);
+            if (sf.origin.y >= f.origin.y + 1) {
+                ECSetFrame(sib, CGRectMake(sf.origin.x, sf.origin.y - delta, sf.size.width, sf.size.height));
+            }
+        }
+    }
+    ECNoteCollapsed(what, target);
+}
+
+// Find a label with any of the given titles inside root (depth-limited);
+// return the enclosing module container: the highest ancestor (below the
+// page root) that spans ~full width.
+static id ECFindModuleByLabel(id root, NSArray *titles, int depth) {
+    if (root == nil || depth > 24) return nil;
+    NSString *text = ECLabelText(root);
+    if (text != nil) {
+        for (NSString *t in titles) {
+            if ([text isEqualToString:t] || [text hasPrefix:t]) {
+                id node = root;
+                id best = ECSuperviewOf(root);
+                for (int i = 0; i < 8; i++) {
+                    id up = ECSuperviewOf(node);
+                    if (up == nil) break;
+                    CGRect uf = ECViewFrame(up);
+                    CGRect nf = ECViewFrame(node);
+                    if (uf.size.width >= 340 && uf.size.height >= nf.size.height + 2 &&
+                        uf.size.height <= 400) {
+                        best = up;
+                        node = up;
+                    } else break;
+                }
+                return best;
+            }
+        }
+    }
+    for (id sub in ECSubviews(root)) {
+        id hit = ECFindModuleByLabel(sub, titles, depth + 1);
+        if (hit != nil) return hit;
+    }
+    return nil;
+}
+
+// All TMS page views currently in any window.
+static void ECCollectTMSViews(id view, NSMutableArray *out, int depth) {
+    if (view == nil || depth > 30) return;
+    if ([NSStringFromClass([view class]) containsString:@"TMSPageView"]) {
+        [out addObject:view];
+        return;
+    }
+    for (id sub in ECSubviews(view)) ECCollectTMSViews(sub, out, depth + 1);
+}
+
+static void ECEnforcePass(void) {
+    @try {
+        id app = ((id (*)(id, SEL))objc_msgSend)(objc_getClass("UIApplication"),
+                     NSSelectorFromString(@"sharedApplication"));
+        NSArray *windows = ((NSArray * (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
+        NSMutableArray *pages = [NSMutableArray array];
+        for (id w in windows) ECCollectTMSViews(w, pages, 0);
+        CGFloat winW = 0;
+        if (windows.count > 0) winW = ECViewFrame(windows.firstObject).size.width;
+        if (winW < 300) winW = 400;
+        for (id page in pages) {
+            // Which tab's page is this? Walk the responder chain to its VC.
+            NSString *vcName = nil;
+            id resp = page;
+            for (int i = 0; i < 20 && resp != nil; i++) {
+                Class vcCls = objc_getClass("UIViewController");
+                if (vcCls != Nil && [resp isKindOfClass:vcCls]) {
+                    vcName = NSStringFromClass([resp class]);
+                    break;
+                }
+                resp = ((id (*)(id, SEL))objc_msgSend)(resp, NSSelectorFromString(@"nextResponder"));
+            }
+            BOOL isHome = vcName == nil || [vcName containsString:@"Home"];
+            BOOL isMine = vcName == nil || [vcName containsString:@"Personal"];
+            // Mine finance strip by rotating title.
+            if (isMine) {
+                id strip = ECFindModuleByLabel(page, @[@"礼品卡", @"借钱"], 0);
+                if (strip != nil) ECCollapseView(strip, @"strip");
+            }
+            if (!isHome) continue;
+            // Home top banner by geometry among the page's direct visual
+            // blocks: walk children of the page's first scroll content.
+            NSMutableArray *blocks = [NSMutableArray array];
+            [blocks addObjectsFromArray:ECSubviews(page)];
+            for (id child in blocks) {
+                CGRect f = ECViewFrame(child);
+                (void)f;
+                for (id sub in ECSubviews(child)) {
+                    CGRect sf = ECViewFrame(sub);
+                    if (sf.size.width >= winW * 0.88 && sf.size.height >= 55 && sf.size.height <= 140) {
+                        CGRect inPage = [sub convertRect:[sub bounds] toView:page];
+                        if (inPage.origin.y > 90 && inPage.origin.y < 300) {
+                            ECCollapseView(sub, @"banner");
+                        }
+                    }
+                }
+            }
+        }
+    } @catch (NSException *e) { }
+}
+
+static void ECStartEnforcer(void) {
+    if (gEnforcer != nil) return;
+    gEnforcer = [NSTimer scheduledTimerWithTimeInterval:0.6
+        repeats:YES block:^(NSTimer *t) { ECEnforcePass(); }];
+}
+
 // v13: walk the view tree and record classes of views sitting in the home
 // top-banner band (between the search bar and the category icons).
 static NSMutableString *gViewInfo = nil;
@@ -1025,10 +1191,10 @@ static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
     ECProbeHomeViews();
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d filt=%d ser=%d/%d musJ=%d musB=%d\nbannerHits: %@\nproto: %@\nviews: %@",
+        @"json=%d filt=%d ser=%d/%d musJ=%d musB=%d\ncollapsed: %@\nbannerHits: %@\nviews: %@",
         gJsonCalls, gFilteredCount, gSerFiltered, gSerCalls, gMusJsonCalls, gMusBridgeCalls,
+        gCollapsed ?: @"(none)",
         gBannerHits ?: @"(none)",
-        gProtoHits ?: @"(none)",
         gViewInfo ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
@@ -1036,7 +1202,7 @@ static void ECShowDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v17 诊断", msg, 1L);
+        @"EleClean v18 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
@@ -1074,7 +1240,8 @@ __attribute__((constructor)) static void ELEntry(void) {
         ECInstallSerHook();
         ECInstallMusJsonHook();
         ECInstallMusBridgeHook();
-        ECInstallProtoHook();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{ ECStartEnforcer(); });
         if (!a || !b || !c) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
