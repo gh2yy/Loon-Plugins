@@ -140,6 +140,16 @@ static id ELFilterModules(id obj, int depth) {
     if ([obj isKindOfClass:[NSArray class]]) {
         NSMutableArray *out = [NSMutableArray arrayWithCapacity:((NSArray *)obj).count];
         for (id e in (NSArray *)obj) {
+            if ([e isKindOfClass:[NSDictionary class]]) {
+                id code = ((NSDictionary *)e)[@"code"] ?: ((NSDictionary *)e)[@"bizCode"];
+                if ([code isKindOfClass:[NSString class]] &&
+                    ([code isEqualToString:@"personal_my_wallet"] ||
+                     [code isEqualToString:@"eat_personal_operation_strip"] ||
+                     [code isEqualToString:@"eleme_personal_game_center"] ||
+                     [code isEqualToString:@"eat_personal_myfollow"])) {
+                    continue;
+                }
+            }
             if (ELSubtreeHasMarker(e, depth + 1)) continue;
             if (ELIsFinanceModule(e)) continue;
             [out addObject:ELFilterModules(e, depth + 1)];
@@ -745,20 +755,57 @@ static void ECInstallMusProbe(void) {
     }
 }
 
+// v13: walk the view tree and record classes of views sitting in the home
+// top-banner band (between the search bar and the category icons).
+static NSMutableString *gViewInfo = nil;
+static void ECWalkViews(id view, id window, int depth) {
+    if (view == nil || depth > 14) return;
+    @try {
+        CGRect frame = ((CGRect (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"frame"));
+        CGRect inWin = ((CGRect (*)(id, SEL, id))objc_msgSend)(view, NSSelectorFromString(@"convertRect:toView:"), frame, window);
+        // banner band: full-width-ish, 50..160pt tall, top area of the screen
+        if (inWin.size.width > 300 && inWin.size.height > 45 && inWin.size.height < 170 &&
+            inWin.origin.y > 80 && inWin.origin.y < 330) {
+            if (gViewInfo == nil) gViewInfo = [NSMutableString string];
+            NSString *entry = [NSString stringWithFormat:@"%@(y=%.0f,h=%.0f) ",
+                NSStringFromClass([view class]), inWin.origin.y, inWin.size.height];
+            if ([gViewInfo rangeOfString:entry].location == NSNotFound && [gViewInfo length] < 550) {
+                [gViewInfo appendString:entry];
+            }
+        }
+        NSArray *subs = ((id (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"subviews"));
+        for (id sv in subs) ECWalkViews(sv, window, depth + 1);
+    } @catch (NSException *e) { }
+}
+static void ECProbeHomeViews(void) {
+    Class appCls = objc_getClass("UIApplication");
+    if (appCls == Nil) return;
+    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
+    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
+    id key = nil;
+    for (id w in windows) {
+        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
+        if (isKey) { key = w; break; }
+    }
+    if (key == nil) key = [windows firstObject];
+    if (key != nil) ECWalkViews(key, key, 0);
+}
+
 static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
+    ECProbeHomeViews();
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d filt=%d\nbannerHits: %@\nids: %@",
+        @"json=%d filt=%d\nbannerHits: %@\nviews: %@",
         gJsonCalls, gFilteredCount,
         gBannerHits ?: @"(none)",
-        gIdentityInfo ?: @"(none)"];
+        gViewInfo ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
     Class appCls = objc_getClass("UIApplication");
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v12 诊断", msg, 1L);
+        @"EleClean v13 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
