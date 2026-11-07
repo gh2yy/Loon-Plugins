@@ -1,0 +1,6 @@
+clang: error: no such file or directory: 'eleclean/EleCleanMine.m'
+total 8
+drwxr-xr-x   3 runner  staff   96 Nov  7 03:04 .
+drwxr-xr-x  24 runner  staff  768 Nov  7 03:04 ..
+-rw-r--r--   1 runner  staff   67 Nov  7 03:04 build-log.txt
+out/EleCleanMine.dylib: cannot open `out/EleCleanMine.dylib' (No such file or directory)
