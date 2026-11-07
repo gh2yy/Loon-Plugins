@@ -107,12 +107,41 @@ static BOOL ELSubtreeHasMarker(id obj, int depth) {
     return NO;
 }
 
+static void ELCollectFinanceLabels(id obj, int depth, NSMutableSet *acc) {
+    if (obj == nil || depth > 10) return;
+    if ([obj isKindOfClass:[NSString class]]) {
+        static NSArray *labels = nil;
+        if (labels == nil) labels = @[@"零钱", @"生意贷", @"超时赔", @"先享后付",
+                                      @"礼品卡", @"外卖红包", @"支付权益", @"借钱"];
+        for (NSString *l in labels) {
+            if ([(NSString *)obj containsString:l]) [acc addObject:l];
+        }
+        return;
+    }
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        for (id k in (NSDictionary *)obj) {
+            ELCollectFinanceLabels(k, depth + 1, acc);
+            ELCollectFinanceLabels(((NSDictionary *)obj)[k], depth + 1, acc);
+        }
+        return;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) ELCollectFinanceLabels(e, depth + 1, acc);
+    }
+}
+static BOOL ELIsFinanceModule(id obj) {
+    NSMutableSet *acc = [NSMutableSet set];
+    ELCollectFinanceLabels(obj, 0, acc);
+    return [acc count] >= 2;
+}
+
 static id ELFilterModules(id obj, int depth) {
     if (obj == nil || depth > 10) return obj;
     if ([obj isKindOfClass:[NSArray class]]) {
         NSMutableArray *out = [NSMutableArray arrayWithCapacity:((NSArray *)obj).count];
         for (id e in (NSArray *)obj) {
             if (ELSubtreeHasMarker(e, depth + 1)) continue;
+            if (ELIsFinanceModule(e)) continue;
             [out addObject:ELFilterModules(e, depth + 1)];
         }
         return out;
@@ -279,6 +308,40 @@ static NSString *ECApiNameFromObject(id obj, int depth) {
 typedef id (*ECJsonIMP)(id, SEL);
 static ECJsonIMP gOrigJson = NULL;
 
+// v12 diag: record module/card identities to find stable keys.
+static NSMutableString *gIdentityInfo = nil;
+static void ECNoteIdentity(NSString *tag, id dictNode) {
+    if (![dictNode isKindOfClass:[NSDictionary class]]) return;
+    NSDictionary *d = (NSDictionary *)dictNode;
+    NSString *ident = nil;
+    for (NSString *k in @[@"bizCode", @"code", @"type", @"templateId", @"name", @"moduleName", @"title"]) {
+        id v = d[k];
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) {
+            ident = [NSString stringWithFormat:@"%@=%@", k, v];
+            break;
+        }
+    }
+    if (ident == nil) return;
+    if (gIdentityInfo == nil) gIdentityInfo = [NSMutableString string];
+    NSString *entry = [NSString stringWithFormat:@"%@:%@ ", tag, ident];
+    if ([gIdentityInfo rangeOfString:entry].location == NSNotFound && [gIdentityInfo length] < 600) {
+        [gIdentityInfo appendString:entry];
+    }
+}
+static void ECRecordModuleIdentities(id node, int depth) {
+    if (node == nil || depth > 4) return;
+    if ([node isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)node) {
+            ECNoteIdentity(@"M", e);
+            ECRecordModuleIdentities(e, depth + 1);
+        }
+        return;
+    }
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        for (id k in (NSDictionary *)node) ECRecordModuleIdentities(((NSDictionary *)node)[k], depth + 1);
+    }
+}
+
 // v9: home top-banner hunt. The creative copy must travel inside SOME mtop
 // payload that passes -json. Fingerprint-scan every dict payload; record the
 // carrier api; strip fingerprinted elements on the two suspect APIs.
@@ -314,7 +377,7 @@ static id ECStripFingerprinted(id node, int depth) {
         NSMutableArray *out = [NSMutableArray array];
         for (id el in node) {
             int b = 300;
-            if (ECNodeContainsFingerprint(el, 0, &b)) continue;
+            if (ECNodeContainsFingerprint(el, 0, &b)) { ECNoteIdentity(@"S", el); continue; }
             [out addObject:ECStripFingerprinted(el, depth + 1)];
         }
         return out;
@@ -353,6 +416,7 @@ static id ECFilterResponseObject(id self, id payload) {
     if (api != nil && [apiL hasPrefix:@"mtop.alsc.personal."]) {
         ECNotePersonalApi(api);
         ECNotePersonalVia(NSStringFromClass([self class]));
+        ECRecordModuleIdentities(payload, 0);
         id out = ELProcessResult(api, payload);
         if (out != payload) gFilteredCount++;
         return out;
@@ -684,16 +748,17 @@ static void ECInstallMusProbe(void) {
 static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d filt=%d\nbannerHits: %@",
+        @"json=%d filt=%d\nbannerHits: %@\nids: %@",
         gJsonCalls, gFilteredCount,
-        gBannerHits ?: @"(none)"];
+        gBannerHits ?: @"(none)",
+        gIdentityInfo ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
     Class appCls = objc_getClass("UIApplication");
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v11 诊断", msg, 1L);
+        @"EleClean v12 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
