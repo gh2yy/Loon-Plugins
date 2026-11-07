@@ -135,20 +135,37 @@ static BOOL ELIsFinanceModule(id obj) {
     return [acc count] >= 2;
 }
 
+static BOOL ELSubtreeHasDeniedCode(id obj, int depth) {
+    if (obj == nil || depth > 3) return NO;
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        id code = ((NSDictionary *)obj)[@"code"] ?: ((NSDictionary *)obj)[@"bizCode"];
+        if ([code isKindOfClass:[NSString class]] &&
+            ([code isEqualToString:@"personal_my_wallet"] ||
+             [code isEqualToString:@"eat_personal_operation_strip"] ||
+             [code isEqualToString:@"eleme_personal_game_center"] ||
+             [code isEqualToString:@"eat_personal_myfollow"])) {
+            return YES;
+        }
+        for (id k in (NSDictionary *)obj) {
+            if (ELSubtreeHasDeniedCode(((NSDictionary *)obj)[k], depth + 1)) return YES;
+        }
+        return NO;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) {
+            if (ELSubtreeHasDeniedCode(e, depth + 1)) return YES;
+        }
+    }
+    return NO;
+}
+
 static id ELFilterModules(id obj, int depth) {
     if (obj == nil || depth > 10) return obj;
     if ([obj isKindOfClass:[NSArray class]]) {
         NSMutableArray *out = [NSMutableArray arrayWithCapacity:((NSArray *)obj).count];
         for (id e in (NSArray *)obj) {
-            if ([e isKindOfClass:[NSDictionary class]]) {
-                id code = ((NSDictionary *)e)[@"code"] ?: ((NSDictionary *)e)[@"bizCode"];
-                if ([code isKindOfClass:[NSString class]] &&
-                    ([code isEqualToString:@"personal_my_wallet"] ||
-                     [code isEqualToString:@"eat_personal_operation_strip"] ||
-                     [code isEqualToString:@"eleme_personal_game_center"] ||
-                     [code isEqualToString:@"eat_personal_myfollow"])) {
-                    continue;
-                }
+            if ([e isKindOfClass:[NSDictionary class]] && ELSubtreeHasDeniedCode(e, 0)) {
+                continue;
             }
             if (ELSubtreeHasMarker(e, depth + 1)) continue;
             if (ELIsFinanceModule(e)) continue;
@@ -759,11 +776,22 @@ static void ECInstallMusProbe(void) {
 // top-banner band (between the search bar and the category icons).
 static NSMutableString *gViewInfo = nil;
 static void ECWalkViews(id view, id window, int depth) {
-    if (view == nil || depth > 14) return;
+    if (view == nil || depth > 22) return;
     @try {
-        CGRect frame = ((CGRect (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"frame"));
-        CGRect inWin = ((CGRect (*)(id, SEL, CGRect, id))objc_msgSend)(view, NSSelectorFromString(@"convertRect:toView:"), frame, window);
+        CGRect bounds = ((CGRect (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"bounds"));
+        CGRect inWin = ((CGRect (*)(id, SEL, CGRect, id))objc_msgSend)(view, NSSelectorFromString(@"convertRect:toView:"), bounds, window);
         // banner band: full-width-ish, 50..160pt tall, top area of the screen
+        NSString *clsName = NSStringFromClass([view class]);
+        BOOL nameHint = [clsName containsString:@"Banner"] || [clsName containsString:@"Mist"] ||
+                        [clsName containsString:@"Weex"] || [clsName containsString:@"WX"] ||
+                        [clsName containsString:@"Cube"] || [clsName containsString:@"Operation"];
+        if (nameHint && inWin.size.width > 200 && inWin.size.height > 20) {
+            if (gViewInfo == nil) gViewInfo = [NSMutableString string];
+            NSString *entry = [NSString stringWithFormat:@"[%@ y=%.0f h=%.0f] ", clsName, inWin.origin.y, inWin.size.height];
+            if ([gViewInfo rangeOfString:entry].location == NSNotFound && [gViewInfo length] < 550) {
+                [gViewInfo appendString:entry];
+            }
+        }
         if (inWin.size.width > 300 && inWin.size.height > 45 && inWin.size.height < 170 &&
             inWin.origin.y > 80 && inWin.origin.y < 330) {
             if (gViewInfo == nil) gViewInfo = [NSMutableString string];
@@ -782,13 +810,9 @@ static void ECProbeHomeViews(void) {
     if (appCls == Nil) return;
     id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
     NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
-    id key = nil;
     for (id w in windows) {
-        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
-        if (isKey) { key = w; break; }
+        ECWalkViews(w, w, 0);
     }
-    if (key == nil) key = [windows firstObject];
-    if (key != nil) ECWalkViews(key, key, 0);
 }
 
 static void ECShowDiag(void) {
@@ -805,7 +829,7 @@ static void ECShowDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v13 诊断", msg, 1L);
+        @"EleClean v14 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
