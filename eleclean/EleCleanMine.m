@@ -75,6 +75,9 @@ static void ECNoteDropped(NSString *biz) {
 static BOOL ELTextHasMarker(NSString *s) {
     if (![s isKindOfClass:[NSString class]]) return NO;
     return [s containsString:@"互动中心"] ||
+           [s containsString:@"我的钱包"] ||
+           [s containsString:@"我的关注"] ||
+           [s containsString:@"常点的店"] ||
            [s containsString:@"口味"] ||
            [s containsString:@"ai_profile"] ||
            [s containsString:@"interact_center"] ||
@@ -677,7 +680,7 @@ static void ECShowDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v9 诊断", msg, 1L);
+        @"EleClean v10 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
