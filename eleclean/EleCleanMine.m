@@ -914,6 +914,70 @@ static void ECInstallMusBridgeHook(void) {
     method_setImplementation(m, (IMP)ECMusBridgeReplacement);
 }
 
+// v17: passive logging NSURLProtocol. Weex-stream / xtop traffic is plain
+// HTTPS; if the banner/strip payloads travel that way, this sees their URLs
+// and fingerprint tokens even though the payloads are parsed inside JS.
+static NSMutableString *gProtoHits = nil;
+static void ECNoteProtoHit(NSString *url, NSString *token) {
+    if (gProtoHits == nil) gProtoHits = [NSMutableString string];
+    NSString *entry = [NSString stringWithFormat:@"%@~%@ ", token, url];
+    if ([gProtoHits rangeOfString:entry].location == NSNotFound && [gProtoHits length] < 500) {
+        [gProtoHits appendString:entry];
+    }
+}
+
+@interface ECLogProtocol : NSURLProtocol <NSURLConnectionDataDelegate> {
+    NSURLConnection *_conn;
+    NSMutableData *_data;
+}
+@end
+@implementation ECLogProtocol
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+    if ([NSURLProtocol propertyForKey:@"ECLogHandled" inRequest:request]) return NO;
+    NSString *scheme = [[request URL] scheme];
+    return [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"];
+}
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
+- (void)startLoading {
+    NSMutableURLRequest *req = [self.request mutableCopy];
+    [NSURLProtocol setProperty:@YES forKey:@"ECLogHandled" inRequest:req];
+    _data = [NSMutableData data];
+    _conn = [[NSURLConnection alloc] initWithRequest:req delegate:self];
+}
+- (void)stopLoading { [_conn cancel]; }
+- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
+    [[self client] URLProtocol:self didReceiveResponse:response
+        cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+}
+- (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data {
+    [_data appendData:data];
+    [[self client] URLProtocol:self didLoadData:data];
+}
+- (void)connectionDidFinishLoading:(NSURLConnection *)connection {
+    @try {
+        if (_data.length > 0 && _data.length < 4 * 1024 * 1024) {
+            NSString *text = [[NSString alloc] initWithData:_data encoding:NSUTF8StringEncoding];
+            if (text != nil) {
+                NSString *url = [[self.request URL] host] ?: @"?";
+                for (NSString *tok in @[@"爆好价", @"personal_my_wallet",
+                                        @"eat_personal_operation_strip", @"超时赔",
+                                        @"礼品卡", @"queryminecenter"]) {
+                    if ([text containsString:tok]) ECNoteProtoHit(url, tok);
+                }
+            }
+        }
+    } @catch (NSException *e) { }
+    [[self client] URLProtocolDidFinishLoading:self];
+}
+- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
+    [[self client] URLProtocol:self didFailWithError:error];
+}
+@end
+
+static void ECInstallProtoHook(void) {
+    [NSURLProtocol registerClass:[ECLogProtocol class]];
+}
+
 // v13: walk the view tree and record classes of views sitting in the home
 // top-banner band (between the search bar and the category icons).
 static NSMutableString *gViewInfo = nil;
@@ -961,9 +1025,10 @@ static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
     ECProbeHomeViews();
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d filt=%d ser=%d/%d musJ=%d musB=%d\nbannerHits: %@\nviews: %@",
+        @"json=%d filt=%d ser=%d/%d musJ=%d musB=%d\nbannerHits: %@\nproto: %@\nviews: %@",
         gJsonCalls, gFilteredCount, gSerFiltered, gSerCalls, gMusJsonCalls, gMusBridgeCalls,
         gBannerHits ?: @"(none)",
+        gProtoHits ?: @"(none)",
         gViewInfo ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
@@ -971,7 +1036,7 @@ static void ECShowDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v16 诊断", msg, 1L);
+        @"EleClean v17 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
@@ -1009,6 +1074,7 @@ __attribute__((constructor)) static void ELEntry(void) {
         ECInstallSerHook();
         ECInstallMusJsonHook();
         ECInstallMusBridgeHook();
+        ECInstallProtoHook();
         if (!a || !b || !c) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
