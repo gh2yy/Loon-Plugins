@@ -1017,6 +1017,29 @@ static BOOL ECIsHidden(id v) {
 static void ECSetFrame(id v, CGRect f) {
     ((void (*)(id, SEL, CGRect))objc_msgSend)(v, NSSelectorFromString(@"setFrame:"), f);
 }
+static NSString *ECTextOfView(id v) {
+    @try {
+        Class label = objc_getClass("UILabel");
+        if (label != Nil && [v isKindOfClass:label]) {
+            return ((NSString * (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"text"));
+        }
+        SEL tsel = NSSelectorFromString(@"text");
+        if ([v respondsToSelector:tsel]) {
+            id t = ((id (*)(id, SEL))objc_msgSend)(v, tsel);
+            if ([t isKindOfClass:[NSString class]] && [t length] > 0) return t;
+        }
+        SEL asel = NSSelectorFromString(@"attributedText");
+        if ([v respondsToSelector:asel]) {
+            id at = ((id (*)(id, SEL))objc_msgSend)(v, asel);
+            if (at != nil && [at respondsToSelector:NSSelectorFromString(@"string")]) {
+                id str = ((id (*)(id, SEL))objc_msgSend)(at, NSSelectorFromString(@"string"));
+                if ([str isKindOfClass:[NSString class]] && [str length] > 0) return str;
+            }
+        }
+    } @catch (NSException *e) { }
+    return nil;
+}
+
 static NSString *ECLabelText(id v) {
     Class label = objc_getClass("UILabel");
     if (label == Nil || ![v isKindOfClass:label]) return nil;
@@ -1067,7 +1090,7 @@ static void ECDumpTree(id view, NSMutableString *out, int depth, int *budget) {
 // page root) that spans ~full width.
 static id ECFindModuleByLabel(id root, NSArray *titles, int depth) {
     if (root == nil || depth > 24) return nil;
-    NSString *text = ECLabelText(root);
+    NSString *text = ECTextOfView(root);
     if (text != nil) {
         for (NSString *t in titles) {
             if ([text isEqualToString:t] || [text hasPrefix:t]) {
@@ -1105,6 +1128,67 @@ static void ECCollectTMSViews(id view, NSMutableArray *out, int depth) {
     for (id sub in ECSubviews(view)) ECCollectTMSViews(sub, out, depth + 1);
 }
 
+static BOOL ECSubtreeContainsText(id obj, NSString *text, int depth) {
+    if (obj == nil || depth > 22) return NO;
+    NSString *t = ECTextOfView(obj);
+    if (t != nil && [t containsString:text]) return YES;
+    for (id sub in ECSubviews(obj)) {
+        if (ECSubtreeContainsText(sub, text, depth + 1)) return YES;
+    }
+    return NO;
+}
+
+static int ECSubtreeTextCount(id obj, int depth, int budget) {
+    if (obj == nil || depth > 12 || budget <= 0) return 0;
+    int n = (ECTextOfView(obj) != nil) ? 1 : 0;
+    for (id sub in ECSubviews(obj)) {
+        n += ECSubtreeTextCount(sub, depth + 1, budget - n);
+        if (n > 8) return n;
+    }
+    return n;
+}
+
+static BOOL ECSubtreeHasFullImage(id obj, CGFloat minW, int depth) {
+    if (obj == nil || depth > 10) return NO;
+    NSString *cls = NSStringFromClass([obj class]);
+    if ([cls containsString:@"ImageView"]) {
+        if (ECViewFrame(obj).size.width >= minW) return YES;
+    }
+    for (id sub in ECSubviews(obj)) {
+        if (ECSubtreeHasFullImage(sub, minW, depth + 1)) return YES;
+    }
+    return NO;
+}
+
+// Find the banner: among all descendants, the topmost view whose window
+// frame sits in the band under the search bar, spans the page width,
+// holds a full-bleed image and few text elements, and does not contain
+// the kingkong entries.
+static id ECFindBannerCandidate(id page, id node, CGFloat winW, int depth) {
+    if (node == nil || depth > 18) return nil;
+    id best = nil;
+    CGFloat bestY = 1e9;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:node];
+    while (stack.count > 0) {
+        id v = stack.lastObject; [stack removeLastObject];
+        @try {
+            CGRect w = [v convertRect:[v bounds] toView:nil];
+            CGRect f = ECViewFrame(v);
+            if (w.origin.y >= 165 && w.origin.y <= 295 && f.size.height >= 45 &&
+                f.size.height <= 155 && f.size.width >= winW * 0.86 &&
+                !ECIsHidden(v)) {
+                if (!ECSubtreeContainsText(v, @"美食外卖", 0) &&
+                    ECSubtreeTextCount(v, 0, 9) <= 5 &&
+                    ECSubtreeHasFullImage(v, winW * 0.7, 0)) {
+                    if (w.origin.y < bestY) { best = v; bestY = w.origin.y; }
+                }
+            }
+            for (id sub in ECSubviews(v)) [stack addObject:sub];
+        } @catch (NSException *e) { }
+    }
+    return best;
+}
+
 static void ECEnforcePass(void) {
     gEnforcePasses++;
     @try {
@@ -1137,30 +1221,20 @@ static void ECEnforcePass(void) {
                 ECDumpTree(page, dump, 0, &budget);
                 if ([dump length] > 20) gTreeDump = dump;
             }
-            BOOL isHome = vcName == nil || [vcName containsString:@"Home"];
-            BOOL isMine = vcName == nil || [vcName containsString:@"Personal"];
+            (void)vcName;
+            // Page signatures from rendered texts.
+            BOOL hasHome = ECSubtreeContainsText(page, @"美食外卖", 0);
+            BOOL hasMine = ECSubtreeContainsText(page, @"我的订单", 0);
             // Mine finance strip by rotating title.
-            if (isMine) {
+            if (hasMine || (!hasHome && !hasMine)) {
                 id strip = ECFindModuleByLabel(page, @[@"礼品卡", @"借钱"], 0);
                 if (strip != nil) ECCollapseView(strip, @"strip");
             }
-            if (!isHome) continue;
-            // Home top banner by geometry among the page's direct visual
-            // blocks: walk children of the page's first scroll content.
-            NSMutableArray *blocks = [NSMutableArray array];
-            [blocks addObjectsFromArray:ECSubviews(page)];
-            for (id child in blocks) {
-                CGRect f = ECViewFrame(child);
-                (void)f;
-                for (id sub in ECSubviews(child)) {
-                    CGRect sf = ECViewFrame(sub);
-                    if (sf.size.width >= winW * 0.88 && sf.size.height >= 55 && sf.size.height <= 140) {
-                        CGRect inPage = [sub convertRect:[sub bounds] toView:page];
-                        if (inPage.origin.y > 90 && inPage.origin.y < 300) {
-                            ECCollapseView(sub, @"banner");
-                        }
-                    }
-                }
+            // Home top banner: deepest scan, topmost full-width block with a
+            // full-bleed image sitting right under the search header.
+            if (hasHome || (!hasHome && !hasMine)) {
+                id banner = ECFindBannerCandidate(page, page, winW, 0);
+                if (banner != nil) ECCollapseView(banner, @"banner");
             }
         }
     } @catch (NSException *e) { }
@@ -1229,7 +1303,7 @@ static void ECShowDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v19 诊断", msg, 1L);
+        @"EleClean v20 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
