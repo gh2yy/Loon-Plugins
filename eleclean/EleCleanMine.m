@@ -44,6 +44,25 @@ static void ECNotePersonalVia(NSString *clsName) {
         [gPersonalVia appendFormat:@"%@ ", clsName];
     }
 }
+
+// v7 diagnostics
+static NSMutableString *gPersonalApis = nil;
+static NSMutableString *gCardBiz = nil;
+static int gFilteredCount = 0, gCardModelCalls = 0, gMusCalls = 0;
+static void ECNotePersonalApi(NSString *api) {
+    if (api == nil) return;
+    if (gPersonalApis == nil) gPersonalApis = [NSMutableString string];
+    if ([gPersonalApis rangeOfString:api].location == NSNotFound && [gPersonalApis length] < 500) {
+        [gPersonalApis appendFormat:@"%@ ", api];
+    }
+}
+static void ECNoteCardBiz(NSString *biz, id tpl) {
+    if (gCardBiz == nil) gCardBiz = [NSMutableString string];
+    NSString *entry = [NSString stringWithFormat:@"%@(%@)", biz ?: @"?", tpl ?: @"?"];
+    if ([gCardBiz rangeOfString:entry].location == NSNotFound && [gCardBiz length] < 700) {
+        [gCardBiz appendFormat:@"%@ ", entry];
+    }
+}
 static void ECNoteDropped(NSString *biz) {
     if (biz == nil) biz = @"?";
     if (gDroppedBiz == nil) gDroppedBiz = [NSMutableString string];
@@ -120,7 +139,7 @@ static id ELProcessResult(NSString *api, id result) {
     @try {
         BOOL isFeeds = [api hasPrefix:@"mtop.alsc.personal.queryMineCenterFeeds"] ||
                        [api hasPrefix:@"mtop.alsc.personal.collectMineCenterFeeds"];
-        BOOL isMain = [api hasPrefix:@"mtop.alsc.personal.queryMineCenter"] && !isFeeds;
+        BOOL isMain = [api hasPrefix:@"mtop.alsc.personal."] && !isFeeds;
         if (!isFeeds && !isMain) return result;
         NSMutableDictionary *res = [((NSDictionary *)result) mutableCopy];
         id data = res[@"data"];
@@ -159,9 +178,8 @@ static void ELSendMtopRequest(id self, SEL _cmd, id request, ELWVCallBack callBa
             }
         }
     }
-    BOOL target = api != nil &&
-        ([api hasPrefix:@"mtop.alsc.personal.queryMineCenter"] ||
-         [api hasPrefix:@"mtop.alsc.personal.collectMineCenterFeeds"]);
+    BOOL target = api != nil && [api hasPrefix:@"mtop.alsc.personal."];
+    if (target) ECNotePersonalApi([@"bridge:" stringByAppendingString:api]);
     if (!target || callBack == nil) {
         gOrigSend(self, _cmd, request, callBack, ext);
         return;
@@ -257,11 +275,12 @@ static id ECFilterResponseObject(id self, id payload) {
     if (![payload isKindOfClass:[NSDictionary class]]) return payload;
     NSString *api = ECApiNameFromObject(self, 0);
     ECNoteApi(api);
-    if (api != nil &&
-        ([api hasPrefix:@"mtop.alsc.personal.queryMineCenter"] ||
-         [api hasPrefix:@"mtop.alsc.personal.collectMineCenterFeeds"])) {
+    if (api != nil && [api hasPrefix:@"mtop.alsc.personal."]) {
+        ECNotePersonalApi(api);
         ECNotePersonalVia(NSStringFromClass([self class]));
-        return ELProcessResult(api, payload);
+        id out = ELProcessResult(api, payload);
+        if (out != payload) gFilteredCount++;
+        return out;
     }
     return payload;
 }
@@ -483,21 +502,114 @@ static void ECInstallPageDataHooks(void) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// v7 probes: (1) record bizCode/templateId of every LMXCardModel built from a
+// Mist node (covers LMagex pages incl. home); (2) watch the Weex MUS mtop
+// module for personal APIs (the eatPersonal page's likely carrier).
+
+typedef id (*ECCardFactoryIMP)(id, SEL, id);
+static ECCardFactoryIMP gOrigCardFactory = NULL;
+
+static id ECCardFactoryReplacement(id cls, SEL _cmd, id node) {
+    gCardModelCalls++;
+    id model = gOrigCardFactory ? gOrigCardFactory(cls, _cmd, node) : nil;
+    @try {
+        if (model != nil) {
+            NSString *biz = nil; id tpl = nil;
+            SEL bizSel = NSSelectorFromString(@"bizCode");
+            if ([model respondsToSelector:bizSel]) {
+                biz = ((id (*)(id, SEL))objc_msgSend)(model, bizSel);
+            }
+            SEL tplSel = NSSelectorFromString(@"templateId");
+            if ([model respondsToSelector:tplSel]) {
+                tpl = ((id (*)(id, SEL))objc_msgSend)(model, tplSel);
+            }
+            ECNoteCardBiz(biz, tpl);
+        }
+    } @catch (NSException *e) { }
+    return model;
+}
+
+static BOOL ECInstallCardProbe(void) {
+    if (gOrigCardFactory != NULL) return YES;
+    Class cls = objc_getClass("LMXCardModel");
+    if (cls == Nil) return NO;
+    Method m = class_getClassMethod(cls, NSSelectorFromString(@"modelWithMPCustomNode:"));
+    if (m == NULL) return NO;
+    gOrigCardFactory = (ECCardFactoryIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)ECCardFactoryReplacement);
+    return YES;
+}
+
+static void ECScanDescriptionForPersonalApi(id obj) {
+    if (obj == nil) return;
+    @try {
+        NSString *desc = [obj description];
+        NSRange r = [desc rangeOfString:@"mtop.alsc.personal."];
+        if (r.location != NSNotFound) {
+            NSUInteger end = r.location;
+            while (end < [desc length]) {
+                unichar c = [desc characterAtIndex:end];
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '.' || c == '_')) break;
+                end++;
+            }
+            ECNotePersonalApi([@"MUS:" stringByAppendingString:
+                [desc substringWithRange:NSMakeRange(r.location, end - r.location)]]);
+        }
+    } @catch (NSException *e) { }
+}
+
+typedef void (*ECMusReqIMP)(id, SEL, id, id, id);
+static ECMusReqIMP gOrigMusReq = NULL;
+static void ECMusReqReplacement(id self, SEL _cmd, id req, id success, id failure) {
+    gMusCalls++;
+    ECScanDescriptionForPersonalApi(req);
+    if (gOrigMusReq) gOrigMusReq(self, _cmd, req, success, failure);
+}
+
+typedef void (*ECMusSendIMP)(id, SEL, id, id);
+static ECMusSendIMP gOrigMusSend = NULL;
+static void ECMusSendReplacement(id self, SEL _cmd, id req, id callback) {
+    gMusCalls++;
+    ECScanDescriptionForPersonalApi(req);
+    if (gOrigMusSend) gOrigMusSend(self, _cmd, req, callback);
+}
+
+static void ECInstallMusProbe(void) {
+    Class cls = objc_getClass("MUSMtopModule");
+    if (cls == Nil) return;
+    if (gOrigMusReq == NULL) {
+        Method m = class_getInstanceMethod(cls, NSSelectorFromString(@"request:success:failure:"));
+        if (m) {
+            gOrigMusReq = (ECMusReqIMP)method_getImplementation(m);
+            method_setImplementation(m, (IMP)ECMusReqReplacement);
+        }
+    }
+    if (gOrigMusSend == NULL) {
+        Method m = class_getInstanceMethod(cls, NSSelectorFromString(@"send:callback:"));
+        if (m) {
+            gOrigMusSend = (ECMusSendIMP)method_getImplementation(m);
+            method_setImplementation(m, (IMP)ECMusSendReplacement);
+        }
+    }
+}
+
 static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d body=%d jsonSub=%d bodySub=%d tsfm=%d mist=%d bridge=%d\npersonal=%@ via:%@\ndropped: %@\napis: %@",
-        gJsonCalls, gBodyCalls, gJsonSubCalls, gBodySubCalls, gTsfmCalls, gMistCalls, gBridgeCalls,
-        gPersonalSeen ? @"YES" : @"NO", gPersonalVia ?: @"",
-        gDroppedBiz ?: @"(none)",
-        gSeenApis ?: @""];
+        @"json=%d sub=%d tsfm=%d mist=%d bridge=%d mus=%d cards=%d filt=%d\npersonalApis: %@\ncardBiz: %@",
+        gJsonCalls, gJsonSubCalls, gTsfmCalls, gMistCalls, gBridgeCalls, gMusCalls,
+        gCardModelCalls, gFilteredCount,
+        gPersonalApis ?: @"(none)",
+        gCardBiz ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
     Class appCls = objc_getClass("UIApplication");
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v6 诊断", msg, 1L);
+        @"EleClean v7 诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
@@ -530,6 +642,8 @@ __attribute__((constructor)) static void ELEntry(void) {
         ECInstallParseCards();
         ECInstallSubclassHooks();
         ECInstallPageDataHooks();
+        ECInstallCardProbe();
+        ECInstallMusProbe();
         if (!a || !b || !c) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -540,6 +654,8 @@ __attribute__((constructor)) static void ELEntry(void) {
                 ECInstallParseCards();
                 ECInstallSubclassHooks();
                 ECInstallPageDataHooks();
+                ECInstallCardProbe();
+                ECInstallMusProbe();
             });
         }
         // Subclass override check for the diagnostic readout.
