@@ -137,9 +137,11 @@ static id ELEmptyFeedsData(id data) {
 static id ELProcessResult(NSString *api, id result) {
     if (![result isKindOfClass:[NSDictionary class]]) return result;
     @try {
-        BOOL isFeeds = [api hasPrefix:@"mtop.alsc.personal.queryMineCenterFeeds"] ||
-                       [api hasPrefix:@"mtop.alsc.personal.collectMineCenterFeeds"];
-        BOOL isMain = [api hasPrefix:@"mtop.alsc.personal."] && !isFeeds;
+        NSString *apiL = [api lowercaseString];
+        BOOL isFeeds = [apiL hasPrefix:@"mtop.alsc.personal.queryminecenterfeeds"] ||
+                       [apiL hasPrefix:@"mtop.alsc.personal.collectminecenterfeeds"] ||
+                       ([apiL containsString:@"minecenter"] && [apiL containsString:@"feeds"]);
+        BOOL isMain = [apiL hasPrefix:@"mtop.alsc.personal."] && !isFeeds;
         if (!isFeeds && !isMain) return result;
         NSMutableDictionary *res = [((NSDictionary *)result) mutableCopy];
         id data = res[@"data"];
@@ -174,11 +176,11 @@ static void ELSendMtopRequest(id self, SEL _cmd, id request, ELWVCallBack callBa
             // Fall back to scanning values for a personal API name.
             for (id v in [(NSDictionary *)request allValues]) {
                 if ([v isKindOfClass:[NSString class]] &&
-                    [(NSString *)v rangeOfString:@"queryMineCenter"].location != NSNotFound) { api = v; break; }
+                    [(NSString *)v rangeOfString:@"queryminecenter"].location != NSNotFound) { api = v; break; }
             }
         }
     }
-    BOOL target = api != nil && [api hasPrefix:@"mtop.alsc.personal."];
+    BOOL target = api != nil && [[api lowercaseString] hasPrefix:@"mtop.alsc.personal."];
     if (target) ECNotePersonalApi([@"bridge:" stringByAppendingString:api]);
     if (!target || callBack == nil) {
         gOrigSend(self, _cmd, request, callBack, ext);
@@ -275,7 +277,7 @@ static id ECFilterResponseObject(id self, id payload) {
     if (![payload isKindOfClass:[NSDictionary class]]) return payload;
     NSString *api = ECApiNameFromObject(self, 0);
     ECNoteApi(api);
-    if (api != nil && [api hasPrefix:@"mtop.alsc.personal."]) {
+    if (api != nil && [[api lowercaseString] hasPrefix:@"mtop.alsc.personal."]) {
         ECNotePersonalApi(api);
         ECNotePersonalVia(NSStringFromClass([self class]));
         id out = ELProcessResult(api, payload);
@@ -671,10 +673,7 @@ __attribute__((constructor)) static void ELEntry(void) {
             }
             gSubclassInfo = [info copy];
         }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            ECShowDiag();
-        });
+
     }
 }
 
