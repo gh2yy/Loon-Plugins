@@ -1,0 +1,17 @@
+#!name = 大众点评去搜索发现与点评热点
+#!desc = 移除搜索页的「搜索发现」和「点评热点」：拦截 searchdirectsuggest.bin 与 hotsuggest.bin 两个接口并返回 404，无数据可渲染即不显示，搜索本身不受影响。
+#!author = xingjiu
+#!date = 2026-11-09
+#!tag = 大众点评,搜索
+
+# 修改日志：
+# - 2026-11-09 Muse：按 xingjiu 提供的原文转成 Loon 在线插件格式，作者标注 xingjiu；[Rewrite] 两条与 [Mitm] 一条逐字保留，未增删、未改动，待用户实测。
+
+[Rewrite]
+# 搜索页「搜索发现」
+request if ${url} ~= /^https:\/\/mapi\.dianping\.com\/mapi\/searchdirectsuggest\.bin/i then reject(404)
+# 搜索页「点评热点」
+request if ${url} ~= /^https:\/\/mapi\.dianping\.com\/mapi\/hotsuggest\.bin/i then reject(404)
+
+[Mitm]
+hostname = mapi.dianping.com
