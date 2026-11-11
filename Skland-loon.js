@@ -494,7 +494,7 @@ var done = function (err, resp, data) {
 if (err) { reject(new Error("网络请求失败（" + stage + "，第 " + (attempt + 1) + " 次）: " + err)); return;}
 resolve({ status: resp? (resp.status || resp.statusCode || 0): 0, body: data || ""});
 };
-var req = { url: options.url, headers: options.headers || {}, timeout: 60};
+var req = { url: options.url, headers: options.headers || {}, timeout: 60000};
 if (typeof options.body === "string") req.body = options.body;
 console.log("[Skland] 请求 " + stage + "（第 " + (attempt + 1) + " 次）");
 if (options.method === "POST") $httpClient.post(req, done);
