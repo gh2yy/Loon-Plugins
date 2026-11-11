@@ -9,6 +9,10 @@
 		{
 			"name": "腾讯体育",
 			"url": "https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/icon/txsports.png"
+		},
+		{
+			"name": "大众点评",
+			"url": "https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/icon/dianping.png"
 		}
 	]
 }
