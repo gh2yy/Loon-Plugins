@@ -137,6 +137,178 @@ static id ELEmptyFeedsData(id data) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// v21: order detail page (ELEME_ORDER_DETAIL_LMAGEX, Page_OrderDetail).
+//   main  mtop.alsc.eleme.order.detail.build          -> strip the welfare
+//          coupon card (本单限时福利), the 安心权益 block and the 常见问题
+//          block. Guarded: an element is dropped only when its subtree
+//          mentions a target section AND does not mention any core-order
+//          text (订单号/价格明细/订单信息/...), so a shared container that
+//          also holds the real order data can never be taken out (the
+//          2026-11-09 banner-trap failure mode).
+//   feeds mtop.alsc.eleme.order.detail.secondPage.adjust (scene=feeds,
+//          fromPage=order_rec_list)                   -> empty the payload,
+//          same as the personal feeds: kills the recommendation waterfall.
+// Card-level bizCode fragments are also matched (welfare/benefit/faq/
+// question/recommend/rights/insurance/privilege), case-insensitive.
+
+static NSMutableString *gOrderApis = nil;
+static NSMutableString *gOrderBiz = nil;
+static NSMutableString *gOrderDropped = nil;
+static int gOrderStripCount = 0, gOrderFeedEmptied = 0;
+
+static void ECNoteOrderApi(NSString *api) {
+    if (api == nil) return;
+    if (gOrderApis == nil) gOrderApis = [NSMutableString string];
+    if ([gOrderApis rangeOfString:api].location == NSNotFound && [gOrderApis length] < 300) {
+        [gOrderApis appendFormat:@"%@ ", api];
+    }
+}
+static void ECNoteOrderBiz(NSString *biz) {
+    if (biz == nil) return;
+    if (gOrderBiz == nil) gOrderBiz = [NSMutableString string];
+    if ([gOrderBiz rangeOfString:biz].location == NSNotFound && [gOrderBiz length] < 800) {
+        [gOrderBiz appendFormat:@"%@ ", biz];
+    }
+}
+static void ECNoteOrderDropped(NSString *what) {
+    if (what == nil) what = @"?";
+    if (gOrderDropped == nil) gOrderDropped = [NSMutableString string];
+    if ([gOrderDropped rangeOfString:what].location == NSNotFound && [gOrderDropped length] < 300) {
+        [gOrderDropped appendFormat:@"%@ ", what];
+    }
+}
+
+static BOOL ECSubtreeContainsAny(id obj, NSArray *markers, int depth) {
+    if (obj == nil || depth > 10) return NO;
+    if ([obj isKindOfClass:[NSString class]]) {
+        for (NSString *m in markers) {
+            if ([(NSString *)obj containsString:m]) return YES;
+        }
+        return NO;
+    }
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        for (id k in (NSDictionary *)obj) {
+            if (ECSubtreeContainsAny(k, markers, depth + 1)) return YES;
+            if (ECSubtreeContainsAny(((NSDictionary *)obj)[k], markers, depth + 1)) return YES;
+        }
+        return NO;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) {
+            if (ECSubtreeContainsAny(e, markers, depth + 1)) return YES;
+        }
+        return NO;
+    }
+    return NO;
+}
+
+static NSArray *ECOrderMarkers(void) {
+    return @[@"本单限时福利", @"安心权益", @"常见问题", @"食无忧"];
+}
+static NSArray *ECCoreMarkers(void) {
+    return @[@"订单号", @"价格明细", @"订单信息", @"确认送达", @"配送信息",
+             @"联系商家", @"确认收货", @"订单备注"];
+}
+
+static BOOL ECBizCodeIsOrderJunk(id obj) {
+    if (![obj isKindOfClass:[NSDictionary class]]) return NO;
+    id biz = [(NSDictionary *)obj objectForKey:@"bizCode"];
+    if (![biz isKindOfClass:[NSString class]]) return NO;
+    NSString *b = [(NSString *)biz lowercaseString];
+    for (NSString *f in @[@"welfare", @"benefit", @"faq", @"question",
+                          @"recommend", @"rights", @"insurance", @"privilege"]) {
+        if ([b containsString:f]) return YES;
+    }
+    return NO;
+}
+
+static BOOL ECElementIsOrderJunk(id el) {
+    if (![el isKindOfClass:[NSDictionary class]]) return NO;
+    if (ECBizCodeIsOrderJunk(el)) return YES;
+    return ECSubtreeContainsAny(el, ECOrderMarkers(), 0) &&
+           !ECSubtreeContainsAny(el, ECCoreMarkers(), 0);
+}
+
+static id ECOrderStrip(id obj, int depth) {
+    if (obj == nil || depth > 10) return obj;
+    if ([obj isKindOfClass:[NSArray class]]) {
+        NSMutableArray *out = [NSMutableArray arrayWithCapacity:((NSArray *)obj).count];
+        for (id e in (NSArray *)obj) {
+            if (ECElementIsOrderJunk(e)) {
+                gOrderStripCount++;
+                id biz = [(NSDictionary *)e objectForKey:@"bizCode"];
+                ECNoteOrderDropped([biz isKindOfClass:[NSString class]] ? biz : @"(text)");
+                continue;
+            }
+            [out addObject:ECOrderStrip(e, depth + 1)];
+        }
+        return out;
+    }
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *out = [NSMutableDictionary dictionary];
+        for (id k in (NSDictionary *)obj) {
+            id v = ((NSDictionary *)obj)[k];
+            if ([v isKindOfClass:[NSDictionary class]] && ECElementIsOrderJunk(v)) {
+                gOrderStripCount++;
+                id biz = [(NSDictionary *)v objectForKey:@"bizCode"];
+                ECNoteOrderDropped([biz isKindOfClass:[NSString class]] ? biz : @"(text)");
+                continue;
+            }
+            out[k] = ECOrderStrip(v, depth + 1);
+        }
+        return out;
+    }
+    return obj;
+}
+
+static void ECCollectBizCodes(id obj, int depth) {
+    if (obj == nil || depth > 10) return;
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        id biz = [(NSDictionary *)obj objectForKey:@"bizCode"];
+        if ([biz isKindOfClass:[NSString class]]) ECNoteOrderBiz(biz);
+        for (id v in [(NSDictionary *)obj allValues]) ECCollectBizCodes(v, depth + 1);
+        return;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) ECCollectBizCodes(e, depth + 1);
+    }
+}
+
+static id ECProcessOrderResult(NSString *api, id payload) {
+    if (![payload isKindOfClass:[NSDictionary class]]) return payload;
+    NSString *apiL = [api lowercaseString];
+    ECNoteOrderApi(api);
+    @try {
+        if ([apiL containsString:@"secondpage"]) {
+            // Recommendation feeds partial: empty it like the personal feeds.
+            gOrderFeedEmptied++;
+            id data = payload[@"data"];
+            if (data != nil) {
+                NSMutableDictionary *res = [payload mutableCopy];
+                res[@"data"] = ELEmptyFeedsData(data);
+                return res;
+            }
+            return ELEmptyFeedsData(payload);
+        }
+        ECCollectBizCodes(payload, 0);
+        int before = gOrderStripCount;
+        id data = payload[@"data"];
+        if (data != nil) {
+            id stripped = ECOrderStrip(data, 0);
+            if (gOrderStripCount == before) return payload;
+            NSMutableDictionary *res = [payload mutableCopy];
+            res[@"data"] = stripped;
+            return res;
+        }
+        id stripped = ECOrderStrip(payload, 0);
+        if (gOrderStripCount == before) return payload;
+        return stripped;
+    } @catch (NSException *e) {
+        return payload;
+    }
+}
+
 static id ELProcessResult(NSString *api, id result) {
     if (![result isKindOfClass:[NSDictionary class]]) return result;
     @try {
@@ -338,6 +510,9 @@ static id ECFilterResponseObject(id self, id payload) {
     NSString *api = ECApiNameFromObject(self, 0);
     ECNoteApi(api);
     NSString *apiL = [api lowercaseString];
+    if (api != nil && [apiL hasPrefix:@"mtop.alsc.eleme.order.detail."]) {
+        return ECProcessOrderResult(api, payload);
+    }
     if (api != nil && [apiL hasPrefix:@"mtop.alsc.personal."]) {
         ECNotePersonalApi(api);
         ECNotePersonalVia(NSStringFromClass([self class]));
@@ -665,16 +840,19 @@ static void ECInstallMusProbe(void) {
 static void ECShowDiag(void) {
     // Fully dynamic UIKit access: the CI link line only has Foundation.
     NSString *msg = [NSString stringWithFormat:
-        @"json=%d filt=%d\nbannerHits: %@",
+        @"json=%d filt=%d\norderApis: %@\nstripped=%d feedEmptied=%d\ndropped: %@\nbiz: %@",
         gJsonCalls, gFilteredCount,
-        gBannerHits ?: @"(none)"];
+        gOrderApis ?: @"(none)",
+        gOrderStripCount, gOrderFeedEmptied,
+        gOrderDropped ?: @"(none)",
+        gOrderBiz ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
     Class appCls = objc_getClass("UIApplication");
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v10 诊断", msg, 1L);
+        @"EleClean v21 订单诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
@@ -736,6 +914,11 @@ __attribute__((constructor)) static void ELEntry(void) {
             }
             gSubclassInfo = [info copy];
         }
+        // v21 dev build only: one-shot order-page diagnostic readout.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ECShowDiag();
+        });
     }
 }
 
