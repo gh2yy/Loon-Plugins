@@ -1,0 +1,24 @@
+#!name = 森空岛自动签到
+#!desc = 每日自动签到森空岛（明日方舟，可选终末地）。需先在下方参数里填鹰角通行证 Token，之后每天 08:05 自动签到并通知结果。
+#!author = gh2yy
+#!date = 2026-11-11
+#!tag = 森空岛,明日方舟,签到
+#!loon_version = 3.2.1(734)
+
+# 修改日志：
+# - 2026-11-11 Muse：首版。逻辑移植自现行开源实现（skland-kit / 青龙森空岛脚本，同一套接口）：鹰角 token -> grant code -> cred -> 签名请求（HMAC-SHA256+MD5）-> 绑定角色 -> 签到；数美设备 ID（dId）由脚本内纯 JS 现场生成（DES/AES/RSA/gzip 均为内置实现）并缓存复用。不需要 MitM、不需要抓包。本地 harness 验证：密码学原语全部与 Node/OpenSSL 对拍一致（MD5/SHA-256/HMAC/DES 标准向量/AES 多长度/RSA 加解密回环/gzip 回环），假服务器全流程逐请求验签通过、数美指纹包被独立实现完整解密还原；数美接口从助手侧网络实测为 TLS 可通但服务端不应答（机房出口 IP 被静默丢弃），故真机首跑为最终验证，待用户实测。
+#
+# 使用方法：
+# 1. 浏览器登录 skland.com（森空岛网页版）；
+# 2. 登录状态下打开 https://web-api.skland.com/account/info/hg ，复制返回 JSON 里 data.content 的整段字符串（把整段 JSON 粘进来也能自动识别）；
+# 3. 填到本插件参数 Token 里，保存。token 等同登录凭证，只填自己手机、切勿发给任何人。
+# 4. 手动验证：Loon 插件页点本插件脚本右侧的运行按钮，或等每天 08:05 自动跑；结果看通知，或去 Loon 日志搜 Skland。
+# 5. token 失效时通知会报 grant 失败，按上面重新取一次换上即可。
+
+[Argument]
+Token = input,"",tag=森空岛 Token,desc=鹰角通行证 token（web-api.skland.com/account/info/hg 的 data.content）；多账号用英文分号分隔；等同登录凭证，只填自己手机、切勿外泄
+Endfield = switch,false,tag=同时签到终末地,desc=开启后终末地绑定角色一并签到（默认只签明日方舟）
+Notify = switch,true,tag=签到结果通知,desc=关闭则只写 Loon 日志、不弹通知
+
+[Script]
+cron "5 8 * * *" script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Skland-loon.js, tag=森空岛自动签到, timeout=120, argument=[{Token},{Endfield},{Notify}]
