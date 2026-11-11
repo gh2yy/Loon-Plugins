@@ -13,6 +13,10 @@
 		{
 			"name": "大众点评",
 			"url": "https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/icon/dianping.png"
+		},
+		{
+			"name": "森空岛",
+			"url": "https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/icon/skland.png"
 		}
 	]
 }
