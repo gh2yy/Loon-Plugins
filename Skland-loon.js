@@ -585,6 +585,13 @@ throw new Error("dId 生成失败: " + res.body.substring(0, 120));
 var did = "B" + json.detail.deviceId;
 try { $persistentStore.write(did, DID_STORE_KEY);} catch (e) {}
 return did;
+}).catch(function (err) {
+/* 在线生成失败（如 portal101 超时）：首跑时改用本地生成的临时 dId 继续走完 grant/cred/绑定，
+   让服务端回明确错误码定性，而不是卡死在数美超时；临时 dId 不缓存，下次运行会重新在线生成。
+   forceRefresh（刷新重试）时不兜底，错误继续上抛。 */
+if (forceRefresh) throw err;
+console.log("[Skland] dId 在线生成失败（" + err.message + "），改用临时本地 dId 继续");
+return "B" + md5hex(utf8Encode(randomUuid() + ":" + Date.now()));
 });
 }
 
