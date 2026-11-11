@@ -486,16 +486,24 @@ parts.push(JSON.stringify(keys[i]) + ": " + vs);
 return "{" + parts.join(", ") + "}";
 }
 
-function httpRequest(options) {
+function httpRequest(options, attempt) {
+attempt = attempt || 0;
+var stage = options.stage || options.url;
 return new Promise(function (resolve, reject) {
 var done = function (err, resp, data) {
-if (err) { reject(new Error("网络请求失败: " + err)); return;}
+if (err) { reject(new Error("网络请求失败（" + stage + "，第 " + (attempt + 1) + " 次）: " + err)); return;}
 resolve({ status: resp? (resp.status || resp.statusCode || 0): 0, body: data || ""});
 };
-var req = { url: options.url, headers: options.headers || {}, timeout: 30};
+var req = { url: options.url, headers: options.headers || {}, timeout: 60};
 if (typeof options.body === "string") req.body = options.body;
+console.log("[Skland] 请求 " + stage + "（第 " + (attempt + 1) + " 次）");
 if (options.method === "POST") $httpClient.post(req, done);
 else $httpClient.get(req, done);
+}).catch(function (e) {
+/* 网络层失败（超时/断连）自动重试，最多共 3 次；业务错误不在这里重试 */
+if (attempt >= 2) throw e;
+console.log("[Skland] " + e.message + "，2 秒后重试");
+return new Promise(function (r) { setTimeout(r, 2000);}).then(function () { return httpRequest(options, attempt + 1);});
 });
 }
 
@@ -564,6 +572,7 @@ appId: "default", compress: 2, data: dataHex, encode: 5,
 ep: ep, organization: SM_ORGANIZATION, os: "web"
 });
 return httpRequest({
+stage: "dId生成/portal101",
 method: "POST",
 url: "https://fp-it.portal101.cn/deviceprofile/v4",
 headers: { "Content-Type": "application/json"},
@@ -603,6 +612,7 @@ return {
 
 function grantCode(hgToken, did) {
 return httpRequest({
+stage: "grant/鹰角授权",
 method: "POST",
 url: "https://as.hypergryph.com/user/oauth2/v2/grant",
 headers: { "User-Agent": UA_APP, "dId": did, "X-Requested-With": "com.hypergryph.skland", "Content-Type": "application/json"},
@@ -618,6 +628,7 @@ return json.data.code;
 
 function generateCred(code, did) {
 return httpRequest({
+stage: "cred/生成凭证",
 method: "POST",
 url: "https://zonai.skland.com/web/v1/user/auth/generate_cred_by_code",
 headers: {
@@ -640,7 +651,7 @@ var headers = signHeaders(cred.token, path, bodyOrQuery, did);
 headers["cred"] = cred.cred;
 if (extraHeaders) for (var k in extraHeaders) headers[k] = extraHeaders[k];
 if (method === "POST") headers["Content-Type"] = "application/json";
-var opt = { method: method, url: url, headers: headers};
+var opt = { stage: "签名接口 " + path, method: method, url: url, headers: headers};
 if (typeof bodyStr === "string" && bodyStr.length > 0) opt.body = bodyStr;
 return httpRequest(opt).then(function (res) {
 var json = parseJson(res.body);

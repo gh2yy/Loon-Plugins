@@ -6,7 +6,7 @@
 #!loon_version = 3.2.1(734)
 
 # 修改日志：
-# - 2026-11-11 Muse：首版。逻辑移植自现行开源实现（skland-kit / 青龙森空岛脚本，同一套接口）：鹰角 token -> grant code -> cred -> 签名请求（HMAC-SHA256+MD5）-> 绑定角色 -> 签到；数美设备 ID（dId）由脚本内纯 JS 现场生成（DES/AES/RSA/gzip 均为内置实现）并缓存复用。不需要 MitM、不需要抓包。本地 harness 验证：密码学原语全部与 Node/OpenSSL 对拍一致（MD5/SHA-256/HMAC/DES 标准向量/AES 多长度/RSA 加解密回环/gzip 回环），假服务器全流程逐请求验签通过、数美指纹包被独立实现完整解密还原；数美接口从助手侧网络实测为 TLS 可通但服务端不应答（机房出口 IP 被静默丢弃），故真机首跑为最终验证，待用户实测。
+# - 2026-11-11 Muse：首版。逻辑移植自现行开源实现（skland-kit / 青龙森空岛脚本，同一套接口）：鹰角 token -> grant code -> cred -> 签名请求（HMAC-SHA256+MD5）-> 绑定角色 -> 签到；数美设备 ID（dId）由脚本内纯 JS 现场生成（DES/AES/RSA/gzip 均为内置实现）并缓存复用。不需要 MitM、不需要抓包。本地 harness 验证：密码学原语全部与 Node/OpenSSL 对拍一致（MD5/SHA-256/HMAC/DES 标准向量/AES 多长度/RSA 加解密回环/gzip 回环），假服务器全流程逐请求验签通过、数美指纹包被独立实现完整解密还原；数美接口从助手侧网络实测为 TLS 可通但服务端不应答（机房出口 IP 被静默丢弃），故真机首跑为最终验证；真机首跑出现单请求 Request timeout（日志未标注环节）：同日修订为单请求超时 30→60 秒、网络失败自动重试共 3 次且报错带环节与域名标注（dId/grant/cred/签名接口）、脚本总超时 120→300 秒、插件内新增 fp-it.portal101.cn / as.hypergryph.com / zonai.skland.com 三条 DIRECT 规则，防这组国内接口被分流到代理节点后被服务端静默丢弃或拖超时。
 #
 # 使用方法：
 # 1. 浏览器登录 skland.com（森空岛网页版）；
@@ -20,5 +20,10 @@ Token = input,"",tag=森空岛 Token,desc=鹰角通行证 token（web-api.skland
 Endfield = switch,false,tag=同时签到终末地,desc=开启后终末地绑定角色一并签到（默认只签明日方舟）
 Notify = switch,true,tag=签到结果通知,desc=关闭则只写 Loon 日志、不弹通知
 
+[Rule]
+DOMAIN,fp-it.portal101.cn,DIRECT
+DOMAIN,as.hypergryph.com,DIRECT
+DOMAIN,zonai.skland.com,DIRECT
+
 [Script]
-cron "5 8 * * *" script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Skland-loon.js, tag=森空岛自动签到, timeout=120, argument=[{Token},{Endfield},{Notify}]
+cron "5 8 * * *" script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Skland-loon.js, tag=森空岛自动签到, timeout=300, argument=[{Token},{Endfield},{Notify}]
