@@ -778,11 +778,6 @@ static void ECShowDiag(void) {
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
-    if (gStructDumps != nil) {
-        for (NSString *k in gStructDumps) {
-            msg = [msg stringByAppendingFormat:@"\n== %@\n%@", k, gStructDumps[k]];
-        }
-    }
     id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
     NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
     id key = nil;
@@ -808,10 +803,15 @@ static BOOL gSearchDiagShown = NO;
 static void ECShowSearchDiag(void) {
     if (gSearchDiagShown) return;
     NSString *msg = [NSString stringWithFormat:
-        @"searchHits: %@\nbridge=%d json=%d\napis: %@",
+        @"searchHits: %@\nbridge=%d json=%d",
         gSearchHits ?: @"(none)",
-        gBridgeCalls, gJsonCalls,
-        gSeenApis ?: @"(none)"];
+        gBridgeCalls, gJsonCalls];
+    if (gStructDumps != nil) {
+        for (NSString *k in gStructDumps) {
+            msg = [msg stringByAppendingFormat:@"\n== %@\n%@", k, gStructDumps[k]];
+        }
+    }
+    msg = [msg stringByAppendingFormat:@"\napis: %@", gSeenApis ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
     Class appCls = objc_getClass("UIApplication");
