@@ -33,7 +33,7 @@ static NSString *gSubclassInfo = @"";
 static void ECNoteApi(NSString *api) {
     if (api == nil) return;
     if (gSeenApis == nil) gSeenApis = [NSMutableString string];
-    if ([gSeenApis rangeOfString:api].location == NSNotFound && [gSeenApis length] < 1400) {
+    if ([gSeenApis rangeOfString:api].location == NSNotFound && [gSeenApis length] < 400) {
         [gSeenApis appendFormat:@"%@ ", api];
     }
     if ([api hasPrefix:@"mtop.alsc.personal."]) gPersonalSeen = YES;
@@ -163,7 +163,6 @@ static id ELProcessResult(NSString *api, id result) {
     }
 }
 
-static void ECScanBridgeTokens(NSString *api, id payload);
 typedef void (^ELWVCallBack)(id result);
 typedef void (*ELSendIMP)(id, SEL, id, ELWVCallBack, id);
 static ELSendIMP gOrigSend = NULL;
@@ -186,14 +185,13 @@ static void ELSendMtopRequest(id self, SEL _cmd, id request, ELWVCallBack callBa
     }
     BOOL target = api != nil && [[api lowercaseString] hasPrefix:@"mtop.alsc.personal."];
     if (target) ECNotePersonalApi([@"bridge:" stringByAppendingString:api]);
-    if (callBack == nil) {
+    if (!target || callBack == nil) {
         gOrigSend(self, _cmd, request, callBack, ext);
         return;
     }
-    NSString *apiCopy = api != nil ? [api copy] : @"?";
+    NSString *apiCopy = [api copy];
     ELWVCallBack wrapped = ^(id result) {
-        if ([result isKindOfClass:[NSDictionary class]]) ECScanBridgeTokens(apiCopy, result);
-        callBack(target ? ELProcessResult(apiCopy, result) : result);
+        callBack(ELProcessResult(apiCopy, result));
     };
     gOrigSend(self, _cmd, request, wrapped, ext);
 }
@@ -285,273 +283,6 @@ static NSMutableString *gBannerHits = nil;
 static NSArray *ECFingerprints(void) {
     return @[@"爆好价", @"猜谜抽奖", @"周末爆款", @"大券包", @"天猫双11"];
 }
-
-// v22 diag (READ-ONLY): find which api carries the search landing page's
-// recommendation sections. Records only; never modifies a payload.
-static NSMutableString *gSearchHits = nil;
-static void ECNoteSearchHit(NSString *api, NSString *token) {
-    if (gSearchHits == nil) gSearchHits = [NSMutableString string];
-    NSString *entry = [NSString stringWithFormat:@"%@(%@) ", api ?: @"?", token];
-    if ([gSearchHits rangeOfString:entry].location == NSNotFound && [gSearchHits length] < 900) {
-        [gSearchHits appendString:entry];
-    }
-}
-static BOOL ECNodeContainsToken(id node, NSString *token, int depth, int *budget) {
-    if (node == nil || depth > 8 || *budget <= 0) return NO;
-    (*budget)--;
-    if ([node isKindOfClass:[NSString class]]) {
-        return [(NSString *)node containsString:token];
-    }
-    if ([node isKindOfClass:[NSDictionary class]]) {
-        for (id k in (NSDictionary *)node) {
-            if (ECNodeContainsToken(k, token, depth + 1, budget)) return YES;
-            if (ECNodeContainsToken(((NSDictionary *)node)[k], token, depth + 1, budget)) return YES;
-        }
-        return NO;
-    }
-    if ([node isKindOfClass:[NSArray class]]) {
-        for (id v in (NSArray *)node) {
-            if (ECNodeContainsToken(v, token, depth + 1, budget)) return YES;
-        }
-    }
-    return NO;
-}
-static void ECScanBridgeTokens(NSString *api, id payload) {
-    static NSArray *tokens = nil;
-    if (tokens == nil) tokens = @[@"搜索发现", @"专属好店", @"为你精选", @"推荐系数"];
-    NSString *label = [@"bridge:" stringByAppendingString: api ?: @"?"];
-    for (NSString *t in tokens) {
-        int budget = 4000;
-        if (ECNodeContainsToken(payload, t, 0, &budget)) ECNoteSearchHit(label, t);
-    }
-}
-
-// v24 diag (READ-ONLY): for shortlisted candidate APIs, record a compact
-// structural fingerprint of the first response: key names + short string
-// values, depth<=3. Used to find the section codes behind the search
-// landing page's two shop columns (their titles never appear in payloads).
-static NSMutableDictionary *gStructDumps = nil;
-static void ECWalkStruct(id node, int depth, int *budget, NSMutableString *out) {
-    if (node == nil || depth > 3 || *budget <= 0 || [out length] > 360) return;
-    (*budget)--;
-    if ([node isKindOfClass:[NSString class]]) {
-        NSString *v = (NSString *)node;
-        if ([v length] > 0 && [v length] <= 28) [out appendFormat:@"'%@' ", v];
-        return;
-    }
-    if ([node isKindOfClass:[NSDictionary class]]) {
-        [out appendString:@"{ "];
-        for (id k in (NSDictionary *)node) {
-            if ([out length] > 360 || *budget <= 0) break;
-            [out appendFormat:@"%@:", k];
-            ECWalkStruct(((NSDictionary *)node)[k], depth + 1, budget, out);
-        }
-        [out appendString:@"} "];
-        return;
-    }
-    if ([node isKindOfClass:[NSArray class]]) {
-        NSArray *a = (NSArray *)node;
-        [out appendFormat:@"[%lu]", (unsigned long)[a count]];
-        if ([a count] > 0) ECWalkStruct(a[0], depth + 1, budget, out);
-        return;
-    }
-}
-static NSMutableDictionary *gStructSizes = nil;
-static void ECRecordStruct(NSString *api, id payload) {
-    if (api == nil) return;
-    if (gStructDumps == nil) gStructDumps = [NSMutableDictionary dictionary];
-    if (gStructSizes == nil) gStructSizes = [NSMutableDictionary dictionary];
-    if (gStructDumps[api] != nil) return;
-    // v27: generalize — dump the structure of every sizable payload; the
-    // landing-page content (two shop columns) must be one of the largest.
-    NSData *jd = nil;
-    @try { jd = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil]; } @catch (NSException *e) {}
-    if (jd == nil || [jd length] < 2500) return;
-    NSMutableString *out = [NSMutableString string];
-    int budget = 220;
-    ECWalkStruct(payload, 0, &budget, out);
-    gStructDumps[api] = out;
-    gStructSizes[api] = @([jd length]);
-}
-
-
-// v25 diag (READ-ONLY): relationrecommend placement census + storelist names.
-// Every relationrecommend response: record its scm (placement id), result
-// count, whether it carries store fields, whether it carries 搜索发现.
-// For the storelist snapshot: record the actual store names to compare with
-// the shops shown in the 专属好店 column.
-static NSMutableString *gRelRecInfo = nil;
-static NSMutableString *gStoreNames = nil;
-static NSString *ECFindKeyString(id node, NSString *key, int depth, int *budget) {
-    if (node == nil || depth > 5 || *budget <= 0) return nil;
-    (*budget)--;
-    if ([node isKindOfClass:[NSDictionary class]]) {
-        id v = ((NSDictionary *)node)[key];
-        if ([v isKindOfClass:[NSString class]]) return (NSString *)v;
-        for (id sub in [(NSDictionary *)node allValues]) {
-            NSString *r = ECFindKeyString(sub, key, depth + 1, budget);
-            if (r != nil) return r;
-        }
-        return nil;
-    }
-    if ([node isKindOfClass:[NSArray class]]) {
-        for (id sub in (NSArray *)node) {
-            NSString *r = ECFindKeyString(sub, key, depth + 1, budget);
-            if (r != nil) return r;
-        }
-    }
-    return nil;
-}
-static BOOL ECKeyExists(id node, NSString *key, int depth, int *budget) {
-    if (node == nil || depth > 6 || *budget <= 0) return NO;
-    (*budget)--;
-    if ([node isKindOfClass:[NSDictionary class]]) {
-        if (((NSDictionary *)node)[key] != nil) return YES;
-        for (id sub in [(NSDictionary *)node allValues]) {
-            if (ECKeyExists(sub, key, depth + 1, budget)) return YES;
-        }
-        return NO;
-    }
-    if ([node isKindOfClass:[NSArray class]]) {
-        for (id sub in (NSArray *)node) {
-            if (ECKeyExists(sub, key, depth + 1, budget)) return YES;
-        }
-    }
-    return NO;
-}
-static void ECRecordRelRec(NSString *api, id payload) {
-    if (api == nil) return;
-    NSString *apiL = [api lowercaseString];
-    if ([apiL hasPrefix:@"mtop.relationrecommend."]) {
-        int b1 = 300; NSString *scm = ECFindKeyString(payload, @"scm", 0, &b1);
-        long resCount = -1;
-        id data = [payload isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)payload)[@"data"] : nil;
-        id result = [data isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)data)[@"result"] : nil;
-        if ([result isKindOfClass:[NSArray class]]) resCount = (long)[(NSArray *)result count];
-        else if (result != nil) resCount = 1;
-        int b2 = 4000; BOOL hasStore = ECKeyExists(payload, @"storeName", 0, &b2);
-        int b3 = 4000; BOOL disc = ECNodeContainsToken(payload, @"搜索发现", 0, &b3);
-        if (gRelRecInfo == nil) gRelRecInfo = [NSMutableString string];
-        NSString *entry = [NSString stringWithFormat:@"%@(r%ld,s%d,d%d) ", scm ?: @"?", resCount, hasStore ? 1 : 0, disc ? 1 : 0];
-        if ([gRelRecInfo rangeOfString:entry].location == NSNotFound && [gRelRecInfo length] < 700) {
-            [gRelRecInfo appendString:entry];
-        }
-    }
-    if ([apiL rangeOfString:@"storelist"].location != NSNotFound && gStoreNames == nil) {
-        gStoreNames = [NSMutableString string];
-        id data = [payload isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)payload)[@"data"] : nil;
-        id result = [data isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)data)[@"result"] : nil;
-        if ([result isKindOfClass:[NSArray class]]) {
-            for (id item in (NSArray *)result) {
-                if ([item isKindOfClass:[NSDictionary class]]) {
-                    id n = ((NSDictionary *)item)[@"storeName"];
-                    if ([n isKindOfClass:[NSString class]]) [gStoreNames appendFormat:@"%@|", n];
-                }
-            }
-        }
-        if ([gStoreNames length] == 0) [gStoreNames appendString:@"(none)"];
-    }
-}
-
-
-// v26 diag (READ-ONLY): deep-walk the relationrecommend response's
-// data.result[0].blocks subtree (depth<=6, big budget): per-dict key sets,
-// title-ish values, and a census of store-ish keys. Settles whether the two
-// shop columns ride inside the same response, below earlier truncations.
-static NSMutableString *gBlocksInfo = nil;
-static int gBlockStoreKeys = 0;
-static void ECWalkBlocks(id node, int depth, int *budget, NSMutableString *out) {
-    if (node == nil || depth > 6 || *budget <= 0 || [out length] > 560) return;
-    (*budget)--;
-    if ([node isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *d = (NSDictionary *)node;
-        if (d[@"storeName"] != nil || d[@"shopName"] != nil || d[@"storeId"] != nil || d[@"shopId"] != nil) gBlockStoreKeys++;
-        [out appendString:@"{"];
-        BOOL first = YES;
-        for (id k in d) {
-            if (!first) [out appendString:@","];
-            first = NO;
-            [out appendFormat:@"%@", k];
-            if (([k isEqual:@"title"] || [k isEqual:@"name"] || [k isEqual:@"header"] || [k isEqual:@"subTitle"]) &&
-                [d[k] isKindOfClass:[NSString class]] && [(NSString *)d[k] length] <= 24) {
-                [out appendFormat:@"='%@'", d[k]];
-            }
-        }
-        [out appendString:@"} "];
-        for (id k in d) ECWalkBlocks(d[k], depth + 1, budget, out);
-        return;
-    }
-    if ([node isKindOfClass:[NSArray class]]) {
-        NSArray *a = (NSArray *)node;
-        [out appendFormat:@"[%lu]", (unsigned long)[a count]];
-        NSUInteger n = MIN([a count], (NSUInteger)3);
-        for (NSUInteger i = 0; i < n; i++) ECWalkBlocks(a[i], depth + 1, budget, out);
-        return;
-    }
-}
-static void ECRecordBlocks(NSString *api, id payload) {
-    if (api == nil || gBlocksInfo != nil) return;
-    if (![[api lowercaseString] hasPrefix:@"mtop.relationrecommend."]) return;
-    id data = [payload isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)payload)[@"data"] : nil;
-    id result = [data isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)data)[@"result"] : nil;
-    id first = [result isKindOfClass:[NSArray class]] && [(NSArray *)result count] > 0 ? ((NSArray *)result)[0] : nil;
-    id blocks = [first isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)first)[@"blocks"] : nil;
-    gBlocksInfo = [NSMutableString string];
-    if (blocks == nil) { [gBlocksInfo appendString:@"(no blocks)"]; return; }
-    int budget = 3000;
-    ECWalkBlocks(blocks, 0, &budget, gBlocksInfo);
-    [gBlocksInfo appendFormat:@" | storeKeys=%d", gBlockStoreKeys];
-}
-
-
-// v27 diag (READ-ONLY): some content rides as stringified JSON inside a
-// payload. Parse long string leaves and token-scan the parsed value too.
-static void ECScanEmbeddedWalk(id node, NSString *api, int depth, int *budget, int *parses) {
-    if (node == nil || depth > 6 || *budget <= 0 || *parses <= 0) return;
-    (*budget)--;
-    if ([node isKindOfClass:[NSString class]]) {
-        NSString *v = (NSString *)node;
-        if ([v length] > 120 && [v containsString:@"{"]) {
-            (*parses)--;
-            NSData *d = [v dataUsingEncoding:NSUTF8StringEncoding];
-            id parsed = nil;
-            @try { parsed = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil]; } @catch (NSException *e) {}
-            if ([parsed isKindOfClass:[NSDictionary class]] || [parsed isKindOfClass:[NSArray class]]) {
-                static NSArray *toks = nil;
-                if (toks == nil) toks = @[@"专属好店", @"为你精选", @"推荐系数"];
-                for (NSString *t in toks) {
-                    int b = 6000;
-                    if (ECNodeContainsToken(parsed, t, 0, &b)) {
-                        ECNoteSearchHit([api stringByAppendingString:@"(embedded)"], t);
-                    }
-                }
-            }
-        }
-        return;
-    }
-    if ([node isKindOfClass:[NSDictionary class]]) {
-        for (id sub in [(NSDictionary *)node allValues]) ECScanEmbeddedWalk(sub, api, depth + 1, budget, parses);
-        return;
-    }
-    if ([node isKindOfClass:[NSArray class]]) {
-        for (id sub in (NSArray *)node) ECScanEmbeddedWalk(sub, api, depth + 1, budget, parses);
-        return;
-    }
-}
-static void ECScanEmbedded(NSString *api, id payload) {
-    int budget = 1500, parses = 6;
-    ECScanEmbeddedWalk(payload, api, 0, &budget, &parses);
-}
-
-static void ECScanSearchTokens(NSString *api, id payload) {
-    static NSArray *tokens = nil;
-    if (tokens == nil) tokens = @[@"搜索发现", @"专属好店", @"为你精选", @"推荐系数"];
-    for (NSString *t in tokens) {
-        int budget = 4000;
-        if (ECNodeContainsToken(payload, t, 0, &budget)) ECNoteSearchHit(api, t);
-    }
-}
-
 static BOOL ECNodeContainsFingerprint(id node, int depth, int *budget) {
     if (node == nil || depth > 8 || *budget <= 0) return NO;
     (*budget)--;
@@ -602,15 +333,97 @@ static void ECNoteBannerHit(NSString *api, NSString *how) {
     }
 }
 
+
+// v28: search landing page filter. The landing content (history / discovery
+// words / shop columns / boards) all rides in ONE response:
+// mtop.relationrecommend.elemetinyapprecommend.recommend, shaped as
+// data.result[0].blocks = [block, ...]. Each block is a section. We keep a
+// block only when it carries the history section (subtree contains 历史搜索)
+// or when it is a pure layout/meta block (no title and no entities); every
+// content block without the history title is dropped. Payloads of this api
+// that do not contain the discovery section at all pass untouched.
+static BOOL ECNodeHasToken(id node, NSString *token, int depth, int *budget) {
+    if (node == nil || depth > 8 || *budget <= 0) return NO;
+    (*budget)--;
+    if ([node isKindOfClass:[NSString class]]) {
+        return [(NSString *)node containsString:token];
+    }
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        for (id k in (NSDictionary *)node) {
+            if (ECNodeHasToken(k, token, depth + 1, budget)) return YES;
+            if (ECNodeHasToken(((NSDictionary *)node)[k], token, depth + 1, budget)) return YES;
+        }
+        return NO;
+    }
+    if ([node isKindOfClass:[NSArray class]]) {
+        for (id v in (NSArray *)node) {
+            if (ECNodeHasToken(v, token, depth + 1, budget)) return YES;
+        }
+    }
+    return NO;
+}
+static BOOL ECBlockIsContent(id block) {
+    if (![block isKindOfClass:[NSDictionary class]]) return NO;
+    NSDictionary *d = (NSDictionary *)block;
+    if (d[@"title"] != nil) return YES;
+    id ent = d[@"entities"];
+    if ([ent isKindOfClass:[NSArray class]] && [(NSArray *)ent count] > 0) return YES;
+    if ([ent isKindOfClass:[NSDictionary class]] && [(NSDictionary *)ent count] > 0) return YES;
+    return NO;
+}
+static id ECFilterSearchPayload(id payload) {
+    @try {
+        if (![payload isKindOfClass:[NSDictionary class]]) return payload;
+        id data = ((NSDictionary *)payload)[@"data"];
+        id result = [data isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)data)[@"result"] : nil;
+        if (![result isKindOfClass:[NSArray class]]) return payload;
+        // Gate: this payload must be the search landing assembly — some item's
+        // blocks mention the discovery section.
+        BOOL gated = NO;
+        for (id item in (NSArray *)result) {
+            if (![item isKindOfClass:[NSDictionary class]]) continue;
+            id blocks = ((NSDictionary *)item)[@"blocks"];
+            if (![blocks isKindOfClass:[NSArray class]]) continue;
+            int b = 6000;
+            if (ECNodeHasToken(blocks, @"搜索发现", 0, &b)) { gated = YES; break; }
+        }
+        if (!gated) return payload;
+        NSMutableArray *newResult = [NSMutableArray array];
+        BOOL changed = NO;
+        for (id item in (NSArray *)result) {
+            if (![item isKindOfClass:[NSDictionary class]]) { [newResult addObject:item]; continue; }
+            id blocks = ((NSDictionary *)item)[@"blocks"];
+            if (![blocks isKindOfClass:[NSArray class]]) { [newResult addObject:item]; continue; }
+            NSMutableArray *kept = [NSMutableArray array];
+            for (id block in (NSArray *)blocks) {
+                int b = 6000;
+                BOOL isHistory = ECNodeHasToken(block, @"历史搜索", 0, &b);
+                if (isHistory || !ECBlockIsContent(block)) [kept addObject:block];
+            }
+            if ([kept count] != [(NSArray *)blocks count]) {
+                changed = YES;
+                NSMutableDictionary *newItem = [(NSDictionary *)item mutableCopy];
+                newItem[@"blocks"] = kept;
+                [newResult addObject:newItem];
+            } else {
+                [newResult addObject:item];
+            }
+        }
+        if (!changed) return payload;
+        NSMutableDictionary *newData = [(NSDictionary *)data mutableCopy];
+        newData[@"result"] = newResult;
+        NSMutableDictionary *newPayload = [(NSDictionary *)payload mutableCopy];
+        newPayload[@"data"] = newData;
+        return newPayload;
+    } @catch (NSException *e) {
+        return payload;
+    }
+}
+
 static id ECFilterResponseObject(id self, id payload) {
     if (![payload isKindOfClass:[NSDictionary class]]) return payload;
     NSString *api = ECApiNameFromObject(self, 0);
     ECNoteApi(api);
-    ECScanSearchTokens(api, payload);
-    ECScanEmbedded(api, payload);
-    ECRecordStruct(api, payload);
-    ECRecordRelRec(api, payload);
-    ECRecordBlocks(api, payload);
     NSString *apiL = [api lowercaseString];
     if (api != nil && [apiL hasPrefix:@"mtop.alsc.personal."]) {
         ECNotePersonalApi(api);
@@ -618,6 +431,9 @@ static id ECFilterResponseObject(id self, id payload) {
         id out = ELProcessResult(api, payload);
         if (out != payload) gFilteredCount++;
         return out;
+    }
+    if (api != nil && [apiL isEqualToString:@"mtop.relationrecommend.elemetinyapprecommend.recommend"]) {
+        return ECFilterSearchPayload(payload);
     }
     // v10clean2: the banner fingerprint trap is REMOVED. Stripping elements
     // from the tsfm home-build payload took out the header section with it
@@ -972,69 +788,7 @@ static void ECShowDiag(void) {
     }
 }
 
-
-static BOOL gSearchDiagShown = NO;
-static void ECShowSearchDiag(void) {
-    if (gSearchDiagShown) return;
-    NSString *msg = [NSString stringWithFormat:
-        @"searchHits: %@\nbridge=%d json=%d",
-        gSearchHits ?: @"(none)",
-        gBridgeCalls, gJsonCalls];
-    if (gStructDumps != nil) {
-        NSArray *keys = [gStructDumps.allKeys sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
-            return [gStructSizes[b] compare:gStructSizes[a]];
-        }];
-        for (NSString *k in keys) {
-            msg = [msg stringByAppendingFormat:@"\n== %@ (%@B)\n%@", k, gStructSizes[k], gStructDumps[k]];
-        }
-    }
-    msg = [msg stringByAppendingFormat:@"\nrelrec: %@\nstores: %@",
-        gRelRecInfo ?: @"(none)", gStoreNames ?: @"(none)"];
-    msg = [msg stringByAppendingFormat:@"\nblocks: %@", gBlocksInfo ?: @"(none)"];
-    msg = [msg stringByAppendingFormat:@"\napis: %@", gSeenApis ?: @"(none)"];
-    Class acCls = objc_getClass("UIAlertController");
-    Class aaCls = objc_getClass("UIAlertAction");
-    Class appCls = objc_getClass("UIApplication");
-    if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
-    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
-        NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v27 搜索诊断", msg, 1L);
-    id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
-        NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
-    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
-    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
-    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
-    id key = nil;
-    for (id w in windows) {
-        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
-        if (isKey) { key = w; break; }
-    }
-    if (key == nil) key = [windows firstObject];
-    if (key == nil) return;
-    id top = ((id (*)(id, SEL))objc_msgSend)(key, NSSelectorFromString(@"rootViewController"));
-    while (top != nil) {
-        id presented = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"presentedViewController"));
-        if (presented == nil) break;
-        top = presented;
-    }
-    if (top == nil) return;
-    gSearchDiagShown = YES;
-    ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
-        NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
-}
-static void ECSearchDiagTick(int n) {
-    ECShowSearchDiag();
-    if (!gSearchDiagShown && n < 8) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ ECSearchDiagTick(n + 1); });
-    }
-}
-
 __attribute__((constructor)) static void ELEntry(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        ECSearchDiagTick(0);
-    });
     @autoreleasepool {
         BOOL a = ELInstall();
         BOOL b = ECInstallParse();
