@@ -33,7 +33,7 @@ static NSString *gSubclassInfo = @"";
 static void ECNoteApi(NSString *api) {
     if (api == nil) return;
     if (gSeenApis == nil) gSeenApis = [NSMutableString string];
-    if ([gSeenApis rangeOfString:api].location == NSNotFound && [gSeenApis length] < 400) {
+    if ([gSeenApis rangeOfString:api].location == NSNotFound && [gSeenApis length] < 1400) {
         [gSeenApis appendFormat:@"%@ ", api];
     }
     if ([api hasPrefix:@"mtop.alsc.personal."]) gPersonalSeen = YES;
@@ -163,6 +163,7 @@ static id ELProcessResult(NSString *api, id result) {
     }
 }
 
+static void ECScanBridgeTokens(NSString *api, id payload);
 typedef void (^ELWVCallBack)(id result);
 typedef void (*ELSendIMP)(id, SEL, id, ELWVCallBack, id);
 static ELSendIMP gOrigSend = NULL;
@@ -185,13 +186,14 @@ static void ELSendMtopRequest(id self, SEL _cmd, id request, ELWVCallBack callBa
     }
     BOOL target = api != nil && [[api lowercaseString] hasPrefix:@"mtop.alsc.personal."];
     if (target) ECNotePersonalApi([@"bridge:" stringByAppendingString:api]);
-    if (!target || callBack == nil) {
+    if (callBack == nil) {
         gOrigSend(self, _cmd, request, callBack, ext);
         return;
     }
-    NSString *apiCopy = [api copy];
+    NSString *apiCopy = api != nil ? [api copy] : @"?";
     ELWVCallBack wrapped = ^(id result) {
-        callBack(ELProcessResult(apiCopy, result));
+        if ([result isKindOfClass:[NSDictionary class]]) ECScanBridgeTokens(apiCopy, result);
+        callBack(target ? ELProcessResult(apiCopy, result) : result);
     };
     gOrigSend(self, _cmd, request, wrapped, ext);
 }
@@ -290,7 +292,7 @@ static NSMutableString *gSearchHits = nil;
 static void ECNoteSearchHit(NSString *api, NSString *token) {
     if (gSearchHits == nil) gSearchHits = [NSMutableString string];
     NSString *entry = [NSString stringWithFormat:@"%@(%@) ", api ?: @"?", token];
-    if ([gSearchHits rangeOfString:entry].location == NSNotFound && [gSearchHits length] < 600) {
+    if ([gSearchHits rangeOfString:entry].location == NSNotFound && [gSearchHits length] < 900) {
         [gSearchHits appendString:entry];
     }
 }
@@ -313,6 +315,15 @@ static BOOL ECNodeContainsToken(id node, NSString *token, int depth, int *budget
         }
     }
     return NO;
+}
+static void ECScanBridgeTokens(NSString *api, id payload) {
+    static NSArray *tokens = nil;
+    if (tokens == nil) tokens = @[@"搜索发现", @"专属好店", @"为你精选", @"推荐系数"];
+    NSString *label = [@"bridge:" stringByAppendingString: api ?: @"?"];
+    for (NSString *t in tokens) {
+        int budget = 4000;
+        if (ECNodeContainsToken(payload, t, 0, &budget)) ECNoteSearchHit(label, t);
+    }
 }
 static void ECScanSearchTokens(NSString *api, id payload) {
     static NSArray *tokens = nil;
@@ -744,8 +755,9 @@ static BOOL gSearchDiagShown = NO;
 static void ECShowSearchDiag(void) {
     if (gSearchDiagShown) return;
     NSString *msg = [NSString stringWithFormat:
-        @"searchHits: %@\napis: %@",
+        @"searchHits: %@\nbridge=%d json=%d\napis: %@",
         gSearchHits ?: @"(none)",
+        gBridgeCalls, gJsonCalls,
         gSeenApis ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
