@@ -740,38 +740,55 @@ static void ECShowDiag(void) {
 }
 
 
+static BOOL gSearchDiagShown = NO;
 static void ECShowSearchDiag(void) {
+    if (gSearchDiagShown) return;
     NSString *msg = [NSString stringWithFormat:
         @"searchHits: %@\napis: %@",
         gSearchHits ?: @"(none)",
         gSeenApis ?: @"(none)"];
-    id cls = objc_getClass("UIAlertController");
-    if (cls == Nil) return;
-    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(cls,
+    Class acCls = objc_getClass("UIAlertController");
+    Class aaCls = objc_getClass("UIAlertAction");
+    Class appCls = objc_getClass("UIApplication");
+    if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
+    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
         @"EleClean v22 搜索诊断", msg, 1L);
-    id act = ((id (*)(id, SEL, id, long, id))objc_msgSend)(objc_getClass("UIAlertAction"),
+    id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
-    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), act);
-    id app = ((id (*)(id, SEL))objc_msgSend)(objc_getClass("UIApplication"),
-        NSSelectorFromString(@"sharedApplication"));
-    id win = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"keyWindow"));
-    id top = ((id (*)(id, SEL))objc_msgSend)(win, NSSelectorFromString(@"rootViewController"));
+    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
+    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
+    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
+    id key = nil;
+    for (id w in windows) {
+        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
+        if (isKey) { key = w; break; }
+    }
+    if (key == nil) key = [windows firstObject];
+    if (key == nil) return;
+    id top = ((id (*)(id, SEL))objc_msgSend)(key, NSSelectorFromString(@"rootViewController"));
     while (top != nil) {
         id presented = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"presentedViewController"));
         if (presented == nil) break;
         top = presented;
     }
-    if (top != nil) {
-        ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
-            NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
+    if (top == nil) return;
+    gSearchDiagShown = YES;
+    ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
+        NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
+}
+static void ECSearchDiagTick(int n) {
+    ECShowSearchDiag();
+    if (!gSearchDiagShown && n < 8) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ ECSearchDiagTick(n + 1); });
     }
 }
 
 __attribute__((constructor)) static void ELEntry(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25.0 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        ECShowSearchDiag();
+        ECSearchDiagTick(0);
     });
     @autoreleasepool {
         BOOL a = ELInstall();
