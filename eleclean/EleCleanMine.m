@@ -325,6 +325,53 @@ static void ECScanBridgeTokens(NSString *api, id payload) {
         if (ECNodeContainsToken(payload, t, 0, &budget)) ECNoteSearchHit(label, t);
     }
 }
+
+// v24 diag (READ-ONLY): for shortlisted candidate APIs, record a compact
+// structural fingerprint of the first response: key names + short string
+// values, depth<=3. Used to find the section codes behind the search
+// landing page's two shop columns (their titles never appear in payloads).
+static NSMutableDictionary *gStructDumps = nil;
+static void ECWalkStruct(id node, int depth, int *budget, NSMutableString *out) {
+    if (node == nil || depth > 3 || *budget <= 0 || [out length] > 360) return;
+    (*budget)--;
+    if ([node isKindOfClass:[NSString class]]) {
+        NSString *v = (NSString *)node;
+        if ([v length] > 0 && [v length] <= 28) [out appendFormat:@"'%@' ", v];
+        return;
+    }
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        [out appendString:@"{ "];
+        for (id k in (NSDictionary *)node) {
+            if ([out length] > 360 || *budget <= 0) break;
+            [out appendFormat:@"%@:", k];
+            ECWalkStruct(((NSDictionary *)node)[k], depth + 1, budget, out);
+        }
+        [out appendString:@"} "];
+        return;
+    }
+    if ([node isKindOfClass:[NSArray class]]) {
+        NSArray *a = (NSArray *)node;
+        [out appendFormat:@"[%lu]", (unsigned long)[a count]];
+        if ([a count] > 0) ECWalkStruct(a[0], depth + 1, budget, out);
+        return;
+    }
+}
+static void ECRecordStruct(NSString *api, id payload) {
+    if (api == nil) return;
+    NSString *apiL = [api lowercaseString];
+    BOOL cand = [apiL hasPrefix:@"mtop.hasee."] ||
+                [apiL hasPrefix:@"mtop.relationrecommend."] ||
+                [apiL rangeOfString:@"storelist"].location != NSNotFound ||
+                [apiL rangeOfString:@"miniapp.homepage"].location != NSNotFound;
+    if (!cand) return;
+    if (gStructDumps == nil) gStructDumps = [NSMutableDictionary dictionary];
+    if (gStructDumps[api] != nil) return;
+    NSMutableString *out = [NSMutableString string];
+    int budget = 220;
+    ECWalkStruct(payload, 0, &budget, out);
+    gStructDumps[api] = out;
+}
+
 static void ECScanSearchTokens(NSString *api, id payload) {
     static NSArray *tokens = nil;
     if (tokens == nil) tokens = @[@"搜索发现", @"专属好店", @"为你精选", @"推荐系数"];
@@ -389,6 +436,7 @@ static id ECFilterResponseObject(id self, id payload) {
     NSString *api = ECApiNameFromObject(self, 0);
     ECNoteApi(api);
     ECScanSearchTokens(api, payload);
+    ECRecordStruct(api, payload);
     NSString *apiL = [api lowercaseString];
     if (api != nil && [apiL hasPrefix:@"mtop.alsc.personal."]) {
         ECNotePersonalApi(api);
@@ -730,6 +778,11 @@ static void ECShowDiag(void) {
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
+    if (gStructDumps != nil) {
+        for (NSString *k in gStructDumps) {
+            msg = [msg stringByAppendingFormat:@"\n== %@\n%@", k, gStructDumps[k]];
+        }
+    }
     id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
     NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
     id key = nil;
