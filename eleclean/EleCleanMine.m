@@ -356,20 +356,22 @@ static void ECWalkStruct(id node, int depth, int *budget, NSMutableString *out) 
         return;
     }
 }
+static NSMutableDictionary *gStructSizes = nil;
 static void ECRecordStruct(NSString *api, id payload) {
     if (api == nil) return;
-    NSString *apiL = [api lowercaseString];
-    BOOL cand = [apiL hasPrefix:@"mtop.hasee."] ||
-                [apiL hasPrefix:@"mtop.relationrecommend."] ||
-                [apiL rangeOfString:@"storelist"].location != NSNotFound ||
-                [apiL rangeOfString:@"miniapp.homepage"].location != NSNotFound;
-    if (!cand) return;
     if (gStructDumps == nil) gStructDumps = [NSMutableDictionary dictionary];
+    if (gStructSizes == nil) gStructSizes = [NSMutableDictionary dictionary];
     if (gStructDumps[api] != nil) return;
+    // v27: generalize — dump the structure of every sizable payload; the
+    // landing-page content (two shop columns) must be one of the largest.
+    NSData *jd = nil;
+    @try { jd = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil]; } @catch (NSException *e) {}
+    if (jd == nil || [jd length] < 2500) return;
     NSMutableString *out = [NSMutableString string];
     int budget = 220;
     ECWalkStruct(payload, 0, &budget, out);
     gStructDumps[api] = out;
+    gStructSizes[api] = @([jd length]);
 }
 
 
@@ -501,6 +503,46 @@ static void ECRecordBlocks(NSString *api, id payload) {
     [gBlocksInfo appendFormat:@" | storeKeys=%d", gBlockStoreKeys];
 }
 
+
+// v27 diag (READ-ONLY): some content rides as stringified JSON inside a
+// payload. Parse long string leaves and token-scan the parsed value too.
+static void ECScanEmbeddedWalk(id node, NSString *api, int depth, int *budget, int *parses) {
+    if (node == nil || depth > 6 || *budget <= 0 || *parses <= 0) return;
+    (*budget)--;
+    if ([node isKindOfClass:[NSString class]]) {
+        NSString *v = (NSString *)node;
+        if ([v length] > 120 && [v containsString:@"{"]) {
+            (*parses)--;
+            NSData *d = [v dataUsingEncoding:NSUTF8StringEncoding];
+            id parsed = nil;
+            @try { parsed = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil]; } @catch (NSException *e) {}
+            if ([parsed isKindOfClass:[NSDictionary class]] || [parsed isKindOfClass:[NSArray class]]) {
+                static NSArray *toks = nil;
+                if (toks == nil) toks = @[@"专属好店", @"为你精选", @"推荐系数"];
+                for (NSString *t in toks) {
+                    int b = 6000;
+                    if (ECNodeContainsToken(parsed, t, 0, &b)) {
+                        ECNoteSearchHit([api stringByAppendingString:@"(embedded)"], t);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        for (id sub in [(NSDictionary *)node allValues]) ECScanEmbeddedWalk(sub, api, depth + 1, budget, parses);
+        return;
+    }
+    if ([node isKindOfClass:[NSArray class]]) {
+        for (id sub in (NSArray *)node) ECScanEmbeddedWalk(sub, api, depth + 1, budget, parses);
+        return;
+    }
+}
+static void ECScanEmbedded(NSString *api, id payload) {
+    int budget = 1500, parses = 6;
+    ECScanEmbeddedWalk(payload, api, 0, &budget, &parses);
+}
+
 static void ECScanSearchTokens(NSString *api, id payload) {
     static NSArray *tokens = nil;
     if (tokens == nil) tokens = @[@"搜索发现", @"专属好店", @"为你精选", @"推荐系数"];
@@ -565,6 +607,7 @@ static id ECFilterResponseObject(id self, id payload) {
     NSString *api = ECApiNameFromObject(self, 0);
     ECNoteApi(api);
     ECScanSearchTokens(api, payload);
+    ECScanEmbedded(api, payload);
     ECRecordStruct(api, payload);
     ECRecordRelRec(api, payload);
     ECRecordBlocks(api, payload);
@@ -938,8 +981,11 @@ static void ECShowSearchDiag(void) {
         gSearchHits ?: @"(none)",
         gBridgeCalls, gJsonCalls];
     if (gStructDumps != nil) {
-        for (NSString *k in gStructDumps) {
-            msg = [msg stringByAppendingFormat:@"\n== %@\n%@", k, gStructDumps[k]];
+        NSArray *keys = [gStructDumps.allKeys sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+            return [gStructSizes[b] compare:gStructSizes[a]];
+        }];
+        for (NSString *k in keys) {
+            msg = [msg stringByAppendingFormat:@"\n== %@ (%@B)\n%@", k, gStructSizes[k], gStructDumps[k]];
         }
     }
     msg = [msg stringByAppendingFormat:@"\nrelrec: %@\nstores: %@",
@@ -952,7 +998,7 @@ static void ECShowSearchDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v26 搜索诊断", msg, 1L);
+        @"EleClean v27 搜索诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
