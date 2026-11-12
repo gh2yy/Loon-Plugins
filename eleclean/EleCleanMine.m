@@ -372,6 +372,85 @@ static void ECRecordStruct(NSString *api, id payload) {
     gStructDumps[api] = out;
 }
 
+
+// v25 diag (READ-ONLY): relationrecommend placement census + storelist names.
+// Every relationrecommend response: record its scm (placement id), result
+// count, whether it carries store fields, whether it carries 搜索发现.
+// For the storelist snapshot: record the actual store names to compare with
+// the shops shown in the 专属好店 column.
+static NSMutableString *gRelRecInfo = nil;
+static NSMutableString *gStoreNames = nil;
+static NSString *ECFindKeyString(id node, NSString *key, int depth, int *budget) {
+    if (node == nil || depth > 5 || *budget <= 0) return nil;
+    (*budget)--;
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        id v = ((NSDictionary *)node)[key];
+        if ([v isKindOfClass:[NSString class]]) return (NSString *)v;
+        for (id sub in [(NSDictionary *)node allValues]) {
+            NSString *r = ECFindKeyString(sub, key, depth + 1, budget);
+            if (r != nil) return r;
+        }
+        return nil;
+    }
+    if ([node isKindOfClass:[NSArray class]]) {
+        for (id sub in (NSArray *)node) {
+            NSString *r = ECFindKeyString(sub, key, depth + 1, budget);
+            if (r != nil) return r;
+        }
+    }
+    return nil;
+}
+static BOOL ECKeyExists(id node, NSString *key, int depth, int *budget) {
+    if (node == nil || depth > 6 || *budget <= 0) return NO;
+    (*budget)--;
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        if (((NSDictionary *)node)[key] != nil) return YES;
+        for (id sub in [(NSDictionary *)node allValues]) {
+            if (ECKeyExists(sub, key, depth + 1, budget)) return YES;
+        }
+        return NO;
+    }
+    if ([node isKindOfClass:[NSArray class]]) {
+        for (id sub in (NSArray *)node) {
+            if (ECKeyExists(sub, key, depth + 1, budget)) return YES;
+        }
+    }
+    return NO;
+}
+static void ECRecordRelRec(NSString *api, id payload) {
+    if (api == nil) return;
+    NSString *apiL = [api lowercaseString];
+    if ([apiL hasPrefix:@"mtop.relationrecommend."]) {
+        int b1 = 300; NSString *scm = ECFindKeyString(payload, @"scm", 0, &b1);
+        long resCount = -1;
+        id data = [payload isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)payload)[@"data"] : nil;
+        id result = [data isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)data)[@"result"] : nil;
+        if ([result isKindOfClass:[NSArray class]]) resCount = (long)[(NSArray *)result count];
+        else if (result != nil) resCount = 1;
+        int b2 = 4000; BOOL hasStore = ECKeyExists(payload, @"storeName", 0, &b2);
+        int b3 = 4000; BOOL disc = ECNodeContainsToken(payload, @"搜索发现", 0, &b3);
+        if (gRelRecInfo == nil) gRelRecInfo = [NSMutableString string];
+        NSString *entry = [NSString stringWithFormat:@"%@(r%ld,s%d,d%d) ", scm ?: @"?", resCount, hasStore ? 1 : 0, disc ? 1 : 0];
+        if ([gRelRecInfo rangeOfString:entry].location == NSNotFound && [gRelRecInfo length] < 700) {
+            [gRelRecInfo appendString:entry];
+        }
+    }
+    if ([apiL rangeOfString:@"storelist"].location != NSNotFound && gStoreNames == nil) {
+        gStoreNames = [NSMutableString string];
+        id data = [payload isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)payload)[@"data"] : nil;
+        id result = [data isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)data)[@"result"] : nil;
+        if ([result isKindOfClass:[NSArray class]]) {
+            for (id item in (NSArray *)result) {
+                if ([item isKindOfClass:[NSDictionary class]]) {
+                    id n = ((NSDictionary *)item)[@"storeName"];
+                    if ([n isKindOfClass:[NSString class]]) [gStoreNames appendFormat:@"%@|", n];
+                }
+            }
+        }
+        if ([gStoreNames length] == 0) [gStoreNames appendString:@"(none)"];
+    }
+}
+
 static void ECScanSearchTokens(NSString *api, id payload) {
     static NSArray *tokens = nil;
     if (tokens == nil) tokens = @[@"搜索发现", @"专属好店", @"为你精选", @"推荐系数"];
@@ -437,6 +516,7 @@ static id ECFilterResponseObject(id self, id payload) {
     ECNoteApi(api);
     ECScanSearchTokens(api, payload);
     ECRecordStruct(api, payload);
+    ECRecordRelRec(api, payload);
     NSString *apiL = [api lowercaseString];
     if (api != nil && [apiL hasPrefix:@"mtop.alsc.personal."]) {
         ECNotePersonalApi(api);
@@ -811,6 +891,8 @@ static void ECShowSearchDiag(void) {
             msg = [msg stringByAppendingFormat:@"\n== %@\n%@", k, gStructDumps[k]];
         }
     }
+    msg = [msg stringByAppendingFormat:@"\nrelrec: %@\nstores: %@",
+        gRelRecInfo ?: @"(none)", gStoreNames ?: @"(none)"];
     msg = [msg stringByAppendingFormat:@"\napis: %@", gSeenApis ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
