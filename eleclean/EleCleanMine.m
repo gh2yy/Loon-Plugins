@@ -397,8 +397,10 @@ static id ECFilterSearchPayload(id payload) {
             NSMutableArray *kept = [NSMutableArray array];
             for (id block in (NSArray *)blocks) {
                 int b = 6000;
-                BOOL isHistory = ECNodeHasToken(block, @"历史搜索", 0, &b);
-                if (isHistory || !ECBlockIsContent(block)) [kept addObject:block];
+                // v29: keep ONLY the history block. v28 also kept meta/layout
+                // blocks, and the shop-columns block (no top-level title or
+                // entities key) slipped through that exemption.
+                if (ECNodeHasToken(block, @"历史搜索", 0, &b)) [kept addObject:block];
             }
             if ([kept count] != [(NSArray *)blocks count]) {
                 changed = YES;
