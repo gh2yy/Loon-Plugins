@@ -451,6 +451,56 @@ static void ECRecordRelRec(NSString *api, id payload) {
     }
 }
 
+
+// v26 diag (READ-ONLY): deep-walk the relationrecommend response's
+// data.result[0].blocks subtree (depth<=6, big budget): per-dict key sets,
+// title-ish values, and a census of store-ish keys. Settles whether the two
+// shop columns ride inside the same response, below earlier truncations.
+static NSMutableString *gBlocksInfo = nil;
+static int gBlockStoreKeys = 0;
+static void ECWalkBlocks(id node, int depth, int *budget, NSMutableString *out) {
+    if (node == nil || depth > 6 || *budget <= 0 || [out length] > 560) return;
+    (*budget)--;
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *d = (NSDictionary *)node;
+        if (d[@"storeName"] != nil || d[@"shopName"] != nil || d[@"storeId"] != nil || d[@"shopId"] != nil) gBlockStoreKeys++;
+        [out appendString:@"{"];
+        BOOL first = YES;
+        for (id k in d) {
+            if (!first) [out appendString:@","];
+            first = NO;
+            [out appendFormat:@"%@", k];
+            if (([k isEqual:@"title"] || [k isEqual:@"name"] || [k isEqual:@"header"] || [k isEqual:@"subTitle"]) &&
+                [d[k] isKindOfClass:[NSString class]] && [(NSString *)d[k] length] <= 24) {
+                [out appendFormat:@"='%@'", d[k]];
+            }
+        }
+        [out appendString:@"} "];
+        for (id k in d) ECWalkBlocks(d[k], depth + 1, budget, out);
+        return;
+    }
+    if ([node isKindOfClass:[NSArray class]]) {
+        NSArray *a = (NSArray *)node;
+        [out appendFormat:@"[%lu]", (unsigned long)[a count]];
+        NSUInteger n = MIN([a count], (NSUInteger)3);
+        for (NSUInteger i = 0; i < n; i++) ECWalkBlocks(a[i], depth + 1, budget, out);
+        return;
+    }
+}
+static void ECRecordBlocks(NSString *api, id payload) {
+    if (api == nil || gBlocksInfo != nil) return;
+    if (![[api lowercaseString] hasPrefix:@"mtop.relationrecommend."]) return;
+    id data = [payload isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)payload)[@"data"] : nil;
+    id result = [data isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)data)[@"result"] : nil;
+    id first = [result isKindOfClass:[NSArray class]] && [(NSArray *)result count] > 0 ? ((NSArray *)result)[0] : nil;
+    id blocks = [first isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)first)[@"blocks"] : nil;
+    gBlocksInfo = [NSMutableString string];
+    if (blocks == nil) { [gBlocksInfo appendString:@"(no blocks)"]; return; }
+    int budget = 3000;
+    ECWalkBlocks(blocks, 0, &budget, gBlocksInfo);
+    [gBlocksInfo appendFormat:@" | storeKeys=%d", gBlockStoreKeys];
+}
+
 static void ECScanSearchTokens(NSString *api, id payload) {
     static NSArray *tokens = nil;
     if (tokens == nil) tokens = @[@"搜索发现", @"专属好店", @"为你精选", @"推荐系数"];
@@ -517,6 +567,7 @@ static id ECFilterResponseObject(id self, id payload) {
     ECScanSearchTokens(api, payload);
     ECRecordStruct(api, payload);
     ECRecordRelRec(api, payload);
+    ECRecordBlocks(api, payload);
     NSString *apiL = [api lowercaseString];
     if (api != nil && [apiL hasPrefix:@"mtop.alsc.personal."]) {
         ECNotePersonalApi(api);
@@ -893,6 +944,7 @@ static void ECShowSearchDiag(void) {
     }
     msg = [msg stringByAppendingFormat:@"\nrelrec: %@\nstores: %@",
         gRelRecInfo ?: @"(none)", gStoreNames ?: @"(none)"];
+    msg = [msg stringByAppendingFormat:@"\nblocks: %@", gBlocksInfo ?: @"(none)"];
     msg = [msg stringByAppendingFormat:@"\napis: %@", gSeenApis ?: @"(none)"];
     Class acCls = objc_getClass("UIAlertController");
     Class aaCls = objc_getClass("UIAlertAction");
@@ -900,7 +952,7 @@ static void ECShowSearchDiag(void) {
     if (acCls == Nil || aaCls == Nil || appCls == Nil) return;
     id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
         NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v22 搜索诊断", msg, 1L);
+        @"EleClean v26 搜索诊断", msg, 1L);
     id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
         NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
     ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
