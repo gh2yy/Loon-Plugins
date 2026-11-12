@@ -26,6 +26,13 @@
 
 static BOOL gCleaning = NO;
 
+// The build pipeline links Foundation only, so UIKit/CoreGraphics
+// symbols must not be referenced directly: classes are resolved by
+// name at runtime and geometry helpers are computed inline.
+static Class DYCls(const char *name) {
+    return NSClassFromString([NSString stringWithUTF8String:name]);
+}
+
 static BOOL DYIsCommentTitle(NSString *t) {
     if (![t isKindOfClass:[NSString class]]) return NO;
     NSUInteger n = [t length];
@@ -50,12 +57,12 @@ static void DYHide(UIView *v) {
 static void DYScan(UIView *root, UIView *node, CGFloat titleCX, int depth) {
     if (!node || depth > 6) return;
     for (UIView *sub in [node.subviews copy]) {
-        if ([sub isKindOfClass:[UILabel class]]) continue; // never touch labels
+        if ([sub isKindOfClass:DYCls("UILabel")]) continue; // never touch labels
         CGRect f = [sub convertRect:sub.bounds toView:root];
-        CGFloat cx = CGRectGetMidX(f);
+        CGFloat cx = (f.origin.x + f.size.width / 2.0);
         CGFloat w = f.size.width, h = f.size.height;
         BOOL thinLine = (h > 0 && h <= 1.6 && w >= 120);
-        BOOL isControl = [sub isKindOfClass:[UIControl class]];
+        BOOL isControl = [sub isKindOfClass:DYCls("UIControl")];
         BOOL tappable = ([sub gestureRecognizers].count > 0);
         BOOL leaf = ([sub subviews].count == 0);
         BOOL smallBtn = (w >= 14 && w <= 72 && h >= 14 && h <= 72);
@@ -74,7 +81,7 @@ static void DYScan(UIView *root, UIView *node, CGFloat titleCX, int depth) {
     for (CALayer *l in [node.layer.sublayers copy]) {
         CGRect lf = l.frame;
         if (lf.size.height > 0 && lf.size.height <= 1.6 && lf.size.width >= 120 &&
-            fabs(CGRectGetMaxY(lf) - node.bounds.size.height) <= 3.0) {
+            ((lf.origin.y + lf.size.height) - node.bounds.size.height <= 3.0 && (lf.origin.y + lf.size.height) - node.bounds.size.height >= -3.0)) {
             if (!l.hidden) l.hidden = YES;
             if (l.opacity != 0.0f) l.opacity = 0.0f;
         }
@@ -201,19 +208,19 @@ static void DYHookOne(Class cls, SEL sel, IMP swizzled,
 }
 
 static void DYHookBarClass(Class cls) {
-    if (!cls || ![cls isSubclassOfClass:[UIView class]]) return;
+    if (!cls || ![cls isSubclassOfClass:DYCls("UIView")]) return;
     DYHookOne(cls, @selector(layoutSubviews), (IMP)DYBarLayout, gOrigLayout);
     DYHookOne(cls, @selector(didMoveToWindow), (IMP)DYBarMove, gOrigMove);
 }
 
 __attribute__((constructor)) static void DYInit(void) {
     @autoreleasepool {
-        Method m1 = class_getInstanceMethod([UILabel class], @selector(setText:));
+        Method m1 = class_getInstanceMethod(DYCls("UILabel"), @selector(setText:));
         if (m1) {
             gOrigSetText = method_getImplementation(m1);
             method_setImplementation(m1, (IMP)DYSetText);
         }
-        Method m2 = class_getInstanceMethod([UILabel class], @selector(setAttributedText:));
+        Method m2 = class_getInstanceMethod(DYCls("UILabel"), @selector(setAttributedText:));
         if (m2) {
             gOrigSetAttrText = method_getImplementation(m2);
             method_setImplementation(m2, (IMP)DYSetAttrText);
