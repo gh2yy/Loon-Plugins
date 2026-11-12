@@ -72,6 +72,9 @@ __attribute__((constructor)) static void DCDCrashGuardInit(void) {
 // pinned down). Counts calls to candidate setters / assemblers in the search
 // panel and logs every DCDSearchPanelSectionModel creation (type + title),
 // then copies a summary to the pasteboard so it can be pasted into chat.
+// NOTE: the hooked classes are app-private and do not exist at link time, so
+// the replacement IMPs live on a dummy class and are grafted onto the real
+// classes at runtime with class_addMethod + method_exchangeImplementations.
 // ============================================================================
 
 static NSMutableString *gProbeLog;
@@ -103,19 +106,10 @@ static void ProbeDumpToPasteboard(void) {
     }
 }
 
-@interface DCDSearchPanelInfosModel : NSObject
-- (void)dcdp_setDiscovery_recommends:(id)v;
-- (id)dcdp_discovery_recommends;
-- (void)dcdp_setHot_topic:(id)v;
-- (void)dcdp_setRankList:(id)v;
-- (void)dcdp_setRankNewList:(id)v;
-- (void)dcdp_setCarRankList:(id)v;
-- (void)dcdp_setHot_series:(id)v;
-- (void)dcdp_setActivityInfo:(id)v;
-- (void)dcdp_setRollInfos:(id)v;
-- (void)dcdp_setSearchHistories:(id)v;
+@interface DCDProbeHooks : NSObject
 @end
-@implementation DCDSearchPanelInfosModel (DCDProbe)
+@implementation DCDProbeHooks
+// --- DCDSearchPanelInfosModel hooks ---
 - (void)dcdp_setDiscovery_recommends:(id)v { ProbeCount(@"setDiscovery_recommends:"); [self dcdp_setDiscovery_recommends:v]; }
 - (id)dcdp_discovery_recommends { ProbeCount(@"getDiscovery_recommends"); return [self dcdp_discovery_recommends]; }
 - (void)dcdp_setHot_topic:(id)v { ProbeCount(@"setHot_topic:"); [self dcdp_setHot_topic:v]; }
@@ -126,32 +120,14 @@ static void ProbeDumpToPasteboard(void) {
 - (void)dcdp_setActivityInfo:(id)v { ProbeCount(@"setActivityInfo:"); [self dcdp_setActivityInfo:v]; }
 - (void)dcdp_setRollInfos:(id)v { ProbeCount(@"setRollInfos:"); [self dcdp_setRollInfos:v]; }
 - (void)dcdp_setSearchHistories:(id)v { ProbeCount(@"setSearchHistories:"); [self dcdp_setSearchHistories:v]; }
-@end
-
-@interface DCDSearchPanelSectionModel : NSObject
-- (NSUInteger)type;
-- (NSString *)title;
-- (id)dcdp_initWithType:(NSUInteger)t title:(id)title datas:(id)datas;
-@end
-@implementation DCDSearchPanelSectionModel (DCDProbe)
+// --- DCDSearchPanelSectionModel hook ---
 - (id)dcdp_initWithType:(NSUInteger)t title:(id)title datas:(id)datas {
     id r = [self dcdp_initWithType:t title:title datas:datas];
     ProbeCount(@"initWithType");
     ProbeEvent([NSString stringWithFormat:@"initWithType type=%lu title=%@ datas=%lu", (unsigned long)t, title, (unsigned long)[datas count]]);
     return r;
 }
-@end
-
-@interface DCDSearchPanelViewController : NSObject
-- (void)dcdp_setDataList:(id)v;
-- (void)dcdp_refreshSearchRankHotList:(id)v;
-- (void)dcdp_reloadHotTopicList:(id)v;
-- (void)dcdp_setupCQPanelData;
-- (void)dcdp_initTableViewData;
-- (void)dcdp_reloadHistorySection;
-- (void)dcdp_viewDidAppear:(BOOL)a;
-@end
-@implementation DCDSearchPanelViewController (DCDProbe)
+// --- DCDSearchPanelViewController hooks ---
 - (void)dcdp_setDataList:(id)v {
     [self dcdp_setDataList:v];
     ProbeCount(@"setDataList:");
@@ -176,8 +152,15 @@ static void ProbeDumpToPasteboard(void) {
 }
 @end
 
-static void ProbeSwap(Class c, SEL orig, SEL repl) {
+static void ProbeHook(NSString *className, SEL orig, SEL repl) {
+    Class c = NSClassFromString(className);
     if (!c) return;
+    Method dummy = class_getInstanceMethod([DCDProbeHooks class], repl);
+    if (!dummy) return;
+    if (!class_addMethod(c, repl, method_getImplementation(dummy), method_getTypeEncoding(dummy))) {
+        // Method already present under the probe name; still try to exchange.
+        if (!class_getInstanceMethod(c, repl)) return;
+    }
     Method a = class_getInstanceMethod(c, orig);
     Method b = class_getInstanceMethod(c, repl);
     if (a && b) method_exchangeImplementations(a, b);
@@ -187,27 +170,26 @@ __attribute__((constructor)) static void DCDProbeInit(void) {
     @try {
         gProbeLog = [[NSMutableString alloc] init];
         gProbeCounts = [[NSMutableDictionary alloc] init];
-        Class infos = NSClassFromString(@"DCDSearchPanelInfosModel");
-        ProbeSwap(infos, @selector(setDiscovery_recommends:), @selector(dcdp_setDiscovery_recommends:));
-        ProbeSwap(infos, @selector(discovery_recommends), @selector(dcdp_discovery_recommends));
-        ProbeSwap(infos, @selector(setHot_topic:), @selector(dcdp_setHot_topic:));
-        ProbeSwap(infos, @selector(setRankList:), @selector(dcdp_setRankList:));
-        ProbeSwap(infos, @selector(setRankNewList:), @selector(dcdp_setRankNewList:));
-        ProbeSwap(infos, @selector(setCarRankList:), @selector(dcdp_setCarRankList:));
-        ProbeSwap(infos, @selector(setHot_series:), @selector(dcdp_setHot_series:));
-        ProbeSwap(infos, @selector(setActivityInfo:), @selector(dcdp_setActivityInfo:));
-        ProbeSwap(infos, @selector(setRollInfos:), @selector(dcdp_setRollInfos:));
-        ProbeSwap(infos, @selector(setSearchHistories:), @selector(dcdp_setSearchHistories:));
-        Class sec = NSClassFromString(@"DCDSearchPanelSectionModel");
-        ProbeSwap(sec, @selector(initWithType:title:datas:), @selector(dcdp_initWithType:title:datas:));
-        Class vc = NSClassFromString(@"DCDSearchPanelViewController");
-        ProbeSwap(vc, @selector(setDataList:), @selector(dcdp_setDataList:));
-        ProbeSwap(vc, @selector(refreshSearchRankHotList:), @selector(dcdp_refreshSearchRankHotList:));
-        ProbeSwap(vc, @selector(reloadHotTopicList:), @selector(dcdp_reloadHotTopicList:));
-        ProbeSwap(vc, @selector(setupCQPanelData), @selector(dcdp_setupCQPanelData));
-        ProbeSwap(vc, @selector(initTableViewData), @selector(dcdp_initTableViewData));
-        ProbeSwap(vc, @selector(reloadHistorySection), @selector(dcdp_reloadHistorySection));
-        ProbeSwap(vc, @selector(viewDidAppear:), @selector(dcdp_viewDidAppear:));
+        NSString *infos = @"DCDSearchPanelInfosModel";
+        ProbeHook(infos, @selector(setDiscovery_recommends:), @selector(dcdp_setDiscovery_recommends:));
+        ProbeHook(infos, @selector(discovery_recommends), @selector(dcdp_discovery_recommends));
+        ProbeHook(infos, @selector(setHot_topic:), @selector(dcdp_setHot_topic:));
+        ProbeHook(infos, @selector(setRankList:), @selector(dcdp_setRankList:));
+        ProbeHook(infos, @selector(setRankNewList:), @selector(dcdp_setRankNewList:));
+        ProbeHook(infos, @selector(setCarRankList:), @selector(dcdp_setCarRankList:));
+        ProbeHook(infos, @selector(setHot_series:), @selector(dcdp_setHot_series:));
+        ProbeHook(infos, @selector(setActivityInfo:), @selector(dcdp_setActivityInfo:));
+        ProbeHook(infos, @selector(setRollInfos:), @selector(dcdp_setRollInfos:));
+        ProbeHook(infos, @selector(setSearchHistories:), @selector(dcdp_setSearchHistories:));
+        ProbeHook(@"DCDSearchPanelSectionModel", @selector(initWithType:title:datas:), @selector(dcdp_initWithType:title:datas:));
+        NSString *vc = @"DCDSearchPanelViewController";
+        ProbeHook(vc, @selector(setDataList:), @selector(dcdp_setDataList:));
+        ProbeHook(vc, @selector(refreshSearchRankHotList:), @selector(dcdp_refreshSearchRankHotList:));
+        ProbeHook(vc, @selector(reloadHotTopicList:), @selector(dcdp_reloadHotTopicList:));
+        ProbeHook(vc, @selector(setupCQPanelData), @selector(dcdp_setupCQPanelData));
+        ProbeHook(vc, @selector(initTableViewData), @selector(dcdp_initTableViewData));
+        ProbeHook(vc, @selector(reloadHistorySection), @selector(dcdp_reloadHistorySection));
+        ProbeHook(vc, @selector(viewDidAppear:), @selector(dcdp_viewDidAppear:));
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             ProbeDumpToPasteboard();
         });
