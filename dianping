@@ -1,12 +1,12 @@
-#!name = 大众点评去搜索发现、点评热点与开屏广告
-#!desc = 移除搜索页「搜索发现」「点评热点」，并拦截开屏配置 loadsplashconfig.bin 阻断开屏素材预下载。注意：已缓存的开屏素材不会被本插件清除，需先启用插件、再删装点评一次清掉存量，之后首次打开即无素材可播。
+#!name = 大众点评去搜索发现、点评热点、开屏广告与首页签到入口
+#!desc = 移除搜索页「搜索发现」「点评热点」，拦截开屏配置阻断开屏素材预下载，并改写首页 homeframe 去掉右上角签到/金币入口。注意：已缓存的开屏素材与首页入口配置不会被本插件清除，启用后冷启一两次待缓存刷新即生效；开屏素材存量顽固时可删装点评一次清掉。
 #!author = xingjiu
 #!date = 2026-11-13
-#!tag = 大众点评,搜索,开屏广告
+#!tag = 大众点评,搜索,开屏广告,签到入口
 
 # 修改日志：
 # - 2026-11-09 Muse：按 xingjiu 提供的原文转成 Loon 在线插件格式，作者标注 xingjiu；[Rewrite] 两条与 [Mitm] 一条逐字保留，未增删、未改动，待用户实测。
-# - 2026-11-13 Muse：新增开屏一条（非 xingjiu 原规则）：据 11.74.2 二进制分析，开屏配置仅 loadsplashconfig.bin 一个入口，素材经其预下载到本地后、冷/热启只读缓存展示，故 reject 该配置即可断新素材；抓包实证该接口 14 次响应均为 32B 空列表（服务端无下发形态）。待用户删装清缓存后实测。
+# - 2026-11-13 Muse：新增两项（均非 xingjiu 原规则）。①开屏：据 11.74.2 二进制分析，开屏配置仅 loadsplashconfig.bin 一个入口，素材经其预下载到本地后、冷/热启只读缓存展示，故 reject 该配置即可断新素材；抓包实证该接口 14 次响应均为 32B 空列表。②首页签到/金币入口（右上角「得金币」/签到圆标）：11.75.2 冷启抓包定案，入口由 dphomepage/homeframe.bin 根部的秒杀权益对象（picasso=pexus-seckill-benefits，含入口图与跳转）下发，脚本 dianping-home.js 在本地解密后摘除该对象再加密回送；已用 11.74.2 与 11.75.2 两份真实样本全链路验证（删除后可重解析、其余字段逐字节不变、无该对象时原样放行）。均待用户实测。
 
 [Rewrite]
 # 搜索页「搜索发现」
@@ -15,6 +15,10 @@ request if ${url} ~= /^https:\/\/mapi\.dianping\.com\/mapi\/searchdirectsuggest\
 request if ${url} ~= /^https:\/\/mapi\.dianping\.com\/mapi\/hotsuggest\.bin/i then reject(404)
 # 开屏广告配置（预下载入口，http/https 均拦）
 request if ${url} ~= /^https?:\/\/mapi\.dianping\.com\/mapi\/operating\/loadsplashconfig\.bin/i then reject(404)
+
+[Script]
+# 首页右上角签到/金币入口（homeframe 根部秒杀权益对象）
+http-response ^https?:\/\/mapi\.dianping\.com\/mapi\/dphomepage\/homeframe\.bin script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/dianping-home.js, requires-body=true, binary-body-mode=true, tag=点评-去首页签到入口
 
 [Mitm]
 hostname = mapi.dianping.com
