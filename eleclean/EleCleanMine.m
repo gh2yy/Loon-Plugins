@@ -138,21 +138,27 @@ static BOOL ECStrIsWalletName(id v) {
     NSString *lv = [(NSString *)v lowercaseString];
     return [lv containsString:@"my_wallet"] && ![lv containsString:@"games"];
 }
-static BOOL ECScanWalletShallow(id obj, int depth, int *budget) {
-    if (obj == nil || depth > 2 || *budget <= 0) return NO;
-    (*budget)--;
-    if ([obj isKindOfClass:[NSString class]]) return ECStrIsWalletName(obj);
-    if ([obj isKindOfClass:[NSDictionary class]]) {
-        for (id k in (NSDictionary *)obj) {
-            if (ECScanWalletShallow(k, depth + 1, budget)) return YES;
-            if (ECScanWalletShallow(((NSDictionary *)obj)[k], depth + 1, budget)) return YES;
-        }
-        return NO;
-    }
-    if ([obj isKindOfClass:[NSArray class]]) {
-        for (id e in (NSArray *)obj) {
-            if (ECScanWalletShallow(e, depth + 1, budget)) return YES;
-        }
+// v34 fix: v33's shallow subtree scan also matched the wallet name where
+// it appeared as a KEY of a container dict holding every module of the
+// page, so ECEmptyItemsDeep emptied the items of ALL modules and the
+// Mine page rendered almost empty. The trigger is now restricted to the
+// module dict itself: the wallet name must appear as a direct string
+// value of the dict (its template/bizCode identity field), or as a key
+// whose value is the module (then only that value is emptied).
+static BOOL ECDictSelfIsWallet(NSDictionary *d) {
+    // Only identity fields count (a jump URL pointing at the wallet page
+    // inside some other module must not mark that module).
+    for (id k in d) {
+        if (![k isKindOfClass:[NSString class]]) continue;
+        NSString *lk = [(NSString *)k lowercaseString];
+        BOOL identityKey = [lk containsString:@"template"] ||
+                           [lk isEqualToString:@"bizcode"] ||
+                           [lk isEqualToString:@"biz"] ||
+                           [lk isEqualToString:@"code"] ||
+                           [lk isEqualToString:@"type"] ||
+                           [lk isEqualToString:@"modulename"] ||
+                           [lk isEqualToString:@"scene"];
+        if (identityKey && ECStrIsWalletName(d[k])) return YES;
     }
     return NO;
 }
@@ -181,10 +187,18 @@ static id ECEmptyItemsDeep(id obj, int depth) {
 static id ECWalletPass(id obj, int depth) {
     if (obj == nil || depth > 12) return obj;
     if ([obj isKindOfClass:[NSDictionary class]]) {
-        int b = 120;
-        if (ECScanWalletShallow(obj, 0, &b)) return ECEmptyItemsDeep(obj, 0);
-        NSMutableDictionary *out = [NSMutableDictionary dictionaryWithCapacity:((NSDictionary *)obj).count];
-        for (id k in (NSDictionary *)obj) out[k] = ECWalletPass(((NSDictionary *)obj)[k], depth + 1);
+        NSDictionary *d = (NSDictionary *)obj;
+        if (ECDictSelfIsWallet(d)) return ECEmptyItemsDeep(d, 0);
+        NSMutableDictionary *out = [NSMutableDictionary dictionaryWithCapacity:d.count];
+        for (id k in d) {
+            id v = d[k];
+            if (ECStrIsWalletName(k) &&
+                ([v isKindOfClass:[NSDictionary class]] || [v isKindOfClass:[NSArray class]])) {
+                out[k] = ECEmptyItemsDeep(v, 0);
+            } else {
+                out[k] = ECWalletPass(v, depth + 1);
+            }
+        }
         return out;
     }
     if ([obj isKindOfClass:[NSArray class]]) {
