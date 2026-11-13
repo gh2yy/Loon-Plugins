@@ -599,9 +599,16 @@ static BOOL ECD31Scan(id obj, int depth, int *budget) {
     }
     return NO;
 }
+static BOOL gD31OrderSeen = NO;
+static BOOL ECD31TryShow(void);
 static void ECD31Inspect(NSString *api, id payload) {
     if (api != nil && [[api lowercaseString] containsString:@"order"]) {
         ECD31Note(gD31OrderApis, api, 600);
+        if (!gD31OrderSeen) {
+            gD31OrderSeen = YES;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                dispatch_get_main_queue(), ^{ ECD31TryShow(); });
+        }
     }
     if (![payload isKindOfClass:[NSDictionary class]]) return;
     int budget = 5000;
@@ -658,16 +665,26 @@ static void ECShowOrderDiag31(void) {
     }
 }
 static BOOL gD31Shown = NO;
+static BOOL ECD31TryShow(void) {
+    if (gD31Shown) return YES;
+    id top = ECD31TopVC();
+    if (top == nil) return NO;
+    // Only present on a VC that is actually attached to a window and is not
+    // itself an alert; presenting on a detached/transitioning VC fails
+    // silently (the v31 first-build bug: shown-flag set, popup never seen).
+    if ([NSStringFromClass([top class]) containsString:@"Alert"]) return NO;
+    id view = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"view"));
+    id win = view ? ((id (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"window")) : nil;
+    if (win == nil) return NO;
+    gD31Shown = YES;
+    ECShowOrderDiag31();
+    return YES;
+}
 static void ECD31Schedule(int attempt) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
-        if (gD31Shown) return;
-        if (ECD31TopVC() != nil) {
-            gD31Shown = YES;
-            ECShowOrderDiag31();
-        } else if (attempt < 8) {
-            ECD31Schedule(attempt + 1);
-        }
+        if (ECD31TryShow()) return;
+        if (attempt < 12) ECD31Schedule(attempt + 1);
     });
 }
 
