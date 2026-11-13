@@ -1,0 +1,6 @@
+total 216
+drwxr-xr-x   4 runner  staff     128 Nov 13 07:02 .
+drwxr-xr-x  25 runner  staff     800 Nov 13 07:02 ..
+-rw-r--r--   1 runner  staff       0 Nov 13 07:02 build-log.txt
+-rwxr-xr-x   1 runner  staff  107248 Nov 13 07:02 EleCleanMine.dylib
+out/EleCleanMine.dylib: Mach-O 64-bit dynamically linked shared library arm64
