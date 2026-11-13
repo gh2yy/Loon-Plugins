@@ -544,11 +544,10 @@ static id ECFilterSearchPayload(id payload) {
 static NSMutableString *gD31OrderApis = nil;
 static NSMutableString *gD31MarkerApis = nil;
 static NSString *gD31Struct = nil;
-static void ECD31Note(NSMutableString **slot, NSString *text, NSUInteger cap) {
-    if (text == nil) return;
-    if (*slot == nil) *slot = [NSMutableString string];
-    if ([*slot rangeOfString:text].location == NSNotFound && [*slot length] < cap) {
-        [*slot appendFormat:@"%@ ", text];
+static void ECD31Note(NSMutableString *slot, NSString *text, NSUInteger cap) {
+    if (text == nil || slot == nil) return;
+    if ([slot rangeOfString:text].location == NSNotFound && [slot length] < cap) {
+        [slot appendFormat:@"%@ ", text];
     }
 }
 static void ECD31Walk(id node, int depth, int *budget, NSMutableString *out) {
@@ -602,12 +601,12 @@ static BOOL ECD31Scan(id obj, int depth, int *budget) {
 }
 static void ECD31Inspect(NSString *api, id payload) {
     if (api != nil && [[api lowercaseString] containsString:@"order"]) {
-        ECD31Note(&gD31OrderApis, api, 600);
+        ECD31Note(gD31OrderApis, api, 600);
     }
     if (![payload isKindOfClass:[NSDictionary class]]) return;
     int budget = 5000;
     if (ECD31Scan(payload, 0, &budget)) {
-        ECD31Note(&gD31MarkerApis, api ?: @"(nil-api)", 400);
+        ECD31Note(gD31MarkerApis, api ?: @"(nil-api)", 400);
         if (gD31Struct == nil) {
             NSMutableString *out = [NSMutableString string];
             int b = 200;
@@ -1027,6 +1026,8 @@ static void ECShowDiag(void) {
 }
 
 __attribute__((constructor)) static void ELEntry(void) {
+    gD31OrderApis = [NSMutableString string];
+    gD31MarkerApis = [NSMutableString string];
     ECD31Schedule(0);
     @autoreleasepool {
         BOOL a = ELInstall();
