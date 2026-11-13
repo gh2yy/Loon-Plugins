@@ -18,9 +18,9 @@ request if ${url} ~= /^https?:\/\/mapi\.dianping\.com\/mapi\/operating\/loadspla
 
 [Script]
 # 首页右上角签到/金币入口（homeframe 根部秒杀权益对象）
-http-response ^https?:\/\/mapi\.dianping\.com\/mapi\/dphomepage\/homeframe\.bin script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/dianping-home.js, requires-body=true, binary-body-mode=true, tag=点评-去首页签到入口
+http-response ^https?:\/\/mapi\.dianping\.com\/mapi\/dphomepage\/homeframe\.bin script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/dianping-home.js?v=2, requires-body=true, binary-body-mode=true, tag=点评-去首页签到入口
 # 金刚区下方「点评榜单/免费试」运营位（indexmodules 运营位数组）
-http-response ^https?:\/\/mapi\.dianping\.com\/mapi\/dphomepage\/indexmodules\.bin script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/dianping-home.js, requires-body=true, binary-body-mode=true, tag=点评-去点评榜单免费试
+http-response ^https?:\/\/mapi\.dianping\.com\/mapi\/dphomepage\/indexmodules\.bin script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/dianping-home.js?v=2, requires-body=true, binary-body-mode=true, tag=点评-去点评榜单免费试
 
 [Mitm]
 hostname = mapi.dianping.com
