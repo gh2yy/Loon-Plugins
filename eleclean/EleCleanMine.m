@@ -535,8 +535,128 @@ static id ECFilterSearchPayload(id payload) {
     }
 }
 
+
+// v31 diag (READ-ONLY additions on top of v30): find WHERE the order page
+// sections actually flow. For every payload through the shared response
+// path: record api names containing "order"; scan the subtree for the
+// order markers (安心权益/食无忧) and record which api carries them; dump
+// the structure of the first marker-carrying payload.
+static NSMutableString *gD31OrderApis = nil;
+static NSMutableString *gD31MarkerApis = nil;
+static NSString *gD31Struct = nil;
+static void ECD31Note(NSMutableString **slot, NSString *text, NSUInteger cap) {
+    if (text == nil) return;
+    if (*slot == nil) *slot = [NSMutableString string];
+    if ([*slot rangeOfString:text].location == NSNotFound && [*slot length] < cap) {
+        [*slot appendFormat:@"%@ ", text];
+    }
+}
+static void ECD31Walk(id node, int depth, int *budget, NSMutableString *out) {
+    if (node == nil || *budget <= 0) return;
+    (*budget)--;
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        [out appendString:@"{"];
+        int n = 0;
+        for (id k in (NSDictionary *)node) {
+            if (n++ > 0) [out appendString:@" "];
+            [out appendFormat:@"%@:", k];
+            ECD31Walk(((NSDictionary *)node)[k], depth + 1, budget, out);
+            if (*budget <= 0) break;
+        }
+        [out appendString:@"}"];
+        return;
+    }
+    if ([node isKindOfClass:[NSArray class]]) {
+        [out appendFormat:@"[%lu]", (unsigned long)[(NSArray *)node count]];
+        if (depth < 4 && [(NSArray *)node count] > 0) {
+            ECD31Walk([(NSArray *)node firstObject], depth + 1, budget, out);
+        }
+        return;
+    }
+    if ([node isKindOfClass:[NSString class]]) {
+        NSString *v = (NSString *)node;
+        if ([v length] > 0 && [v length] <= 24) [out appendFormat:@"'%@'", v];
+        return;
+    }
+}
+static BOOL ECD31Scan(id obj, int depth, int *budget) {
+    if (obj == nil || depth > 10 || *budget <= 0) return NO;
+    (*budget)--;
+    if ([obj isKindOfClass:[NSString class]]) {
+        return [(NSString *)obj containsString:@"安心权益"] ||
+               [(NSString *)obj containsString:@"食无忧"];
+    }
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        for (id k in (NSDictionary *)obj) {
+            if (ECD31Scan(k, depth + 1, budget)) return YES;
+            if (ECD31Scan(((NSDictionary *)obj)[k], depth + 1, budget)) return YES;
+        }
+        return NO;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) {
+            if (ECD31Scan(e, depth + 1, budget)) return YES;
+        }
+    }
+    return NO;
+}
+static void ECD31Inspect(NSString *api, id payload) {
+    if (api != nil && [[api lowercaseString] containsString:@"order"]) {
+        ECD31Note(&gD31OrderApis, api, 600);
+    }
+    if (![payload isKindOfClass:[NSDictionary class]]) return;
+    int budget = 5000;
+    if (ECD31Scan(payload, 0, &budget)) {
+        ECD31Note(&gD31MarkerApis, api ?: @"(nil-api)", 400);
+        if (gD31Struct == nil) {
+            NSMutableString *out = [NSMutableString string];
+            int b = 200;
+            id d = ((NSDictionary *)payload)[@"data"];
+            ECD31Walk(d != nil ? d : payload, 0, &b, out);
+            gD31Struct = out;
+        }
+    }
+}
+static void ECShowOrderDiag31(void) {
+    NSString *msg = [NSString stringWithFormat:@"json=%d body=%d strip=%d\norderApis: %@\nmarkerApis: %@\nstruct: %@",
+        gJsonCalls, gBodyCalls, gOrderStripCount,
+        gD31OrderApis ?: @"", gD31MarkerApis ?: @"", gD31Struct ?: @""];
+    if ([msg length] > 2900) msg = [msg substringToIndex:2900];
+    UIWindow *win = nil;
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.isKeyWindow) { win = w; break; }
+    }
+    if (win == nil) win = [[UIApplication sharedApplication].windows firstObject];
+    UIViewController *top = win.rootViewController;
+    while (top.presentedViewController) top = top.presentedViewController;
+    if (top == nil) return;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"EleClean v31 订单诊断"
+        message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
+    [top presentViewController:a animated:YES completion:nil];
+}
+static BOOL gD31Shown = NO;
+static void ECD31Schedule(int attempt) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+        if (gD31Shown) return;
+        UIWindow *win = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow) { win = w; break; }
+        }
+        if (win == nil) win = [[UIApplication sharedApplication].windows firstObject];
+        if (win != nil && win.rootViewController != nil) {
+            gD31Shown = YES;
+            ECShowOrderDiag31();
+        } else if (attempt < 8) {
+            ECD31Schedule(attempt + 1);
+        }
+    });
+}
+
 static id ECFilterResponseObject(id self, id payload) {
     if (![payload isKindOfClass:[NSDictionary class]]) return payload;
+    ECD31Inspect(ECApiNameFromObject(self, 0), payload);
     NSString *api = ECApiNameFromObject(self, 0);
     ECNoteApi(api);
     NSString *apiL = [api lowercaseString];
@@ -907,6 +1027,7 @@ static void ECShowDiag(void) {
 }
 
 __attribute__((constructor)) static void ELEntry(void) {
+    ECD31Schedule(0);
     @autoreleasepool {
         BOOL a = ELInstall();
         BOOL b = ECInstallParse();
