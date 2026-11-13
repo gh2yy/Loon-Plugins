@@ -573,6 +573,34 @@ static BOOL ECBlockIsContent(id block) {
     if ([ent isKindOfClass:[NSDictionary class]] && [(NSDictionary *)ent count] > 0) return YES;
     return NO;
 }
+
+// v35: history blocks are not always labelled with the literal title —
+// some assemblies carry the section under a code instead. A block counts
+// as history when its subtree mentions 历史搜索/搜索历史 or one of its
+// identity fields mentions "history".
+static BOOL ECBlockIsHistory(id block) {
+    if (![block isKindOfClass:[NSDictionary class]]) return NO;
+    int b = 6000;
+    if (ECNodeHasToken(block, @"历史搜索", 0, &b)) return YES;
+    b = 6000;
+    if (ECNodeHasToken(block, @"搜索历史", 0, &b)) return YES;
+    NSDictionary *d = (NSDictionary *)block;
+    for (id k in d) {
+        if (![k isKindOfClass:[NSString class]]) continue;
+        NSString *lk = [(NSString *)k lowercaseString];
+        BOOL identityKey = [lk containsString:@"type"] || [lk containsString:@"code"] ||
+                           [lk containsString:@"name"] || [lk isEqualToString:@"biz"] ||
+                           [lk containsString:@"template"];
+        id v = d[k];
+        if (identityKey && [v isKindOfClass:[NSString class]] &&
+            [[(NSString *)v lowercaseString] containsString:@"history"]) return YES;
+    }
+    return NO;
+}
+static BOOL ECBlockIsDiscovery(id block) {
+    int b = 6000;
+    return ECNodeHasToken(block, @"搜索发现", 0, &b);
+}
 static id ECFilterSearchPayload(id payload) {
     @try {
         if (![payload isKindOfClass:[NSDictionary class]]) return payload;
@@ -590,19 +618,42 @@ static id ECFilterSearchPayload(id payload) {
             if (ECNodeHasToken(blocks, @"搜索发现", 0, &b)) { gated = YES; break; }
         }
         if (!gated) return payload;
+        // v35 fail-open: if NO item carries an identifiable history block,
+        // this is an assembly variant we do not understand (e.g. a typed-
+        // query suggest response) — pass it through untouched rather than
+        // risk emptying the history section (the v29 rule keyed on the
+        // literal title only, and history vanished on such variants).
+        BOOL anyHistory = NO;
+        for (id item in (NSArray *)result) {
+            if (![item isKindOfClass:[NSDictionary class]]) continue;
+            id blocks = ((NSDictionary *)item)[@"blocks"];
+            if (![blocks isKindOfClass:[NSArray class]]) continue;
+            for (id block in (NSArray *)blocks) {
+                if (ECBlockIsHistory(block)) { anyHistory = YES; break; }
+            }
+            if (anyHistory) break;
+        }
+        if (!anyHistory) return payload;
         NSMutableArray *newResult = [NSMutableArray array];
         BOOL changed = NO;
         for (id item in (NSArray *)result) {
             if (![item isKindOfClass:[NSDictionary class]]) { [newResult addObject:item]; continue; }
             id blocks = ((NSDictionary *)item)[@"blocks"];
             if (![blocks isKindOfClass:[NSArray class]]) { [newResult addObject:item]; continue; }
+            // Only filter items that belong to the landing assembly (they
+            // carry the history block or the discovery block); other items
+            // pass through untouched.
+            BOOL itemInScope = NO;
+            for (id block in (NSArray *)blocks) {
+                if (ECBlockIsHistory(block) || ECBlockIsDiscovery(block)) { itemInScope = YES; break; }
+            }
+            if (!itemInScope) { [newResult addObject:item]; continue; }
             NSMutableArray *kept = [NSMutableArray array];
             for (id block in (NSArray *)blocks) {
-                int b = 6000;
                 // v29: keep ONLY the history block. v28 also kept meta/layout
                 // blocks, and the shop-columns block (no top-level title or
                 // entities key) slipped through that exemption.
-                if (ECNodeHasToken(block, @"历史搜索", 0, &b)) [kept addObject:block];
+                if (ECBlockIsHistory(block)) [kept addObject:block];
             }
             if ([kept count] != [(NSArray *)blocks count]) {
                 changed = YES;
