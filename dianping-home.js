@@ -1,7 +1,9 @@
-// 大众点评 - 去首页签到/金币入口与榜单/免费试运营位（homeframe / indexmodules 改写）
+// 大众点评 - 去首页签到/金币入口、榜单/免费试运营位与「我的」页运营模块（dpobject 改写）
 // AES-128-CBC 解密（静态密钥，逆向自 DPScope）→ gzip 解压 → dpobject 手术 → stored-gzip 重压 → 加密回送。
-// - homeframe.bin：删除根部「秒杀权益/签到入口」对象（picasso=pexus-seckill-benefits），即右上角签到/金币入口。
-// - indexmodules.bin：从运营位数组中摘除 HomeOperationIconSectionNew 组件，即金刚区下方「点评榜单 / 免费试」两张卡。
+// - dphomepage/homeframe.bin：删除根部「秒杀权益/签到入口」对象（picasso=pexus-seckill-benefits），即右上角签到/金币入口。
+// - dphomepage/indexmodules.bin：从运营位数组中摘除 HomeOperationIconSectionNew 组件，即金刚区下方「点评榜单 / 免费试」两张卡。
+// - mytabfeedpromotev2.bin（JSON 载荷）：从 promotes 中摘除 mianfeishi/assess/mrfl/activitycenter，即「我的」页四宫格（免费试/大众评审/领点金币/活动中心）。
+// - getmytabelementsv2.bin（JSON 载荷）：从 list 摘除「笔记达人中心」元素并清空 noteList，即「我的」页笔记达人中心整节。
 // 无目标对象或任一步异常时原样放行。
 // 验证：2026-11-13 以 11.74.2 与 11.75.2 真实抓包样本全链路验证（删除后可重解析、其余字段逐字节不变）。
 var DP_KEY = [0x44,0x37,0x43,0x36,0x46,0x37,0x31,0x41,0x31,0x32,0x31,0x35,0x33,0x45,0x45,0x35];
@@ -187,7 +189,40 @@ function parseValue(buf, st) {
   node.end = st.p; node.raw = buf.slice(node.start, node.end);
   return node;
 }
+function utf8Decode(bytes) {
+  var s = '', i = 0;
+  while (i < bytes.length) {
+    var b = bytes[i];
+    if (b < 0x80) { s += String.fromCharCode(b); i++; }
+    else if (b < 0xe0) { s += String.fromCharCode(((b & 0x1f) << 6) | (bytes[i + 1] & 0x3f)); i += 2; }
+    else if (b < 0xf0) { s += String.fromCharCode(((b & 0x0f) << 12) | ((bytes[i + 1] & 0x3f) << 6) | (bytes[i + 2] & 0x3f)); i += 3; }
+    else {
+      var cp = ((b & 0x07) << 18) | ((bytes[i + 1] & 0x3f) << 12) | ((bytes[i + 2] & 0x3f) << 6) | (bytes[i + 3] & 0x3f);
+      cp -= 0x10000;
+      s += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+      i += 4;
+    }
+  }
+  return s;
+}
+function utf8Encode(str) {
+  var out = [];
+  for (var i = 0; i < str.length; i++) {
+    var c = str.charCodeAt(i);
+    if (c < 0x80) out.push(c);
+    else if (c < 0x800) { out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f)); }
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+      var cp = 0x10000 + ((c - 0xd800) << 10) + (str.charCodeAt(++i) - 0xdc00);
+      out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    } else { out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f)); }
+  }
+  return out;
+}
 function serialize(node) {
+  if (node.type === 0x42 && node.repl) {
+    var d = node.repl;
+    return [0x42, (d.length >>> 24) & 0xff, (d.length >>> 16) & 0xff, (d.length >>> 8) & 0xff, d.length & 0xff].concat(d);
+  }
   if (node.type === 0x41) {
     var out = [0x41, (node.children.length >> 8) & 0xff, node.children.length & 0xff];
     node.children.forEach(function (ch) { out = out.concat(serialize(ch)); });
@@ -226,6 +261,34 @@ function isOpIconSection(objNode, buf) {
   return false;
 }
 
+var PROMOTE_DROP = { mianfeishi: 1, assess: 1, mrfl: 1, activitycenter: 1 };
+var NOTE_CENTER_TITLE = '笔记达人中心';
+function editJsonPayload(root, dp, mode) {
+  // 根字段 0xef84 为 B 串，内含 JSON 文本；就地改写后以 repl 换入新串
+  for (var i = 0; i < root.fields.length; i++) {
+    var f = root.fields[i];
+    if (f.hash !== 0xef84 || f.value.type !== 0x42) continue;
+    var bytes = dp.slice(f.value.dataStart, f.value.dataStart + f.value.dataLen);
+    var obj = JSON.parse(utf8Decode(bytes));
+    var changed = false;
+    if (mode === 'promote') {
+      if (obj.promotes && obj.promotes.length) {
+        var keptP = obj.promotes.filter(function (p) { return !PROMOTE_DROP[p.promoteId]; });
+        if (keptP.length !== obj.promotes.length) { obj.promotes = keptP; changed = true; }
+      }
+    } else if (mode === 'mytab') {
+      if (obj.list && obj.list.length) {
+        var keptL = obj.list.filter(function (el) { return el.title !== NOTE_CENTER_TITLE; });
+        if (keptL.length !== obj.list.length) { obj.list = keptL; changed = true; }
+      }
+      if (obj.noteList && obj.noteList.length) { obj.noteList = []; changed = true; }
+    }
+    if (changed) { f.value.repl = utf8Encode(JSON.stringify(obj)); return 1; }
+    return 0;
+  }
+  return 0;
+}
+
 (function main() {
   try {
     var body = $response.body;
@@ -237,7 +300,11 @@ function isOpIconSection(objNode, buf) {
     var root = parseValue(dp, st);
     var removed = 0;
     var url = ($request && $request.url) || '';
-    if (root.fields && url.indexOf('indexmodules') !== -1) {
+    if (root.fields && url.indexOf('mytabfeedpromotev2') !== -1) {
+      removed = editJsonPayload(root, dp, 'promote');
+    } else if (root.fields && url.indexOf('getmytabelementsv2') !== -1) {
+      removed = editJsonPayload(root, dp, 'mytab');
+    } else if (root.fields && url.indexOf('indexmodules') !== -1) {
       for (var ai = 0; ai < root.fields.length; ai++) {
         var af = root.fields[ai];
         if (af.hash === 0x95f4 && af.value.type === 0x41) {
