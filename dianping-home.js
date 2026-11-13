@@ -1,8 +1,9 @@
-// 大众点评 - 去首页右上角签到/金币入口（homeframe 改写）
-// 拦截 mapi/dphomepage/homeframe.bin 响应：AES-128-CBC 解密（静态密钥，逆向自 DPScope）
-// → gzip 解压 → dpobject 删除根部「秒杀权益/签到入口」对象（picasso=pexus-seckill-benefits）
-// → stored-gzip 重压 → 加密回送。无该对象或任一步异常时原样放行。
-// 验证：2026-11-13 以 11.74.2 与 11.75.2 两份真实抓包 homeframe 样本全链路验证（删除后可重解析、其余字段逐字节不变）。
+// 大众点评 - 去首页签到/金币入口与榜单/免费试运营位（homeframe / indexmodules 改写）
+// AES-128-CBC 解密（静态密钥，逆向自 DPScope）→ gzip 解压 → dpobject 手术 → stored-gzip 重压 → 加密回送。
+// - homeframe.bin：删除根部「秒杀权益/签到入口」对象（picasso=pexus-seckill-benefits），即右上角签到/金币入口。
+// - indexmodules.bin：从运营位数组中摘除 HomeOperationIconSectionNew 组件，即金刚区下方「点评榜单 / 免费试」两张卡。
+// 无目标对象或任一步异常时原样放行。
+// 验证：2026-11-13 以 11.74.2 与 11.75.2 真实抓包样本全链路验证（删除后可重解析、其余字段逐字节不变）。
 var DP_KEY = [0x44,0x37,0x43,0x36,0x46,0x37,0x31,0x41,0x31,0x32,0x31,0x35,0x33,0x45,0x45,0x35];
 var DP_IV  = [0x35,0x35,0x43,0x39,0x33,0x30,0x44,0x38,0x32,0x37,0x42,0x44,0x41,0x42,0x46,0x44];
 
@@ -216,6 +217,14 @@ function isSeckillEntry(objNode, buf) {
   }
   return false;
 }
+function isOpIconSection(objNode, buf) {
+  if (!objNode.fields) return false;
+  for (var i = 0; i < objNode.fields.length; i++) {
+    var s = strOf(objNode.fields[i].value, buf);
+    if (s === 'HomeOperationIconSectionNew') return true;
+  }
+  return false;
+}
 
 (function main() {
   try {
@@ -227,7 +236,17 @@ function isSeckillEntry(objNode, buf) {
     var st = { p: 0 };
     var root = parseValue(dp, st);
     var removed = 0;
-    if (root.fields) {
+    var url = ($request && $request.url) || '';
+    if (root.fields && url.indexOf('indexmodules') !== -1) {
+      for (var ai = 0; ai < root.fields.length; ai++) {
+        var af = root.fields[ai];
+        if (af.hash === 0x95f4 && af.value.type === 0x41) {
+          var before = af.value.children.length;
+          af.value.children = af.value.children.filter(function (el) { return !isOpIconSection(el, dp); });
+          removed = before - af.value.children.length;
+        }
+      }
+    } else if (root.fields) {
       var kept = [];
       for (var fi = 0; fi < root.fields.length; fi++) {
         var fld = root.fields[fi];
