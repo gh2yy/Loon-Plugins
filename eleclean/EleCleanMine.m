@@ -124,6 +124,77 @@ static id ELFilterModules(id obj, int depth) {
     return obj;
 }
 
+
+// v33: finance rotation strip on the personal center (left title
+// "我的钱包", carousel items rotate 借钱/礼品卡/...). It is the Mist
+// module eleme_personal_my_wallet / new_eleme_personal_my_wallet from
+// ElemePersonalCenterResource; the shipped template hides the whole
+// module when its data's items array is empty (gone: items.count==0),
+// so instead of dropping the module we empty every "items" array inside
+// the module dict that carries the wallet template name (the *_games
+// sibling template is excluded).
+static BOOL ECStrIsWalletName(id v) {
+    if (![v isKindOfClass:[NSString class]]) return NO;
+    NSString *lv = [(NSString *)v lowercaseString];
+    return [lv containsString:@"my_wallet"] && ![lv containsString:@"games"];
+}
+static BOOL ECScanWalletShallow(id obj, int depth, int *budget) {
+    if (obj == nil || depth > 2 || *budget <= 0) return NO;
+    (*budget)--;
+    if ([obj isKindOfClass:[NSString class]]) return ECStrIsWalletName(obj);
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        for (id k in (NSDictionary *)obj) {
+            if (ECScanWalletShallow(k, depth + 1, budget)) return YES;
+            if (ECScanWalletShallow(((NSDictionary *)obj)[k], depth + 1, budget)) return YES;
+        }
+        return NO;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) {
+            if (ECScanWalletShallow(e, depth + 1, budget)) return YES;
+        }
+    }
+    return NO;
+}
+static id ECEmptyItemsDeep(id obj, int depth) {
+    if (obj == nil || depth > 12) return obj;
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *out = [NSMutableDictionary dictionaryWithCapacity:((NSDictionary *)obj).count];
+        for (id k in (NSDictionary *)obj) {
+            id v = ((NSDictionary *)obj)[k];
+            if ([k isKindOfClass:[NSString class]] && [(NSString *)k isEqualToString:@"items"] &&
+                [v isKindOfClass:[NSArray class]]) {
+                out[k] = @[];
+            } else {
+                out[k] = ECEmptyItemsDeep(v, depth + 1);
+            }
+        }
+        return out;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        NSMutableArray *out = [NSMutableArray arrayWithCapacity:((NSArray *)obj).count];
+        for (id e in (NSArray *)obj) [out addObject:ECEmptyItemsDeep(e, depth + 1)];
+        return out;
+    }
+    return obj;
+}
+static id ECWalletPass(id obj, int depth) {
+    if (obj == nil || depth > 12) return obj;
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        int b = 120;
+        if (ECScanWalletShallow(obj, 0, &b)) return ECEmptyItemsDeep(obj, 0);
+        NSMutableDictionary *out = [NSMutableDictionary dictionaryWithCapacity:((NSDictionary *)obj).count];
+        for (id k in (NSDictionary *)obj) out[k] = ECWalletPass(((NSDictionary *)obj)[k], depth + 1);
+        return out;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        NSMutableArray *out = [NSMutableArray arrayWithCapacity:((NSArray *)obj).count];
+        for (id e in (NSArray *)obj) [out addObject:ECWalletPass(e, depth + 1)];
+        return out;
+    }
+    return obj;
+}
+
 static id ELEmptyFeedsData(id data) {
     if (![data isKindOfClass:[NSDictionary class]]) return @{};
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
@@ -150,12 +221,12 @@ static id ELProcessResult(NSString *api, id result) {
         id data = res[@"data"];
         if (data == nil) {
             // Result IS the payload (no wrapper): filter/empty it directly.
-            return isFeeds ? ELEmptyFeedsData(res) : ELFilterModules(res, 0);
+            return isFeeds ? ELEmptyFeedsData(res) : ECWalletPass(ELFilterModules(res, 0), 0);
         }
         if (isFeeds) {
             res[@"data"] = ELEmptyFeedsData(data);
         } else {
-            res[@"data"] = ELFilterModules(data, 0);
+            res[@"data"] = ECWalletPass(ELFilterModules(data, 0), 0);
         }
         return res;
     } @catch (NSException *e) {
@@ -246,6 +317,10 @@ static id ECSanitizePageData(id obj, int depth) {
         return out;
     }
     return obj;
+}
+
+static id ECPageDataClean(id data) {
+    return ECWalletPass(ECSanitizePageData(data, 0), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -535,162 +610,8 @@ static id ECFilterSearchPayload(id payload) {
     }
 }
 
-
-// v31 diag (READ-ONLY additions on top of v30): find WHERE the order page
-// sections actually flow. For every payload through the shared response
-// path: record api names containing "order"; scan the subtree for the
-// order markers (安心权益/食无忧) and record which api carries them; dump
-// the structure of the first marker-carrying payload.
-static NSMutableString *gD31OrderApis = nil;
-static NSMutableString *gD31MarkerApis = nil;
-static NSString *gD31Struct = nil;
-static void ECD31Note(NSMutableString *slot, NSString *text, NSUInteger cap) {
-    if (text == nil || slot == nil) return;
-    if ([slot rangeOfString:text].location == NSNotFound && [slot length] < cap) {
-        [slot appendFormat:@"%@ ", text];
-    }
-}
-static void ECD31Walk(id node, int depth, int *budget, NSMutableString *out) {
-    if (node == nil || *budget <= 0) return;
-    (*budget)--;
-    if ([node isKindOfClass:[NSDictionary class]]) {
-        [out appendString:@"{"];
-        int n = 0;
-        for (id k in (NSDictionary *)node) {
-            if (n++ > 0) [out appendString:@" "];
-            [out appendFormat:@"%@:", k];
-            ECD31Walk(((NSDictionary *)node)[k], depth + 1, budget, out);
-            if (*budget <= 0) break;
-        }
-        [out appendString:@"}"];
-        return;
-    }
-    if ([node isKindOfClass:[NSArray class]]) {
-        [out appendFormat:@"[%lu]", (unsigned long)[(NSArray *)node count]];
-        if (depth < 4 && [(NSArray *)node count] > 0) {
-            ECD31Walk([(NSArray *)node firstObject], depth + 1, budget, out);
-        }
-        return;
-    }
-    if ([node isKindOfClass:[NSString class]]) {
-        NSString *v = (NSString *)node;
-        if ([v length] > 0 && [v length] <= 24) [out appendFormat:@"'%@'", v];
-        return;
-    }
-}
-static BOOL ECD31Scan(id obj, int depth, int *budget) {
-    if (obj == nil || depth > 10 || *budget <= 0) return NO;
-    (*budget)--;
-    if ([obj isKindOfClass:[NSString class]]) {
-        return [(NSString *)obj containsString:@"安心权益"] ||
-               [(NSString *)obj containsString:@"食无忧"];
-    }
-    if ([obj isKindOfClass:[NSDictionary class]]) {
-        for (id k in (NSDictionary *)obj) {
-            if (ECD31Scan(k, depth + 1, budget)) return YES;
-            if (ECD31Scan(((NSDictionary *)obj)[k], depth + 1, budget)) return YES;
-        }
-        return NO;
-    }
-    if ([obj isKindOfClass:[NSArray class]]) {
-        for (id e in (NSArray *)obj) {
-            if (ECD31Scan(e, depth + 1, budget)) return YES;
-        }
-    }
-    return NO;
-}
-static BOOL gD31OrderSeen = NO;
-static BOOL ECD31TryShow(void);
-static void ECD31Inspect(NSString *api, id payload) {
-    if (api != nil && [[api lowercaseString] containsString:@"order"]) {
-        ECD31Note(gD31OrderApis, api, 600);
-        if (!gD31OrderSeen) {
-            gD31OrderSeen = YES;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-                dispatch_get_main_queue(), ^{ ECD31TryShow(); });
-        }
-    }
-    if (![payload isKindOfClass:[NSDictionary class]]) return;
-    int budget = 5000;
-    if (ECD31Scan(payload, 0, &budget)) {
-        ECD31Note(gD31MarkerApis, api ?: @"(nil-api)", 400);
-        if (gD31Struct == nil) {
-            NSMutableString *out = [NSMutableString string];
-            int b = 200;
-            id d = ((NSDictionary *)payload)[@"data"];
-            ECD31Walk(d != nil ? d : payload, 0, &b, out);
-            gD31Struct = out;
-        }
-    }
-}
-static id ECD31TopVC(void) {
-    // Fully dynamic UIKit access: the CI link line only has Foundation.
-    Class appCls = objc_getClass("UIApplication");
-    if (appCls == Nil) return nil;
-    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
-    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
-    id key = nil;
-    for (id w in windows) {
-        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
-        if (isKey) { key = w; break; }
-    }
-    if (key == nil) key = [windows firstObject];
-    if (key == nil) return nil;
-    id top = ((id (*)(id, SEL))objc_msgSend)(key, NSSelectorFromString(@"rootViewController"));
-    while (top != nil) {
-        id presented = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"presentedViewController"));
-        if (presented == nil) break;
-        top = presented;
-    }
-    return top;
-}
-static void ECShowOrderDiag31(void) {
-    NSString *msg = [NSString stringWithFormat:@"json=%d body=%d strip=%d\norderApis: %@\nmarkerApis: %@\nstruct: %@",
-        gJsonCalls, gBodyCalls, gOrderStripCount,
-        gD31OrderApis ?: @"", gD31MarkerApis ?: @"", gD31Struct ?: @""];
-    if ([msg length] > 2900) msg = [msg substringToIndex:2900];
-    Class acCls = objc_getClass("UIAlertController");
-    Class aaCls = objc_getClass("UIAlertAction");
-    if (acCls == Nil || aaCls == Nil) return;
-    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
-        NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"EleClean v31 订单诊断", msg, 1L);
-    id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
-        NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
-    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
-    id top = ECD31TopVC();
-    if (top != nil) {
-        ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
-            NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
-    }
-}
-static BOOL gD31Shown = NO;
-static BOOL ECD31TryShow(void) {
-    if (gD31Shown) return YES;
-    id top = ECD31TopVC();
-    if (top == nil) return NO;
-    // Only present on a VC that is actually attached to a window and is not
-    // itself an alert; presenting on a detached/transitioning VC fails
-    // silently (the v31 first-build bug: shown-flag set, popup never seen).
-    if ([NSStringFromClass([top class]) containsString:@"Alert"]) return NO;
-    id view = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"view"));
-    id win = view ? ((id (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"window")) : nil;
-    if (win == nil) return NO;
-    gD31Shown = YES;
-    ECShowOrderDiag31();
-    return YES;
-}
-static void ECD31Schedule(int attempt) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(), ^{
-        if (ECD31TryShow()) return;
-        if (attempt < 12) ECD31Schedule(attempt + 1);
-    });
-}
-
 static id ECFilterResponseObject(id self, id payload) {
     if (![payload isKindOfClass:[NSDictionary class]]) return payload;
-    ECD31Inspect(ECApiNameFromObject(self, 0), payload);
     NSString *api = ECApiNameFromObject(self, 0);
     ECNoteApi(api);
     NSString *apiL = [api lowercaseString];
@@ -807,7 +728,7 @@ static void ECParseReplacement(id self, SEL _cmd, id page, id data, id completio
     id clean = data;
     @try {
         if ([data isKindOfClass:[NSDictionary class]] || [data isKindOfClass:[NSArray class]]) {
-            clean = ECSanitizePageData(data, 0);
+            clean = ECPageDataClean(data);
         }
     } @catch (NSException *e) {
         clean = data;
@@ -836,7 +757,7 @@ static id ECParseCardsReplacement(id self, SEL _cmd, id cards) {
     @try {
         if ([cards isKindOfClass:[NSArray class]] &&
             ([(NSArray *)cards count] == 0 || [[(NSArray *)cards firstObject] isKindOfClass:[NSDictionary class]])) {
-            clean = ECSanitizePageData(cards, 0);
+            clean = ECPageDataClean(cards);
         }
     } @catch (NSException *e) {
         clean = cards;
@@ -871,7 +792,7 @@ static void ECSetTsfmReplacement(id self, SEL _cmd, id data) {
     id clean = data;
     @try {
         if ([data isKindOfClass:[NSDictionary class]] || [data isKindOfClass:[NSArray class]]) {
-            clean = ECSanitizePageData(data, 0);
+            clean = ECPageDataClean(data);
         }
     } @catch (NSException *e) { clean = data; }
     if (gOrigSetTsfm) gOrigSetTsfm(self, _cmd, clean);
@@ -886,7 +807,7 @@ static void ECLoadMistReplacement(id self, SEL _cmd, id data, id completion) {
     id clean = data;
     @try {
         if ([data isKindOfClass:[NSDictionary class]] || [data isKindOfClass:[NSArray class]]) {
-            clean = ECSanitizePageData(data, 0);
+            clean = ECPageDataClean(data);
         }
     } @catch (NSException *e) { clean = data; }
     if (gOrigLoadMist) ((ECLoadMistIMP)gOrigLoadMist)(self, _cmd, clean, completion);
@@ -897,7 +818,7 @@ static void ECRefreshMistReplacement(id self, SEL _cmd, id data, id completion) 
     id clean = data;
     @try {
         if ([data isKindOfClass:[NSDictionary class]] || [data isKindOfClass:[NSArray class]]) {
-            clean = ECSanitizePageData(data, 0);
+            clean = ECPageDataClean(data);
         }
     } @catch (NSException *e) { clean = data; }
     if (gOrigRefreshMist) ((ECLoadMistIMP)gOrigRefreshMist)(self, _cmd, clean, completion);
@@ -1061,9 +982,6 @@ static void ECShowDiag(void) {
 }
 
 __attribute__((constructor)) static void ELEntry(void) {
-    gD31OrderApis = [NSMutableString string];
-    gD31MarkerApis = [NSMutableString string];
-    ECD31Schedule(0);
     @autoreleasepool {
         BOOL a = ELInstall();
         BOOL b = ECInstallParse();
