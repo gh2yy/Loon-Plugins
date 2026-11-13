@@ -616,35 +616,53 @@ static void ECD31Inspect(NSString *api, id payload) {
         }
     }
 }
+static id ECD31TopVC(void) {
+    // Fully dynamic UIKit access: the CI link line only has Foundation.
+    Class appCls = objc_getClass("UIApplication");
+    if (appCls == Nil) return nil;
+    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
+    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
+    id key = nil;
+    for (id w in windows) {
+        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
+        if (isKey) { key = w; break; }
+    }
+    if (key == nil) key = [windows firstObject];
+    if (key == nil) return nil;
+    id top = ((id (*)(id, SEL))objc_msgSend)(key, NSSelectorFromString(@"rootViewController"));
+    while (top != nil) {
+        id presented = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"presentedViewController"));
+        if (presented == nil) break;
+        top = presented;
+    }
+    return top;
+}
 static void ECShowOrderDiag31(void) {
     NSString *msg = [NSString stringWithFormat:@"json=%d body=%d strip=%d\norderApis: %@\nmarkerApis: %@\nstruct: %@",
         gJsonCalls, gBodyCalls, gOrderStripCount,
         gD31OrderApis ?: @"", gD31MarkerApis ?: @"", gD31Struct ?: @""];
     if ([msg length] > 2900) msg = [msg substringToIndex:2900];
-    UIWindow *win = nil;
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow) { win = w; break; }
+    Class acCls = objc_getClass("UIAlertController");
+    Class aaCls = objc_getClass("UIAlertAction");
+    if (acCls == Nil || aaCls == Nil) return;
+    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
+        NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
+        @"EleClean v31 订单诊断", msg, 1L);
+    id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
+        NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
+    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
+    id top = ECD31TopVC();
+    if (top != nil) {
+        ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
+            NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
     }
-    if (win == nil) win = [[UIApplication sharedApplication].windows firstObject];
-    UIViewController *top = win.rootViewController;
-    while (top.presentedViewController) top = top.presentedViewController;
-    if (top == nil) return;
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"EleClean v31 订单诊断"
-        message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"知道了" style:UIAlertActionStyleDefault handler:nil]];
-    [top presentViewController:a animated:YES completion:nil];
 }
 static BOOL gD31Shown = NO;
 static void ECD31Schedule(int attempt) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
         if (gD31Shown) return;
-        UIWindow *win = nil;
-        for (UIWindow *w in [UIApplication sharedApplication].windows) {
-            if (w.isKeyWindow) { win = w; break; }
-        }
-        if (win == nil) win = [[UIApplication sharedApplication].windows firstObject];
-        if (win != nil && win.rootViewController != nil) {
+        if (ECD31TopVC() != nil) {
             gD31Shown = YES;
             ECShowOrderDiag31();
         } else if (attempt < 8) {
