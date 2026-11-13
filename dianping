@@ -1,12 +1,12 @@
 #!name = 大众点评去搜索发现、点评热点、开屏广告与首页/我的页运营位
-#!desc = 移除搜索页「搜索发现」「点评热点」，拦截开屏配置阻断开屏素材预下载，改写首页数据去掉右上角签到/金币入口与金刚区下方「点评榜单/免费试」运营位，改写「我的」页数据去掉笔记达人中心整节与免费试/大众评审/领点金币/活动中心四宫格，并改写 halo 配置关掉搜索页键盘上方「AI 按住提问」悬浮按钮。注意：已缓存的开屏素材与页面配置不会被本插件清除，启用后冷启一两次待缓存刷新即生效；开屏素材存量顽固时可删装点评一次清掉。
+#!desc = 移除搜索页「搜索发现」「点评热点」，拦截开屏配置阻断开屏素材预下载，改写首页数据去掉右上角签到/金币入口与金刚区下方「点评榜单/免费试」运营位，并改写「我的」页数据去掉笔记达人中心整节与免费试/大众评审/领点金币/活动中心四宫格。注意：已缓存的开屏素材与页面配置不会被本插件清除，启用后冷启一两次待缓存刷新即生效；开屏素材存量顽固时可删装点评一次清掉。
 #!author = Muse & xingjiu
 #!date = 2026-11-13
 #!tag = 大众点评,搜索,开屏广告,签到入口,首页运营位,我的页
 
 # 修改日志：
 # - 2026-11-09 Muse：按 xingjiu 提供的原文转成 Loon 在线插件格式，作者标注 xingjiu；[Rewrite] 两条与 [Mitm] 一条逐字保留，未增删、未改动，待用户实测。
-# - 2026-11-13 Muse：新增五项（均非 xingjiu 原规则）。①开屏：据 11.74.2 二进制分析，开屏配置仅 loadsplashconfig.bin 一个入口，素材经其预下载到本地后、冷/热启只读缓存展示，故 reject 该配置即可断新素材；抓包实证该接口 14 次响应均为 32B 空列表。②首页签到/金币入口（右上角「得金币」/签到圆标）：11.75.2 冷启抓包定案，入口由 dphomepage/homeframe.bin 根部的秒杀权益对象（picasso=pexus-seckill-benefits，含入口图与跳转）下发，脚本 dianping-home.js 在本地解密后摘除该对象再加密回送；已用 11.74.2 与 11.75.2 两份真实样本全链路验证，用户已实测确认去掉。③金刚区下方「点评榜单/免费试」两卡：同份抓包定案，为 dphomepage/indexmodules.bin 运营位数组里的 HomeOperationIconSectionNew 组件（内含 RankingIconContent 与 FreeMealIconContent 两项），同一脚本按 URL 分流摘除该组件、金刚区 25 图标不动；已全链路验证，用户已实测确认去掉。④「我的」页四宫格（免费试/大众评审/领点金币/活动中心）：「我的」页专项抓包定案，四项为 mytabfeedpromotev2.bin 的 JSON 载荷 promotes 数组（promoteId 依次 mianfeishi/assess/mrfl/activitycenter），同一脚本按 promoteId 摘除四项。⑤「我的」页笔记达人中心整节：同份抓包定案，节标题元素与四子项（发笔记/0元探店/点星/真探官）分别位于 getmytabelementsv2.bin 的 JSON 载荷 list 与 noteList，同一脚本摘除该元素并清空 noteList，simpleList 与其余 20 个功能入口不动。④⑤均已用真实样本全链路验证（JS 输出与 Python 改写语义一致、解析通过），待用户实测。脚本地址统一 ?v=3。⑥搜索页键盘上方「AI 按住提问」悬浮按钮：抓包定案其开关位于 halo/halo.newparam 的 expParam 配置（明文 JSON），脚本 dianping-halo.js 将 search_keyboard_voice_search、search_index_enable_ask_dianzai 两开关由 "1" 改 "0"、aiSearchFixedEntryV2 由 "true" 改 "false"（带键名精确替换，替换后内外两层 JSON 均可解析）；已用真实样本验证，待用户实测（halo 配置有本地缓存时需冷启一两次刷新）。
+# - 2026-11-13 Muse：新增五项（均非 xingjiu 原规则）。①开屏：据 11.74.2 二进制分析，开屏配置仅 loadsplashconfig.bin 一个入口，素材经其预下载到本地后、冷/热启只读缓存展示，故 reject 该配置即可断新素材；抓包实证该接口 14 次响应均为 32B 空列表。②首页签到/金币入口（右上角「得金币」/签到圆标）：11.75.2 冷启抓包定案，入口由 dphomepage/homeframe.bin 根部的秒杀权益对象（picasso=pexus-seckill-benefits，含入口图与跳转）下发，脚本 dianping-home.js 在本地解密后摘除该对象再加密回送；已用 11.74.2 与 11.75.2 两份真实样本全链路验证，用户已实测确认去掉。③金刚区下方「点评榜单/免费试」两卡：同份抓包定案，为 dphomepage/indexmodules.bin 运营位数组里的 HomeOperationIconSectionNew 组件（内含 RankingIconContent 与 FreeMealIconContent 两项），同一脚本按 URL 分流摘除该组件、金刚区 25 图标不动；已全链路验证，用户已实测确认去掉。④「我的」页四宫格（免费试/大众评审/领点金币/活动中心）：「我的」页专项抓包定案，四项为 mytabfeedpromotev2.bin 的 JSON 载荷 promotes 数组（promoteId 依次 mianfeishi/assess/mrfl/activitycenter），同一脚本按 promoteId 摘除四项。⑤「我的」页笔记达人中心整节：同份抓包定案，节标题元素与四子项（发笔记/0元探店/点星/真探官）分别位于 getmytabelementsv2.bin 的 JSON 载荷 list 与 noteList，同一脚本摘除该元素并清空 noteList，simpleList 与其余 20 个功能入口不动。④⑤均已用真实样本全链路验证（JS 输出与 Python 改写语义一致、解析通过），待用户实测。脚本地址统一 ?v=3。
 
 [Rewrite]
 # 搜索页「搜索发现」
@@ -25,8 +25,6 @@ http-response ^https?:\/\/mapi\.dianping\.com\/mapi\/dphomepage\/indexmodules\.b
 http-response ^https?:\/\/mapi\.dianping\.com\/mapi\/mytabfeedpromotev2\.bin script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/dianping-home.js?v=3, requires-body=true, binary-body-mode=true, tag=点评-去我的页四宫格
 # 「我的」页笔记达人中心整节（getmytabelementsv2 的 list 元素 + noteList）
 http-response ^https?:\/\/mapi\.dianping\.com\/mapi\/getmytabelementsv2\.bin script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/dianping-home.js?v=3, requires-body=true, binary-body-mode=true, tag=点评-去笔记达人中心
-# 搜索页键盘上方「AI 按住提问」悬浮按钮（halo 配置三开关）
-http-response ^https?:\/\/mapi\.dianping\.com\/mapi\/halo\/halo\.newparam script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/dianping-halo.js?v=1, requires-body=true, tag=点评-去按住提问
 
 [Mitm]
 hostname = mapi.dianping.com
