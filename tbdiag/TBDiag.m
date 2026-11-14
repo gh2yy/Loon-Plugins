@@ -32,7 +32,10 @@
 //      feeds/collect/xProject tabs: 猜你喜欢/我的收藏/我的评价 + infoflow).
 //      Middle modules (statistic etc.) are separate components, untouched.
 //
-// Marker: TBClean/1.1 (formal2; see FORMAL_NOTES repair section)
+// Marker: TBClean/1.2 (formal3; see FORMAL_NOTES ANR section)
+// formal3 change vs formal2: module 5 (MyTaobao bottom section) is
+// DISABLED (fail-open, see the note at TCInstallAll). All other modules
+// are byte-identical in logic to formal2.
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -431,7 +434,31 @@ static void TCInstallAll(void) {
     TCHook("MtopService", "getResponse:mrequest:", NO, (IMP)TCGetResponse, (IMP *)&gOrigGetResp);
     TCHook("TBPLLayerFactory", "createLayerWithFrame:type:popRequest:attachVC:", NO, (IMP)TCFactoryCreate, (IMP *)&gOrigFactory);
     TCHook("TBHRContainerContentModel", "floatLayerSection", NO, (IMP)TCFloatLayerSection, (IMP *)&gOrigFloatGetter);
-    TCHook("MTMainPageUserDataService", "transformMainPageDataMode:snapshotSource:", NO, (IMP)TCTransform, (IMP *)&gOrigTransform);
+    // formal3: MyTaobao transform hook NOT installed. formal2 froze the
+    // whole app (main-thread ANR) as soon as the MyTaobao tab was opened.
+    // Static triage for the ANR (FORMAL_NOTES, ANR section):
+    //  - PopLayer factory nil-return was exonerated at instruction level:
+    //    the sole caller, TBPLPageTriggerService -p_onReadyOperation:,
+    //    calls createLayer exactly once, and its nil branch runs a
+    //    dedicated cancel path (p_onReadyCancel:) that removes the
+    //    request from the live/unfinished lists and updates the query
+    //    list. There is no retry loop in p_onReadyOperation: or onReady:.
+    //  - The transform hook's signature matches the method type encoding
+    //    (@32@0:8@16q24) exactly, and the hook itself contains no lock,
+    //    no wait and no unbounded loop; but it is the only remaining
+    //    MyTaobao-coupled mutation: it shrinks MTMainPageDataModel
+    //    .components while the C++ snapshot side (layoutList, listener
+    //    pushes via listenComponentsChange:) still carries basementTip.
+    //    A consumer that reconciles the two lists on the main thread
+    //    (re-request / re-layout while the module lookup keeps missing)
+    //    would spin the main thread exactly as observed. This cannot be
+    //    proven or excluded from the binary alone (the caller is C++,
+    //    invoked without a msgSend stub), so per the fail-open rule this
+    //    face is reverted to pass-through for formal3: the bottom
+    //    section (basementTip) will be VISIBLE again until a hang log
+    //    or a safer assembly-side point is available.
+    // TCTransform is kept in the source for that future work but is
+    // never installed in formal3.
 }
 
 __attribute__((constructor)) static void TCEntry(void) {
