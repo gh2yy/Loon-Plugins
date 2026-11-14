@@ -32,18 +32,34 @@
 //      feeds/collect/xProject tabs: 猜你喜欢/我的收藏/我的评价 + infoflow).
 //      Middle modules (statistic etc.) are separate components, untouched.
 //
-// Marker: TBClean/1.0
+// Marker: TBClean/1.1 (formal2; see FORMAL_NOTES repair section)
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dispatch/dispatch.h>
 
 // ------------------------------------------------------------ utilities ----
+// WARNING: TBM is ONLY for selectors whose return type is an object (id).
+// Passing a primitive-returning selector (BOOL/int/...) makes the msgSend
+// result register be read as an object pointer; under ARC that value is
+// then retained, which is exactly the formal1 launch crash: -isSucceed
+// returns BOOL, TBM(resp,"isSucceed") produced the "pointer" 0x1 and
+// objc_retain(0x1) faulted. Primitive getters MUST go through TBMBool /
+// a correctly-typed cast instead.
 static id TBM(id obj, const char *selName) {
     if (obj == nil) return nil;
     SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
     if (![obj respondsToSelector:sel]) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
+}
+// Typed getter for BOOL-returning selectors. Returns YES when the value
+// was actually read into *out.
+static BOOL TBMBool(id obj, const char *selName, BOOL *out) {
+    if (obj == nil || out == NULL) return NO;
+    SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
+    if (![obj respondsToSelector:sel]) return NO;
+    *out = ((BOOL (*)(id, SEL))objc_msgSend)(obj, sel);
+    return YES;
 }
 static void TBMSet(id obj, const char *selName, id val) {
     if (obj == nil) return;
@@ -73,7 +89,11 @@ static void TCAppendSerialized(id obj, NSMutableString *out, int depth) {
         if (s) { [out appendString:s]; [out appendString:@" "]; }
         return;
     }
-    [out appendFormat:@"%@ ", [obj description]];
+    // Scalars (NSNumber/NSNull/...) carry no searchable string content,
+    // and unknown object types are deliberately NOT sent -description:
+    // the substring test runs over genuine string content only, and no
+    // arbitrary object's code is invoked on an unvalidated value.
+    return;
 }
 
 // Deep-copy a JSON-shaped object into mutable containers.
@@ -241,15 +261,19 @@ static id TCFilteredSearchBody(id body) {
 }
 
 // ---- shared: write a new body back into the response ------------------
+// All-or-nothing: serialize FIRST; only when the new body serializes
+// cleanly are body/json/rawbody written (together, consistently). Any
+// failure leaves the original response completely untouched (fail-open).
 static void TCSetBody(id resp, id newBody) {
     @try {
-        TBMSet(resp, "setBody:", newBody);
+        if (![newBody isKindOfClass:[NSDictionary class]]) return;
         NSData *jd = [NSJSONSerialization dataWithJSONObject:newBody options:0 error:nil];
-        if (jd != nil) {
-            NSString *js = [[NSString alloc] initWithData:jd encoding:NSUTF8StringEncoding];
-            if (js) TBMSet(resp, "setJson:", js);
-            TBMSet(resp, "setRawbody:", jd);
-        }
+        if (jd == nil) return;
+        NSString *js = [[NSString alloc] initWithData:jd encoding:NSUTF8StringEncoding];
+        if (js == nil) return;
+        TBMSet(resp, "setBody:", newBody);
+        TBMSet(resp, "setJson:", js);
+        TBMSet(resp, "setRawbody:", jd);
     } @catch (NSException *e) { }
 }
 
@@ -257,14 +281,27 @@ static id TCGetResponse(id self, SEL _cmd, id raw, id mreq) {
     id resp = gOrigGetResp ? gOrigGetResp(self, _cmd, raw, mreq) : nil;
     if (resp == nil) return resp;
     @try {
-        id ok = TBM(resp, "isSucceed");
-        if (ok != nil && [ok respondsToSelector:@selector(boolValue)] && ![ok boolValue]) return resp;
+        // Step 1: read ONLY the api name — a single object-typed getter,
+        // class-checked in TCApiOfResponse. Non-target APIs return here:
+        // for them NOT ONE other field of the response is read or touched.
         NSString *api = TCApiOfResponse(resp);
         if (api == nil) return resp;
-        if (TCCartMatched(resp, api)) {
-            id nb = TCEmptiedBody(TBM(resp, "body"));
-            if (nb != nil) TCSetBody(resp, nb);
-        } else if ([api isEqualToString:@"mtop.xsd.searchbar.info.get"]) {
+        BOOL isCart = [api isEqualToString:@"mtop.relationrecommend.wirelessrecommend.recommend"];
+        BOOL isSearch = [api isEqualToString:@"mtop.xsd.searchbar.info.get"];
+        if (!isCart && !isSearch) return resp;
+        // Step 2 (target APIs only): failure responses pass untouched.
+        // isSucceed returns BOOL, so it is read through the typed helper —
+        // NEVER through the id-returning TBM (formal1 crash root cause).
+        BOOL ok = YES;
+        if (TBMBool(resp, "isSucceed", &ok) && !ok) return resp;
+        // Step 3: each filter validates every level it touches and
+        // returns nil (fail-open) on any shape mismatch.
+        if (isCart) {
+            if (TCCartMatched(resp, api)) {
+                id nb = TCEmptiedBody(TBM(resp, "body"));
+                if (nb != nil) TCSetBody(resp, nb);
+            }
+        } else {
             id nb = TCFilteredSearchBody(TBM(resp, "body"));
             if (nb != nil) TCSetBody(resp, nb);
         }
