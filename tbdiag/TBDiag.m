@@ -874,7 +874,7 @@ __attribute__((constructor)) static void TCEntry(void) {
 }
 
 // ============================================================ TBDiag4 ======
-// TBDiag4.3 — READ-ONLY view-layer probe overlay on the formal7 base
+// TBDiag4.4 — READ-ONLY view-layer probe overlay on the formal7 base
 // (TBClean 1.6, filters byte-for-byte identical, main binary P1+P3+P4
 // untouched). Why: the four remaining surfaces (cart recommend flow,
 // cart top activity banner ⑦, search-door sections, home floating bar)
@@ -900,25 +900,14 @@ __attribute__((constructor)) static void TCEntry(void) {
 // that are neither history nor the two known targets additionally
 // flagged 【未知段】. (The search box and the scan/voice/image
 // tool row are functional UI, not sections, and are excluded.)
-// Presentation (4.3 — user spec 2026-11-14 18:29, verbatim in
-// substance: "give it 30 seconds; from entering the app, after
-// 30 seconds, you pop up; in those 30 seconds I'll pass through
-// search and cart"): a 1s main-queue watcher starts at process
-// launch and classifies the current page; whenever a target
-// face (home/cart/search) is current it silently dumps that
-// face (first sighting per stay; re-entries overwrite with the
-// latest pass), and at T-2s it refreshes the then-current face
-// once more so a slow-loading page is not captured as an empty
-// shell. NOTHING pops during the 30s — she spends them walking
-// cart and search. At T=30s the captured faces pop in fixed
-// order (home -> cart -> search), one at a time, chained off
-// each alert's dismiss button; a face never visited simply
-// does not pop. ONE fallback and nothing else: a face still
-// unvisited at T=30s pops alone, immediately, the first time
-// she enters it afterwards (covers login taking longer than
-// 30s). No grace period, no dwell requirement, no modal-busy
-// gate, no present queue beyond that fixed sequence. Every
-// dump also lands in Documents/TBDiag4.txt.
+// Presentation (4.4): the scheduling + presentation chain is
+// TBDiag3's, transplanted — see the "4.4 orchestration" comment
+// at the bottom of this file for the provenance and for the two
+// failure-visibility additions (badge + zero-data status popup).
+// The user spec is unchanged (30s of silent dumps, then the
+// captured faces pop in home -> cart -> search order, with the
+// single post-30s fallback). Every dump also lands in
+// Documents/TBDiag4.txt.
 //
 // Safety: the overlay mutates NOTHING and hooks nothing; the
 // only machinery is a 1s dispatch-source watcher on the main
@@ -927,7 +916,7 @@ __attribute__((constructor)) static void TCEntry(void) {
 // only — the formal1 isSucceed lesson applies to every
 // primitive read here too).
 
-__attribute__((used)) static const char kTD4Version[] = "TBDiag4.3/1.0";
+__attribute__((used)) static const char kTD4Version[] = "TBDiag4.4/1.0";
 
 // ------------------------------------------------------------- state -----
 static NSDate *gD4Start = nil;
@@ -1864,7 +1853,7 @@ return s;
 static NSString *D4Overview(void) {
     NSMutableString *s = [NSMutableString string];
     @synchronized (gD4Lock) {
-        [s appendFormat:@"TBDiag4.3 · 运行%.0fs · 基线=正式版7过滤(只读视图探针,30秒定时版)\n", D4Now()];
+        [s appendFormat:@"TBDiag4.4 · 运行%.0fs · 基线=正式版7过滤(只读视图探针,诊断3调度/呈现移植版)\n", D4Now()];
         [s appendFormat:@"[首页横条] %@\n", gD4DumpedHome ? @"已dump" : @"未拍到"] ;
         [s appendFormat:@"[购物车] %@\n", gD4DumpedCart ? @"已dump" : @"未拍到"] ;
         [s appendFormat:@"[搜索] %@\n", gD4DumpedSearch ? @"已dump" : @"未拍到"] ;
@@ -1955,13 +1944,74 @@ static int D4Classify(id rootVC, id visibleVC) {
     return kind;
 }
 
-// -------------------------------------------------- 30s timer trigger --
-// 4.3: the ONLY trigger logic, exactly per the user's spec (see
-// the header). The 4.2 shake swizzles are deleted in full: no
-// responder swizzles, no debounce, no stale-flag recovery.
-static void D4PresentText(NSString *title, NSString *text, int attempt);
-static void D4AfterDismiss(void);
-static dispatch_source_t gD4Timer = NULL;
+// --------------------------------------- 4.4 orchestration -----
+// TBDiag4.4 orchestration. The 4.1/4.2/4.3 builds never produced a
+// single popup on the user's device, each for a reason invisible
+// from her side (a modal-busy gate that never opened, a shake
+// swizzle that never fired, a dispatch-source timer driving a
+// presented-chain presenter with a 3-strikes silent give-up).
+// This build returns to the ONE scheduling + presentation chain
+// proven on this user's device — TBDiag3's (she returned its
+// screenshots):
+//   * scheduling: diag3's TDTick pattern — a recursive
+//     dispatch_after chain on dispatch_get_main_queue(), started
+//     directly from the entry point. Diag3 used 15s intervals,
+//     capped at 80 ticks; here the same chain runs at 1s (the
+//     30s spec and the per-second badge refresh need the finer
+//     beat), capped at 600 ticks.
+//   * presentation: D44TopVC / D44TryShowText below are diag3's
+//     TDTopVC / TDTryShow transplanted — only the name prefix
+//     changed and diag3's fixed title/summary became parameters.
+//     Same walk ([UIApplication windows] -> key window ->
+//     rootViewController -> presentedViewController chain), same
+//     guards (top class contains "Alert" -> wait; top.view.window
+//     == nil -> wait), same UIAlertController construction and
+//     present call through objc_msgSend, same nil action handler.
+//     NOT transplanted: diag3's show-policy counters (first show
+//     unconditional, re-show >=45s apart, <=10 total) — the show
+//     policy here is the user's 30s spec, driven by the state
+//     machine in D44Tick on the same chain.
+//   * deleted in full from 4.3: the dispatch-source watcher
+//     (D4StartTimer/D4TimerTick), the presented-chain presenter
+//     (D4PresenterVC) and the dismiss-handler sequence chaining
+//     (D4ShowSequence/D4AfterDismiss + the "知道了" handler).
+//     Sequence advance is polled on the tick, diag3-style: while
+//     our alert is up, the top VC IS the alert, so the tick just
+//     waits; once it is dismissed, the next tick presents the
+//     next face. No handlers, no queue, no silent give-up — a
+//     failed present is retried on the next tick for as long as
+//     the chain runs.
+// Spec (unchanged — user 2026-11-14 18:29, plus the 4.3 fallback
+// kept verbatim): silent dumps during the first 30s (each entry
+// into a target face dumps it; re-entries overwrite; a T-2s
+// refresh re-dumps the current face once), at T=30s the captured
+// faces pop in home -> cart -> search order, faces never visited
+// do not pop, and a face still unvisited at T=30s pops alone,
+// immediately, on its first successful dump afterwards.
+// Failure visibility (4.4 — exactly two additions, nothing else):
+//   (a) badge: from ~T+3s, a small non-modal UILabel pinned to
+//       the key window's top-left (semi-transparent black,
+//       white 11pt text, userInteractionEnabled=NO, refreshed
+//       on the same tick): "D4.4 T+{s}s 首{✓/·} 购{✓/·} 搜{✓/·}".
+//       It rides the same tick as classification/dumps, so the
+//       three failure shapes stay distinguishable: no badge =
+//       the tick chain itself never ran; badge but no ✓ = pages
+//       never classified/dumped; ✓ present but no popup = the
+//       presentation step failed. Removed when the popup flow
+//       completes, or when the tick chain ends.
+//   (b) zero-data fallback: if at T=30s no face was captured, a
+//       status popup still shows (none captured + current top
+//       VC class + live timer T). Between the badge and this
+//       popup, this build cannot end in total silence.
+static BOOL gD44BadgeOn = NO;      // badge attach attempted
+static id gD44Badge = nil;         // the UILabel (runtime class, strong)
+static BOOL gD44BadgeGone = NO;    // badge removed for good
+static BOOL gD44FlowDone = NO;     // T=30s sequence (+zero popup) finished
+static int gD44CurFace = -1;       // face on screen: 0/1/2, 3 = zero popup, -1 none
+static int gD44NextFace = 0;       // next face to present: 0=home 1=cart 2=search
+static BOOL gD44ZeroPending = NO;  // T=30s reached with zero captures
+static BOOL gD44ZeroShown = NO;    // zero popup has been presented
+static int gD44LateKind = 0;       // post-flow fallback: kind dumped, pop owed
 
 static void D4DumpFace(int kind) {
     @try {
@@ -1980,163 +2030,275 @@ static void D4DumpFace(int kind) {
     } @catch (NSException *e) { }
 }
 
-// Show the next captured face in the fixed order home -> cart ->
-// search, skipping faces never dumped. One alert at a time; the
-// chain continues from the alert's dismiss handler
-// (D4AfterDismiss). Faces still missing when the sequence runs
-// out are left to the single fallback in D4TimerTick.
-static void D4ShowSequence(void) {
-    if (gD4Showing) return;
-    while (gD4SeqIdx < 3) {
-        int idx = gD4SeqIdx++;
-        if (idx == 0 && gD4DumpedHome)   { D4PresentText(@"诊断4·首页", D4PageText(@"首页"), 0); return; }
-        if (idx == 1 && gD4DumpedCart)   { D4PresentText(@"诊断4·购物车", D4PageText(@"购物车"), 0); return; }
-        if (idx == 2 && gD4DumpedSearch) { D4PresentText(@"诊断4·搜索", D4PageText(@"搜索"), 0); return; }
+// ---- diag3 TDTopVC, transplanted verbatim (prefix only) ----
+static id D44TopVC(void) {
+    Class appCls = objc_getClass("UIApplication");
+    if (appCls == Nil) return nil;
+    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
+    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
+    id key = nil;
+    for (id w in windows) {
+        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
+        if (isKey) { key = w; break; }
     }
-    gD4SeqDone = YES;
+    if (key == nil) key = [windows firstObject];
+    if (key == nil) return nil;
+    id top = ((id (*)(id, SEL))objc_msgSend)(key, NSSelectorFromString(@"rootViewController"));
+    while (top != nil) {
+        id presented = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"presentedViewController"));
+        if (presented == nil) break;
+        top = presented;
+    }
+    return top;
 }
 
-static void D4AfterDismiss(void) {
-    if (gD4SeqStarted && !gD4SeqDone) D4ShowSequence();
+// The key window, picked exactly as in D44TopVC (for the badge).
+static id D44KeyWindow(void) {
+    Class appCls = objc_getClass("UIApplication");
+    if (appCls == Nil) return nil;
+    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
+    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
+    id key = nil;
+    for (id w in windows) {
+        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
+        if (isKey) { key = w; break; }
+    }
+    if (key == nil) key = [windows firstObject];
+    return key;
 }
 
-static void D4TimerTick(void) {
+static BOOL D44AlertUp(void) {
+    id top = D44TopVC();
+    return top != nil && [NSStringFromClass([top class]) containsString:@"Alert"];
+}
+
+// ---- diag3 TDTryShow, transplanted (prefix + title/text as
+// parameters; diag3's file-write and show counters stay behind —
+// dumps already write the file at capture time, and the show
+// policy is the 30s state machine in D44Tick). ----
+static BOOL D44TryShowText(NSString *title, NSString *text) {
+    id top = D44TopVC();
+    if (top == nil) return NO;
+    if ([NSStringFromClass([top class]) containsString:@"Alert"]) return NO;
+    id view = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"view"));
+    id win = view ? ((id (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"window")) : nil;
+    if (win == nil) return NO;
+    Class acCls = objc_getClass("UIAlertController");
+    Class aaCls = objc_getClass("UIAlertAction");
+    if (acCls == Nil || aaCls == Nil) return NO;
+    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
+        NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
+        title, text, 1L);
+    id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
+        NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
+    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
+    ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
+        NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
+    return YES;
+}
+
+// ------------------------------------------------ badge (4.4a) -----
+// All UIKit access is via runtime classes + objc_msgSend (this
+// dylib links Foundation only, like diag3). The label is created
+// once, re-pinned to the current key window whenever it changes
+// (launch swaps windows), refreshed with the tick's own data.
+static void D44BadgeSync(void) {
     @try {
-        double now = D4Now();
-        if (!gD4SeqStarted) {
-            // --- inside the 30s: classify + silent dumps only ---
-            id rootVC = nil;
-            id visibleVC = D4TopVC(&rootVC);
-            int kind = D4Classify(rootVC, visibleVC);
-            BOOL dumpedAlready = (kind == D4K_HOME && gD4DumpedHome) ||
-                                 (kind == D4K_CART && gD4DumpedCart) ||
-                                 (kind == D4K_SEARCH && gD4DumpedSearch);
-            if (kind != D4K_NONE && (!dumpedAlready || kind != gD4LastKind)) {
-                D4DumpFace(kind); // first sighting, or re-entry after another page
-            }
-            // T-2s: refresh whatever face is current, once, so a
-            // slow-loading page is not kept as an empty shell.
-            if (!gD4Refreshed && now >= 28.0 && kind != D4K_NONE && kind == gD4LastKind) {
-                gD4Refreshed = YES;
-                D4DumpFace(kind);
-            }
-            gD4LastKind = kind; // NONE included: a leave-and-return counts as a re-entry
-            if (now >= 30.0) {
-                gD4SeqStarted = YES;
-                D4Event(@"30秒到,依次弹窗(已拍:首页%@/购物车%@/搜索%@)",
-                        gD4DumpedHome ? @"Y" : @"-",
-                        gD4DumpedCart ? @"Y" : @"-",
-                        gD4DumpedSearch ? @"Y" : @"-");
-                D4ShowSequence();
-            }
-        } else if (!gD4SeqDone) {
-            // The sequence stalled (a present attempt's alert-top
-            // retries ran out): retry it on this tick.
-            D4ShowSequence();
-        } else {
-            // --- the single fallback: a face first entered after
-            // T=30s pops alone, immediately, once. ---
-            id rootVC = nil;
-            id visibleVC = D4TopVC(&rootVC);
-            int kind = D4Classify(rootVC, visibleVC);
-            BOOL missing = (kind == D4K_HOME && !gD4DumpedHome) ||
-                           (kind == D4K_CART && !gD4DumpedCart) ||
-                           (kind == D4K_SEARCH && !gD4DumpedSearch);
-            if (missing) {
-                D4DumpFace(kind);
-                if (!gD4Showing) {
-                    if (kind == D4K_HOME) D4PresentText(@"诊断4·首页", D4PageText(@"首页"), 0);
-                    else if (kind == D4K_CART) D4PresentText(@"诊断4·购物车", D4PageText(@"购物车"), 0);
-                    else if (kind == D4K_SEARCH) D4PresentText(@"诊断4·搜索", D4PageText(@"搜索"), 0);
-                }
-            }
+        id win = D44KeyWindow();
+        if (win == nil) return;
+        Class labCls = objc_getClass("UILabel");
+        Class colCls = objc_getClass("UIColor");
+        Class fntCls = objc_getClass("UIFont");
+        if (labCls == Nil || colCls == Nil || fntCls == Nil) return;
+        if (gD44Badge == nil) {
+            D4Rect wb = ((D4Rect (*)(id, SEL))objc_msgSend)(win, NSSelectorFromString(@"bounds"));
+            double wdt = wb.w - 16.0;
+            if (wdt > 320.0) wdt = 320.0;
+            if (wdt < 120.0) wdt = 120.0;
+            D4Rect fr = {8.0, 48.0, wdt, 20.0};
+            id lab = ((id (*)(id, SEL))objc_msgSend)(labCls, NSSelectorFromString(@"alloc"));
+            lab = ((id (*)(id, SEL, D4Rect))objc_msgSend)(lab, NSSelectorFromString(@"initWithFrame:"), fr);
+            if (lab == nil) return;
+            ((void (*)(id, SEL, char))objc_msgSend)(lab, NSSelectorFromString(@"setUserInteractionEnabled:"), 0);
+            ((void (*)(id, SEL, id))objc_msgSend)(lab, NSSelectorFromString(@"setBackgroundColor:"),
+                ((id (*)(id, SEL, double, double))objc_msgSend)(colCls, NSSelectorFromString(@"colorWithWhite:alpha:"), 0.0, 0.55));
+            ((void (*)(id, SEL, id))objc_msgSend)(lab, NSSelectorFromString(@"setTextColor:"),
+                ((id (*)(id, SEL))objc_msgSend)(colCls, NSSelectorFromString(@"whiteColor")));
+            ((void (*)(id, SEL, id))objc_msgSend)(lab, NSSelectorFromString(@"setFont:"),
+                ((id (*)(id, SEL, double))objc_msgSend)(fntCls, NSSelectorFromString(@"systemFontOfSize:"), 11.0));
+            ((void (*)(id, SEL, long))objc_msgSend)(lab, NSSelectorFromString(@"setNumberOfLines:"), 1L);
+            gD44Badge = lab;
         }
+        id sup = ((id (*)(id, SEL))objc_msgSend)(gD44Badge, NSSelectorFromString(@"superview"));
+        if (sup != win) {
+            if (sup != nil) ((void (*)(id, SEL))objc_msgSend)(gD44Badge, NSSelectorFromString(@"removeFromSuperview"));
+            ((void (*)(id, SEL, id))objc_msgSend)(win, NSSelectorFromString(@"addSubview:"), gD44Badge);
+        } else {
+            ((void (*)(id, SEL, id))objc_msgSend)(win, NSSelectorFromString(@"bringSubviewToFront:"), gD44Badge);
+        }
+        NSString *txt = [NSString stringWithFormat:@"D4.4 T+%ds 首%@ 购%@ 搜%@",
+            (int)D4Now(),
+            gD4DumpedHome ? @"✓" : @"·",
+            gD4DumpedCart ? @"✓" : @"·",
+            gD4DumpedSearch ? @"✓" : @"·"];
+        ((void (*)(id, SEL, id))objc_msgSend)(gD44Badge, NSSelectorFromString(@"setText:"), txt);
+        gD44BadgeOn = YES;
     } @catch (NSException *e) { }
 }
 
-static void D4StartTimer(void) {
-    if (gD4Timer != NULL) return;
-    dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    if (t == NULL) return;
-    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-        (uint64_t)(1.0 * NSEC_PER_SEC), (uint64_t)(0.1 * NSEC_PER_SEC));
-    dispatch_source_set_event_handler(t, ^{ D4TimerTick(); });
-    gD4Timer = t;
-    dispatch_resume(t);
-    D4Event(@"30秒定时器已启动");
+static void D44BadgeRemove(void) {
+    if (gD44Badge != nil) {
+        @try { ((void (*)(id, SEL))objc_msgSend)(gD44Badge, NSSelectorFromString(@"removeFromSuperview")); }
+        @catch (NSException *e) { }
+        gD44Badge = nil;
+    }
+    gD44BadgeOn = NO;
+    gD44BadgeGone = YES;
 }
 
-// The host's true topmost VC for presentation: key window root
-// followed down the presented chain (alerts INCLUDED — D4TopVC
-// skips them, but here an alert on top is exactly what the retry
-// rule below keys on).
-static id D4PresenterVC(void) {
-    @try {
-        Class appCls = objc_getClass("UIApplication");
-        if (appCls == Nil) return nil;
-        id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
-        NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
-        id key = nil;
-        for (id w in windows) {
-            BOOL k = NO;
-            if (D4GetBool(w, "isKeyWindow", &k) && k) { key = w; break; }
-        }
-        if (key == nil) key = [windows firstObject];
-        id cur = key ? TBM(key, "rootViewController") : nil;
-        for (int guard = 0; guard < 16 && cur != nil; guard++) {
-            id p = TBM(cur, "presentedViewController");
-            if (p == nil || p == cur) break;
-            cur = p;
-        }
-        return cur;
-    } @catch (NSException *e) { return nil; }
-}
+// ------------------------------------------------------ the tick -----
+// Diag3's TDTick shape: the entry point calls D44Tick(0); each
+// invocation schedules its own body 1s out on the main queue and
+// recurses. Everything (classification, silent dumps, badge,
+// sequence, fallback) rides this one chain — exactly one
+// scheduling mechanism in the build, the proven one.
+static void D44Tick(int tick) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+        @try {
+            double now = D4Now();
+            BOOL alertUp = D44AlertUp();
 
-// Present text from the topmost VC immediately. If the topmost VC
-// is an alert, wait 0.5s and retry, at most 3 attempts, then give
-// up silently (the dump is already in Documents/TBDiag4.txt).
-static void D4PresentText(NSString *title, NSString *text, int attempt) {
-    @try {
-        if (gD4Showing) return;
-        id top = D4PresenterVC();
-        if (top == nil) return;
-        if ([NSStringFromClass([top class]) containsString:@"Alert"]) {
-            if (attempt < 3) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                    dispatch_get_main_queue(), ^{ D4PresentText(title, text, attempt + 1); });
+            // (a) badge: attach from ~T+3s, refresh every tick.
+            // Skipped while any alert is up (alerts live in their
+            // own window; the badge waits underneath and re-pins
+            // to the app window once the alert is gone).
+            if (!gD44BadgeGone && now >= 3.0 && !alertUp) D44BadgeSync();
+
+            if (!gD4SeqStarted) {
+                // --- inside the 30s: classify + silent dumps
+                // only (logic carried over from 4.3 unchanged) ---
+                id rootVC = nil;
+                id visibleVC = D4TopVC(&rootVC);
+                int kind = D4Classify(rootVC, visibleVC);
+                BOOL dumpedAlready = (kind == D4K_HOME && gD4DumpedHome) ||
+                                     (kind == D4K_CART && gD4DumpedCart) ||
+                                     (kind == D4K_SEARCH && gD4DumpedSearch);
+                if (kind != D4K_NONE && (!dumpedAlready || kind != gD4LastKind)) {
+                    D4DumpFace(kind); // first sighting, or re-entry after another page
+                }
+                // T-2s: refresh whatever face is current, once,
+                // so a slow-loading page is not kept as an empty shell.
+                if (!gD4Refreshed && now >= 28.0 && kind != D4K_NONE && kind == gD4LastKind) {
+                    gD4Refreshed = YES;
+                    D4DumpFace(kind);
+                }
+                gD4LastKind = kind; // NONE included: a leave-and-return counts as a re-entry
+                if (now >= 30.0) {
+                    gD4SeqStarted = YES;
+                    if (!gD4DumpedHome && !gD4DumpedCart && !gD4DumpedSearch) {
+                        gD44ZeroPending = YES;
+                        D4Event(@"30秒到,三面均未拍到,转零数据兜底弹窗");
+                    } else {
+                        D4Event(@"30秒到,依次弹窗(已拍:首页%@/购物车%@/搜索%@)",
+                                gD4DumpedHome ? @"Y" : @"-",
+                                gD4DumpedCart ? @"Y" : @"-",
+                                gD4DumpedSearch ? @"Y" : @"-");
+                    }
+                }
             }
-            return;
-        }
-        id view = TBM(top, "view");
-        id win = view ? TBM(view, "window") : nil;
-        Class acCls = objc_getClass("UIAlertController");
-        Class aaCls = objc_getClass("UIAlertAction");
-        if (win == nil || acCls == Nil || aaCls == Nil) return;
-        if ([text length] > 1900) text = [text substringToIndex:1900];
-        id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
-            NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-            title, text, 1L);
-        id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
-            NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L,
-            ^(id action) { gD4Showing = NO; D4AfterDismiss(); });
-        ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
-        gD4Showing = YES;
-        ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
-            NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
-    } @catch (NSException *e) { gD4Showing = NO; }
-}
 
+            if (gD4SeqStarted && !gD44FlowDone) {
+                // --- sequence, polled diag3-style: while our
+                // alert is up the tick waits; once it is gone the
+                // next tick presents the next item. A present
+                // that returns NO (host alert on top, view not in
+                // a window yet) is simply retried next tick. ---
+                if (gD44CurFace >= 0 && !alertUp) gD44CurFace = -1; // dismissed
+                if (gD44CurFace < 0) {
+                    if (gD44ZeroPending) {
+                        if (!gD44ZeroShown) {
+                            id top = D44TopVC();
+                            NSString *zt = [NSString stringWithFormat:
+                                @"三面均未拍到(首页/购物车/搜索皆无dump)\n当前最顶层VC:%@\n计时器在跑:T=%.0fs\n左上角角标应同步显示三项均为·;若角标也没出现过,说明定时链未跑起来——把本弹窗截图即可。",
+                                top ? NSStringFromClass([top class]) : @"(取不到)", now];
+                            if (D44TryShowText(@"诊断4·状态", zt)) {
+                                gD44ZeroShown = YES;
+                                gD44CurFace = 3;
+                            }
+                        } else {
+                            // zero popup shown and dismissed: flow over.
+                            gD4SeqDone = YES;
+                            gD44FlowDone = YES;
+                            D44BadgeRemove();
+                        }
+                    } else {
+                        while (gD44NextFace < 3) {
+                            int idx = gD44NextFace;
+                            BOOL has = (idx == 0 && gD4DumpedHome) ||
+                                       (idx == 1 && gD4DumpedCart) ||
+                                       (idx == 2 && gD4DumpedSearch);
+                            if (!has) { gD44NextFace++; continue; }
+                            NSString *title = idx == 0 ? @"诊断4·首页" : (idx == 1 ? @"诊断4·购物车" : @"诊断4·搜索");
+                            NSString *key = idx == 0 ? @"首页" : (idx == 1 ? @"购物车" : @"搜索");
+                            if (D44TryShowText(title, D4PageText(key))) {
+                                gD44CurFace = idx;
+                                gD44NextFace++;
+                            }
+                            break;
+                        }
+                        if (gD44NextFace >= 3 && gD44CurFace < 0) {
+                            gD4SeqDone = YES;
+                            gD44FlowDone = YES;
+                            D44BadgeRemove();
+                        }
+                    }
+                }
+            } else if (gD4SeqStarted && gD44FlowDone) {
+                // --- the single fallback (4.3's, kept): a face
+                // first entered after the flow pops alone,
+                // immediately, once its dump lands; if the pop
+                // itself fails it stays owed and is retried on
+                // later ticks (diag3 anti-loss style). ---
+                if (gD44LateKind == 0) {
+                    id rootVC = nil;
+                    id visibleVC = D4TopVC(&rootVC);
+                    int kind = D4Classify(rootVC, visibleVC);
+                    BOOL missing = (kind == D4K_HOME && !gD4DumpedHome) ||
+                                   (kind == D4K_CART && !gD4DumpedCart) ||
+                                   (kind == D4K_SEARCH && !gD4DumpedSearch);
+                    if (missing) {
+                        D4DumpFace(kind);
+                        BOOL landed = (kind == D4K_HOME && gD4DumpedHome) ||
+                                      (kind == D4K_CART && gD4DumpedCart) ||
+                                      (kind == D4K_SEARCH && gD4DumpedSearch);
+                        if (landed) gD44LateKind = kind;
+                    }
+                }
+                if (gD44LateKind != 0 && !alertUp) {
+                    int kind = gD44LateKind;
+                    NSString *title = kind == D4K_HOME ? @"诊断4·首页" : (kind == D4K_CART ? @"诊断4·购物车" : @"诊断4·搜索");
+                    NSString *key = kind == D4K_HOME ? @"首页" : (kind == D4K_CART ? @"购物车" : @"搜索");
+                    if (D44TryShowText(title, D4PageText(key))) gD44LateKind = 0;
+                }
+            }
+        } @catch (NSException *e) { }
+        if (tick < 600) D44Tick(tick + 1);
+        else if (!gD44BadgeGone) D44BadgeRemove();
+    });
+}
 static void TD4Start(void) {
     @autoreleasepool {
         gD4Start = [NSDate date];
         gD4Lock = [[NSObject alloc] init];
         gD4Events = [NSMutableArray array];
         gD4FileParts = [NSMutableArray array];
-        // 4.3: the 30s timer starts ticking at process start.
-        // Nothing pops during the 30s; the overview text lives
-        // only as the header of Documents/TBDiag4.txt.
-        D4Event(@"TBDiag4.3 启动(基线正式版7, 只读视图探针; 30秒定时版)");
-        D4StartTimer();
+        // 4.4: the diag3-style dispatch_after tick chain starts
+        // at process start. Nothing pops during the 30s; the
+        // overview text lives only as the header of
+        // Documents/TBDiag4.txt.
+        D4Event(@"TBDiag4.4 启动(基线正式版7, 只读视图探针; 诊断3调度/呈现移植+角标)");
+        D44Tick(0);
         D4WriteFile();
     }
 }
