@@ -1,876 +1,406 @@
-// TBDiag v2 — READ-ONLY census dylib for Taobao 10.69.0 (com.taobao.taobao4iphone).
+// TBClean — formal ad-filter dylib for Taobao 10.69.0 (com.taobao.taobao4iphone).
 //
-// Purpose (second round, merged with the formal splash binary patch):
-//   1. Splash regression counters (same hooks as v1): after the binary patch
-//      the ItemSelector choose / Manager show counts are EXPECTED to be 0.
-//   2. MTOP native-bridge census at MtopService: count every API by name,
-//      record biz-parameter keys + scene-ish fields, dump response-free
-//      request structure for candidate APIs (cart / recommend / my / second /
-//      tab / guess / prefilter / pop). Pure counting — NO request is altered,
-//      delayed or filtered; original IMPs are called and results returned
-//      untouched.
-//   3. MyTaobao visit markers: TBMyTaobaoViewController (Dojo) vs
-//      TBMyTaobaoUltronViewController viewWillAppear, plus the Ultron second
-//      screen senders (handleSecondScreenRequest: / secScreenRequest:).
-//   4. Home floating bar candidates: TBHomeViewController displayFloatView:,
-//      TBIFHFloatingBarNotifyEventHandler, TBMyTaobaoLifeCycle linked
-//      notification, TBHRGatewayDataService uiRefresh:/responseDidEnd:.
-//   5. PopLayer prefilter decision layer: TBPLInventoryModel isPass:...,
-//      TBPLPreCheckCacheManager sendNetworkRequest:..., TBPLBaseTriggerService
-//      isMatchBlackList:poplayerUri:, plus the second TBPLLayerFactory
-//      variant v1 missed. Goal: see whether popId 128928 enters the
-//      candidate set and where it is stopped. Read-only.
-//   6. v1 groups 3/4 kept as regression (expected to stay 0).
+// No UI, no logging UI, no popups. All filters are process-internal,
+// data-side disposals applied AFTER data arrives; nothing blocks, rejects
+// or reroutes any request, and no signing / routing / search-result /
+// product-detail / order path is touched (ANALYSIS §7.3 red lines).
 //
-// HARD RULE: every hook calls the original implementation and returns its
-// result untouched. Nothing here filters, blocks or rewrites any data.
+// Modules:
+//   1. PopLayer class-wide block: TBPLLayerFactory (variant 1) layer
+//      creation re-check by request event uri slot (Page_Home /
+//      Page_MyTaobao popup_* modal slots only), returning nil, which the
+//      sole caller treats as a native "filtered" cancellation.
+//      (queryInventory: turned out to be a freq gate with no candidate
+//      set; it is deliberately NOT touched.)
+//   2. Cart recommend: MtopService getResponse:mrequest: response-side
+//      emptying for api=mtop.relationrecommend.wirelessrecommend.recommend
+//      whose own request params serialize to contain "recommend_cart_main".
+//   3. Search landing: same response point, api=mtop.xsd.searchbar.info.get,
+//      title-anchored section removal with history positive-identification
+//      and whole-response fail-open.
+//   4. Home floating bar: TBHRContainerContentModel -floatLayerSection
+//      getter forced to nil. The property lives on the container content
+//      model (NOT on TBHRGatewayDataService — the v2 probe read the wrong
+//      object). Static xref found no direct consumer in the main binary;
+//      the getter is the single convergence point of both producers
+//      (JSON parse init and cache deepCopy), and the property is a leaf
+//      parallel to sections/popDatas/splashSection.
+//   5. MyTaobao bottom section: MTMainPageUserDataService
+//      -transformMainPageDataMode:snapshotSource: (the C++ -> ObjC
+//      conversion point) — drop the components element whose
+//      moduleName == "basementTip" (the native second screen holding the
+//      feeds/collect/xProject tabs: 猜你喜欢/我的收藏/我的评价 + infoflow).
+//      Middle modules (statistic etc.) are separate components, untouched.
+//
+// Marker: TBClean/1.0
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dispatch/dispatch.h>
 
-// ---------------------------------------------------------------- state ----
-static NSDate *gStart = nil;
-static id gLock = nil;
-static NSMutableArray *gEvents = nil;
-static NSMutableDictionary *gCaptures = nil;
-static int gShows = 0;
-static BOOL gPending = NO;
-static double gLastShowAt = 0;
-
-static double TBNow(void) { return [[NSDate date] timeIntervalSinceDate:gStart]; }
-
-static void TBCapture(NSString *key, NSString *text) {
-    if (key == nil || text == nil) return;
-    @synchronized (gLock) {
-        if (gCaptures[key] == nil || [key hasSuffix:@"!"]) {
-            gCaptures[[key stringByReplacingOccurrencesOfString:@"!" withString:@""]] = text;
-            gPending = YES;
-        }
-    }
-}
-static void TBSetCapture(NSString *key, NSString *text) {
-    if (key == nil || text == nil) return;
-    @synchronized (gLock) { gCaptures[key] = text; }
-}
-static void TBEvent(NSString *fmt, ...) {
-    va_list ap; va_start(ap, fmt);
-    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
-    va_end(ap);
-    @synchronized (gLock) {
-        [gEvents addObject:[NSString stringWithFormat:@"[+%.1fs] %@", TBNow(), msg]];
-        while ([gEvents count] > 200) [gEvents removeObjectAtIndex:0];
-    }
-}
-
-// ------------------------------------------------------- describe helpers ----
-static NSString *TBShort(id obj, NSUInteger cap) {
-    if (obj == nil) return @"(nil)";
-    NSString *s = nil;
-    @try { s = [obj description]; } @catch (NSException *e) { s = @"<desc-fail>"; }
-    if (s == nil) s = @"";
-    s = [s stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
-    if ([s length] > cap) s = [[s substringToIndex:cap] stringByAppendingString:@"…"];
-    return s;
-}
-
-static void TBStructWalk(id obj, int depth, int *budget, NSMutableString *out) {
-    if (obj == nil || *budget <= 0) { [out appendString:@"~"]; return; }
-    (*budget)--;
-    if ([obj isKindOfClass:[NSDictionary class]]) {
-        [out appendString:@"{"];
-        int n = 0;
-        for (id k in (NSDictionary *)obj) {
-            if (n++ > 0) [out appendString:@" "];
-            [out appendFormat:@"%@:", k];
-            TBStructWalk(((NSDictionary *)obj)[k], depth + 1, budget, out);
-            if (*budget <= 0) break;
-        }
-        [out appendString:@"}"];
-        return;
-    }
-    if ([obj isKindOfClass:[NSArray class]]) {
-        [out appendFormat:@"[%lu]", (unsigned long)[(NSArray *)obj count]];
-        if (depth < 3 && [(NSArray *)obj count] > 0) {
-            TBStructWalk([(NSArray *)obj firstObject], depth + 1, budget, out);
-        }
-        return;
-    }
-    if ([obj isKindOfClass:[NSString class]]) {
-        NSString *v = (NSString *)obj;
-        if ([v length] > 0 && [v length] <= 40) [out appendFormat:@"'%@'", v];
-        else [out appendFormat:@"<s%lu>", (unsigned long)[v length]];
-        return;
-    }
-    if ([obj isKindOfClass:[NSNumber class]]) { [out appendFormat:@"%@", obj]; return; }
-    [out appendFormat:@"<%@>", NSStringFromClass([obj class])];
-}
-static NSString *TBStruct(id obj, int budgetN) {
-    NSMutableString *out = [NSMutableString string];
-    int b = budgetN;
-    TBStructWalk(obj, 0, &b, out);
-    return out;
-}
-
-static NSString *TBProbe(id obj, NSArray *keys) {
-    if (obj == nil) return @"";
-    NSMutableString *out = [NSMutableString string];
-    for (NSString *k in keys) {
-        @try {
-            id v = [obj valueForKey:k];
-            if (v != nil) [out appendFormat:@"%@=%@ ", k, TBShort(v, 60)];
-        } @catch (NSException *e) { }
-    }
-    return out;
-}
-
-static NSString *TBFindScene(id obj, int depth, int *budget) {
-    if (obj == nil || depth > 4 || *budget <= 0) return nil;
-    (*budget)--;
-    if ([obj isKindOfClass:[NSDictionary class]]) {
-        for (id k in (NSDictionary *)obj) {
-            NSString *ks = [k description];
-            id v = ((NSDictionary *)obj)[k];
-            if (([ks isEqualToString:@"scene"] || [ks isEqualToString:@"sceneName"] ||
-                 [ks isEqualToString:@"pageName"] || [ks isEqualToString:@"bizCode"] ||
-                 [ks isEqualToString:@"tabId"]) &&
-                [v isKindOfClass:[NSString class]]) {
-                return [NSString stringWithFormat:@"%@=%@", ks, v];
-            }
-        }
-        for (id k in (NSDictionary *)obj) {
-            NSString *r = TBFindScene(((NSDictionary *)obj)[k], depth + 1, budget);
-            if (r) return r;
-        }
-        return nil;
-    }
-    if ([obj isKindOfClass:[NSArray class]]) {
-        for (id e in (NSArray *)obj) {
-            NSString *r = TBFindScene(e, depth + 1, budget);
-            if (r) return r;
-        }
-    }
-    return nil;
-}
-
-static id TBMsg0(id obj, const char *selName) {
+// ------------------------------------------------------------ utilities ----
+static id TBM(id obj, const char *selName) {
     if (obj == nil) return nil;
     SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
     if (![obj respondsToSelector:sel]) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
 }
-
-// ============================================================== GROUP 1 =====
-// Splash regression (v1 hooks, unchanged semantics).
-static int gGateColdCalls = 0, gGateColdYes = 0, gGateHotCalls = 0, gGateHotYes = 0;
-static int gMgrCold = 0, gMgrHot = 0, gMgrCur = 0, gMgrExp = 0;
-typedef BOOL (*BoolIMP)(id, SEL);
-static BoolIMP gOrigGateColdI = NULL, gOrigGateColdC = NULL, gOrigGateHotC = NULL, gOrigMgrHot = NULL;
-static BOOL TBDGateColdI(id self, SEL _cmd) {
-    BOOL r = gOrigGateColdI ? gOrigGateColdI(self, _cmd) : NO;
-    gGateColdCalls++; if (r) gGateColdYes++;
-    return r;
-}
-static BOOL TBDGateColdC(id self, SEL _cmd) {
-    BOOL r = gOrigGateColdC ? gOrigGateColdC(self, _cmd) : NO;
-    gGateColdCalls++; if (r) gGateColdYes++;
-    return r;
-}
-static BOOL TBDGateHotC(id self, SEL _cmd) {
-    BOOL r = gOrigGateHotC ? gOrigGateHotC(self, _cmd) : NO;
-    gGateHotCalls++; if (r) gGateHotYes++;
-    return r;
-}
-typedef void (*VoidIdIMP)(id, SEL, id);
-static VoidIdIMP gOrigMgrCold = NULL;
-static void TBDMgrCold(id self, SEL _cmd, id arg) {
-    gMgrCold++;
-    TBEvent(@"TBBootImageManager showBootImageAtColdStart:");
-    if (gOrigMgrCold) gOrigMgrCold(self, _cmd, arg);
-}
-static BOOL TBDMgrHot(id self, SEL _cmd) {
-    BOOL r = gOrigMgrHot ? gOrigMgrHot(self, _cmd) : NO;
-    gMgrHot++;
-    TBEvent(@"TBBootImageManager showBootImageAtHotStart -> %d", r);
-    return r;
-}
-typedef BOOL (*ShowItemIMP)(id, SEL, BOOL, BOOL, id);
-static ShowItemIMP gOrigShowCur = NULL, gOrigExpose = NULL;
-static BOOL TBDShowCur(id self, SEL _cmd, BOOL a, BOOL b, id cfg) {
-    BOOL r = gOrigShowCur ? gOrigShowCur(self, _cmd, a, b, cfg) : NO;
-    gMgrCur++;
-    TBEvent(@"TBBootImageManager showCurrentItem -> %d", r);
-    return r;
-}
-static BOOL TBDExpose(id self, SEL _cmd, BOOL a, BOOL b, id cfg) {
-    BOOL r = gOrigExpose ? gOrigExpose(self, _cmd, a, b, cfg) : NO;
-    gMgrExp++;
-    TBEvent(@"TBBootImageManager exposeSplashDisplay -> %d", r);
-    return r;
-}
-static int gSelCold = 0, gSelHot = 0, gSelProc = 0, gTraceShow = 0;
-static NSString *gTraceItem = @"";
-typedef void (*ChooseVIMP)(id, SEL, id, BOOL, id);
-static ChooseVIMP gOrigChooseV = NULL;
-static void TBDChooseV(id self, SEL _cmd, id info, BOOL cold, id block) {
-    if (cold) gSelCold++; else gSelHot++;
-    TBEvent(@"ItemSelector chooseValid(completeBlock:) cold=%d", cold);
-    if (gOrigChooseV) gOrigChooseV(self, _cmd, info, cold, block);
-}
-typedef BOOL (*ChooseBIMP)(id, SEL, id, BOOL, id);
-static ChooseBIMP gOrigChooseB = NULL;
-static BOOL TBDChooseB(id self, SEL _cmd, id info, BOOL cold, id block) {
-    BOOL r = gOrigChooseB ? gOrigChooseB(self, _cmd, info, cold, block) : NO;
-    if (cold) gSelCold++; else gSelHot++;
-    TBEvent(@"ItemSelector chooseValid(completion:) cold=%d -> %d", cold, r);
-    return r;
-}
-typedef void (*ProcIMP)(id, SEL, BOOL, id);
-static ProcIMP gOrigProc = NULL;
-static void TBDProc(id self, SEL _cmd, BOOL cold, id block) {
-    gSelProc++;
-    TBEvent(@"ItemSelector processCommercialSplash cold=%d", cold);
-    if (gOrigProc) gOrigProc(self, _cmd, cold, block);
-}
-typedef void (*TraceIMP)(id, SEL, BOOL, id, id);
-static TraceIMP gOrigTrace = NULL;
-static void TBDTrace(id self, SEL _cmd, BOOL isDegrade, id reason, id item) {
-    gTraceShow++;
-    NSString *probe = TBProbe(item, @[@"bizCode", @"templateName", @"name", @"splashName",
-                                      @"type", @"subType", @"picUrl", @"imgUrl", @"url"]);
-    if ([probe length] == 0) probe = TBShort(item, 120);
-    gTraceItem = probe;
-    TBEvent(@"ItemSelector traceShow item: %@", probe);
-    if (gOrigTrace) gOrigTrace(self, _cmd, isDegrade, reason, item);
-}
-static int gSPStart = 0, gSPShown = 0;
-static VoidIdIMP gOrigSPStart = NULL, gOrigSPShown = NULL;
-static id TBDSPStart(id self, SEL _cmd, id ctx) {
-    gSPStart++;
-    TBEvent(@"SPSplashController onStart:");
-    return gOrigSPStart ? ((id (*)(id, SEL, id))gOrigSPStart)(self, _cmd, ctx) : nil;
-}
-static void TBDSPShown(id self, SEL _cmd, id ctx) {
-    gSPShown++;
-    TBEvent(@"SPSplashController onViewShown:");
-    if (gOrigSPShown) gOrigSPShown(self, _cmd, ctx);
-}
-static int gTXReq = 0, gTXAnim = 0;
-typedef void (*TXClaimIMP)(id, SEL, id, long long, BOOL, id);
-static TXClaimIMP gOrigTXClaim = NULL;
-static void TBDTXClaim(id self, SEL _cmd, id a, long long biz, BOOL cold, id block) {
-    gTXReq++;
-    TBEvent(@"TX startClaimedCouponRequest biz=%lld cold=%d", biz, cold);
-    if (gOrigTXClaim) gOrigTXClaim(self, _cmd, a, biz, cold, block);
-}
-typedef void (*TXCartIMP)(id, SEL, id, long long, BOOL, id, id);
-static TXCartIMP gOrigTXCart = NULL;
-static void TBDTXCart(id self, SEL _cmd, id a, long long biz, BOOL cold, id s, id f) {
-    gTXReq++;
-    TBEvent(@"TX startAddToCartRequest biz=%lld cold=%d", biz, cold);
-    if (gOrigTXCart) gOrigTXCart(self, _cmd, a, biz, cold, s, f);
-}
-typedef void (*TXAnimIMP)(id, SEL, id, id);
-static TXAnimIMP gOrigTXAnim = NULL;
-static void TBDTXAnim(id self, SEL _cmd, id item, id block) {
-    gTXAnim++;
-    TBEvent(@"TX getTBAnimatedImageWithItem");
-    if (gOrigTXAnim) gOrigTXAnim(self, _cmd, item, block);
+static void TBMSet(id obj, const char *selName, id val) {
+    if (obj == nil) return;
+    SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
+    if (![obj respondsToSelector:sel]) return;
+    ((void (*)(id, SEL, id))objc_msgSend)(obj, sel, val);
 }
 
-// ============================================================== GROUP 2 =====
-// Home PopLayer popup (v1) + prefilter decision layer (v2).
-static int gPopNotify = 0, gPopEvt = 0, gPopCold = 0, gPopBack = 0, gInvQ = 0, gFactory = 0, gAwesomeTrig = 0;
-static NSString *gPopProbe = @"", *gFactoryType = @"";
-typedef void (*VoidIMP)(id, SEL);
-static VoidIMP gOrigPopNotify = NULL, gOrigPopCold = NULL, gOrigPopBack = NULL;
-static void TBDPopNotify(id self, SEL _cmd) {
-    gPopNotify++;
-    if (gOrigPopNotify) gOrigPopNotify(self, _cmd);
-}
-static void TBDPopCold(id self, SEL _cmd) {
-    gPopCold++;
-    if (gOrigPopCold) gOrigPopCold(self, _cmd);
-}
-static void TBDPopBack(id self, SEL _cmd) {
-    gPopBack++;
-    if (gOrigPopBack) gOrigPopBack(self, _cmd);
-}
-typedef void (*PopEvtIMP)(id, SEL, id, id, id);
-static PopEvtIMP gOrigPopEvt = NULL;
-static void TBDPopEvt(id self, SEL _cmd, id evt, id src, id params) {
-    gPopEvt++;
-    TBCapture(@"popEvtParams", TBStruct(params, 120));
-    if (gOrigPopEvt) gOrigPopEvt(self, _cmd, evt, src, params);
-}
-typedef id (*InvIMP)(id, SEL, id);
-static InvIMP gOrigInvC = NULL, gOrigInvI = NULL;
-static id TBDInvC(id self, SEL _cmd, id arg) {
-    id r = gOrigInvC ? gOrigInvC(self, _cmd, arg) : nil;
-    gInvQ++;
-    TBCapture(@"invArg", TBStruct(arg, 80));
-    TBSetCapture(@"invRetLast", TBStruct(r, 200));
-    return r;
-}
-static id TBDInvI(id self, SEL _cmd, id arg) {
-    id r = gOrigInvI ? gOrigInvI(self, _cmd, arg) : nil;
-    gInvQ++;
-    TBCapture(@"invArg", TBStruct(arg, 80));
-    TBSetCapture(@"invRetLast", TBStruct(r, 200));
-    return r;
-}
-typedef struct { double x, y, w, h; } TBRect;
-typedef id (*FactoryIMP)(id, SEL, TBRect, id, id, id);
-static FactoryIMP gOrigFactory = NULL, gOrigFactory2 = NULL;
-static void TBDNoteFactory(id type, id popReq) {
-    gFactory++;
-    gFactoryType = TBShort(type, 60);
-    NSString *probe = TBProbe(popReq, @[@"popId", @"templateId", @"id", @"name",
-                                        @"type", @"popName", @"layerId", @"configId", @"popKey"]);
-    if ([probe length] == 0) probe = TBShort(popReq, 150);
-    gPopProbe = probe;
-    TBEvent(@"TBPLLayerFactory createLayer type=%@ pop: %@", gFactoryType, probe);
-    TBCapture(@"popRequest", TBStruct(popReq, 150));
-}
-static id TBDFactory(id self, SEL _cmd, TBRect fr, id type, id popReq, id vc) {
-    TBDNoteFactory(type, popReq);
-    return gOrigFactory ? gOrigFactory(self, _cmd, fr, type, popReq, vc) : nil;
-}
-static id TBDFactory2(id self, SEL _cmd, TBRect fr, id type, id config, id url) {
-    TBDNoteFactory(type, config);
-    TBEvent(@"TBPLLayerFactory createLayer(config:) url=%@", TBShort(url, 80));
-    return gOrigFactory2 ? gOrigFactory2(self, _cmd, fr, type, config, url) : nil;
-}
-typedef void (*TrigIMP)(id, SEL, id, id);
-static TrigIMP gOrigTrig = NULL;
-static NSString *gAwesomeEvents = @"";
-static void TBDTrig(id self, SEL _cmd, id params, id event) {
-    gAwesomeTrig++;
-    NSString *e = TBShort(event, 50);
-    if ([gAwesomeEvents rangeOfString:e].location == NSNotFound && [gAwesomeEvents length] < 300) {
-        gAwesomeEvents = [gAwesomeEvents stringByAppendingFormat:@"%@ ", e];
+// Serialize a params object (dict/array/string mix) to a searchable string.
+// Used only for the cart scene substring test; bounded work.
+static void TCAppendSerialized(id obj, NSMutableString *out, int depth) {
+    if (obj == nil || depth > 6 || [out length] > 65536) return;
+    if ([obj isKindOfClass:[NSString class]]) { [out appendString:(NSString *)obj]; [out appendString:@" "]; return; }
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        for (id k in (NSDictionary *)obj) {
+            TCAppendSerialized(k, out, depth + 1);
+            TCAppendSerialized(((NSDictionary *)obj)[k], out, depth + 1);
+        }
+        return;
     }
-    if (gOrigTrig) gOrigTrig(self, _cmd, params, event);
-}
-typedef id (*ContainersIMP)(id, SEL, id);
-static ContainersIMP gOrigContainers = NULL;
-static NSString *gContainers = @"";
-static id TBDContainers(id self, SEL _cmd, id pageId) {
-    id r = gOrigContainers ? gOrigContainers(self, _cmd, pageId) : nil;
-    NSString *s = TBShort(r, 200);
-    if (![s isEqualToString:gContainers]) gContainers = s;
-    return r;
-}
-// ---- v2: prefilter decision layer ----
-static int gIsPass = 0, gIsPassYes = 0, gPreCheck = 0, gBlackList = 0, gBlackHit = 0;
-static NSString *gIsPassProbe = @"", *gPreCheckKeys = @"", *gBlackLast = @"";
-typedef BOOL (*IsPassIMP)(id, SEL, id, id, id, long long);
-static IsPassIMP gOrigIsPass = NULL;
-static BOOL TBDIsPass(id self, SEL _cmd, id a, id param, id layer, long long ts) {
-    BOOL r = gOrigIsPass ? gOrigIsPass(self, _cmd, a, param, layer, ts) : NO;
-    gIsPass++; if (r) gIsPassYes++;
-    NSString *probe = TBProbe(layer, @[@"popId", @"id", @"uri", @"poplayerUri", @"name", @"popName", @"templateId"]);
-    if ([probe length] == 0) probe = TBProbe(param, @[@"popId", @"id", @"uri", @"poplayerUri"]);
-    if ([probe length] == 0) probe = TBShort(layer, 100);
-    gIsPassProbe = [NSString stringWithFormat:@"%@ ->%d", probe, r];
-    TBEvent(@"TBPLInventoryModel isPass -> %d %@", r, probe);
-    return r;
-}
-typedef void (*PreCheckIMP)(id, SEL, id, id, id);
-static PreCheckIMP gOrigPreCheck = NULL;
-static void TBDPreCheck(id self, SEL _cmd, id a, id indexMap, id block) {
-    gPreCheck++;
-    if ([indexMap isKindOfClass:[NSDictionary class]]) {
-        gPreCheckKeys = TBShort([(NSDictionary *)indexMap allKeys], 200);
-    } else {
-        gPreCheckKeys = TBShort(indexMap, 120);
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) TCAppendSerialized(e, out, depth + 1);
+        return;
     }
-    TBEvent(@"TBPLPreCheckCacheManager sendNetworkRequest indexKeys: %@", gPreCheckKeys);
-    TBCapture(@"preCheckMap", TBStruct(indexMap, 200));
-    if (gOrigPreCheck) gOrigPreCheck(self, _cmd, a, indexMap, block);
-}
-typedef BOOL (*BlackIMP)(id, SEL, id, id);
-static BlackIMP gOrigBlack = NULL;
-static BOOL TBDBlack(id self, SEL _cmd, id a, id uri) {
-    BOOL r = gOrigBlack ? gOrigBlack(self, _cmd, a, uri) : NO;
-    gBlackList++; if (r) gBlackHit++;
-    gBlackLast = [NSString stringWithFormat:@"%@ ->%d", TBShort(uri, 80), r];
-    TBEvent(@"TBPL isMatchBlackList uri=%@ -> %d", TBShort(uri, 80), r);
-    return r;
+    if ([obj isKindOfClass:[NSData class]]) {
+        NSString *s = [[NSString alloc] initWithData:(NSData *)obj encoding:NSUTF8StringEncoding];
+        if (s) { [out appendString:s]; [out appendString:@" "]; }
+        return;
+    }
+    [out appendFormat:@"%@ ", [obj description]];
 }
 
-// ============================================================== GROUP 3 =====
-// MTOP census at MtopService (v2 core). Read-only counting.
-static int gMtopSend = 0, gMtopAsync = 0, gMtopAsyncF = 0, gMtopSync = 0, gMtopPrefetch = 0;
-static NSMutableDictionary *gApiCounts = nil;   // apiName -> NSNumber
-static NSMutableDictionary *gApiScene = nil;    // apiName -> scene string (first found)
-static NSMutableArray *gApiOrder = nil;         // first-seen order
+// Deep-copy a JSON-shaped object into mutable containers.
+static id TCMutableCopy(id obj, int depth) {
+    if (obj == nil || depth > 12) return obj;
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithCapacity:[(NSDictionary *)obj count]];
+        for (id k in (NSDictionary *)obj) d[k] = TCMutableCopy(((NSDictionary *)obj)[k], depth + 1);
+        return d;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        NSMutableArray *a = [NSMutableArray arrayWithCapacity:[(NSArray *)obj count]];
+        for (id e in (NSArray *)obj) [a addObject:TCMutableCopy(e, depth + 1)];
+        return a;
+    }
+    return obj;
+}
 
-static BOOL TBDIsKeywordApi(NSString *api) {
-    if (api == nil) return NO;
-    NSString *l = [api lowercaseString];
-    static NSArray *kws = nil;
-    if (kws == nil) kws = @[@"cart", @"recommend", @"recmd", @"mytaobao", @"second",
-                            @"tab", @"guess", @"prefilter", @"pop", @"volvo", @"icart",
-                            @"splash", @"awesome", @"newface"];
-    for (NSString *k in kws) if ([l containsString:k]) return YES;
+// ============================================================ MTOP core ====
+// Single response-side point: -[MtopService getResponse:mrequest:] builds
+// the MtopExtResponse that requestFinished: then dispatches to the caller
+// delegate (succeed:response:/failed:response:). The response carries its
+// own request, so api name + params are read from the response itself;
+// no send-side state is kept.
+typedef id (*GetRespIMP)(id, SEL, id, id);
+static GetRespIMP gOrigGetResp = NULL;
+
+static NSString *TCApiOfResponse(id resp) {
+    id req = TBM(resp, "request");
+    id n = TBM(req, "getApiName");
+    return [n isKindOfClass:[NSString class]] ? n : nil;
+}
+
+// ---- cart: empty the recommend payload -------------------------------
+static BOOL TCCartMatched(id resp, NSString *api) {
+    if (![api isEqualToString:@"mtop.relationrecommend.wirelessrecommend.recommend"]) return NO;
+    id req = TBM(resp, "request");
+    if (req == nil) return NO;
+    NSMutableString *blob = [NSMutableString string];
+    @try {
+        TCAppendSerialized(TBM(req, "getBizParameters"), blob, 0);
+        TCAppendSerialized(TBM(req, "getExtParameters"), blob, 0);
+        id pn = TBM(req, "pageName");
+        if ([pn isKindOfClass:[NSString class]]) [blob appendString:(NSString *)pn];
+    } @catch (NSException *e) { return NO; }
+    return [blob rangeOfString:@"recommend_cart_main"].location != NSNotFound;
+}
+
+// Replace every array value inside the MTOP `data` payload with an empty
+// array (one level into nested dicts as well), keeping all scalar fields
+// (ret codes, totals, paging flags) untouched, so the consumer's native
+// "empty result" path runs. Returns the new body, or nil to fail open.
+static id TCEmptiedBody(id body) {
+    if (![body isKindOfClass:[NSDictionary class]]) return nil;
+    NSMutableDictionary *b = TCMutableCopy(body, 0);
+    id data = b[@"data"];
+    if ([data isKindOfClass:[NSArray class]]) {
+        b[@"data"] = [NSMutableArray array];
+        return b;
+    }
+    if (![data isKindOfClass:[NSDictionary class]]) return nil;
+    NSMutableDictionary *d = (NSMutableDictionary *)data;
+    for (id k in [d allKeys]) {
+        id v = d[k];
+        if ([v isKindOfClass:[NSArray class]]) {
+            d[k] = [NSMutableArray array];
+        } else if ([v isKindOfClass:[NSDictionary class]]) {
+            NSMutableDictionary *sub = (NSMutableDictionary *)v;
+            for (id k2 in [sub allKeys]) {
+                if ([sub[k2] isKindOfClass:[NSArray class]]) sub[k2] = [NSMutableArray array];
+            }
+        }
+    }
+    return b;
+}
+
+// ---- search landing: title-anchored section removal -------------------
+static BOOL TCSubtreeContainsString(id obj, NSString *needle, int depth) {
+    if (obj == nil || depth > 4) return NO;
+    if ([obj isKindOfClass:[NSString class]]) return [(NSString *)obj isEqualToString:needle];
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        for (id k in (NSDictionary *)obj) {
+            if ([k isKindOfClass:[NSString class]] && [(NSString *)k isEqualToString:needle]) return YES;
+            if (TCSubtreeContainsString(((NSDictionary *)obj)[k], needle, depth + 1)) return YES;
+        }
+        return NO;
+    }
+    if ([obj isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)obj) if (TCSubtreeContainsString(e, needle, depth + 1)) return YES;
+    }
+    return NO;
+}
+static BOOL TCSubtreeContainsAny(id obj, NSArray *needles, int depth) {
+    for (NSString *n in needles) if (TCSubtreeContainsString(obj, n, depth)) return YES;
     return NO;
 }
 
-static void TBDNoteApi(NSString *entry, id req) {
-    NSString *api = nil;
-    id biz = nil;
-    @try {
-        id n = TBMsg0(req, "getApiName");
-        if ([n isKindOfClass:[NSString class]]) api = n;
-        biz = TBMsg0(req, "getBizParameters");
-    } @catch (NSException *e) { }
-    if (api == nil) api = req ? NSStringFromClass([req class]) : @"(nil-req)";
-    int countNow = 0;
-    BOOL first = NO;
-    @synchronized (gLock) {
-        if (gApiCounts == nil) {
-            gApiCounts = [NSMutableDictionary dictionary];
-            gApiScene = [NSMutableDictionary dictionary];
-            gApiOrder = [NSMutableArray array];
-        }
-        NSNumber *c = gApiCounts[api];
-        first = (c == nil);
-        countNow = [c intValue] + 1;
-        gApiCounts[api] = @(countNow);
-        if (first) [gApiOrder addObject:api];
-    }
-    if (biz != nil) {
-        int budget = 400;
-        NSString *scene = TBFindScene(biz, 0, &budget);
-        if (scene) {
-            @synchronized (gLock) { if (gApiScene[api] == nil) gApiScene[api] = scene; }
-        }
-    }
-    if (first) TBEvent(@"MTOP[%@] first: %@", entry, api);
-    if (TBDIsKeywordApi(api) && countNow <= 2) {
-        NSString *key = [NSString stringWithFormat:@"api:%@", api];
-        NSMutableString *txt = [NSMutableString stringWithFormat:@"entry=%@ count=%d\n", entry, countNow];
-        if (biz != nil) {
-            [txt appendFormat:@"bizKeys: %@\n", [biz isKindOfClass:[NSDictionary class]] ? TBShort([(NSDictionary *)biz allKeys], 200) : TBShort(biz, 100)];
-            [txt appendFormat:@"biz: %@\n", TBStruct(biz, 250)];
-            @try {
-                id ext = TBMsg0(req, "getExtParameters");
-                if (ext) [txt appendFormat:@"ext: %@\n", TBStruct(ext, 120)];
-                id pn = TBMsg0(req, "pageName");
-                if (pn) [txt appendFormat:@"pageName: %@\n", TBShort(pn, 80)];
-            } @catch (NSException *e) { }
-        }
-        TBCapture(key, txt);
-    }
-}
-
-typedef void (*MtopSendIMP)(id, SEL, id, id, id);
-static MtopSendIMP gOrigMtopSend = NULL;
-static void TBDMtopSend(id self, SEL _cmd, id req, id del, id filter) {
-    gMtopSend++;
-    TBDNoteApi(@"sending", req);
-    if (gOrigMtopSend) gOrigMtopSend(self, _cmd, req, del, filter);
-}
-typedef void (*MtopAsyncIMP)(id, SEL, id, id);
-static MtopAsyncIMP gOrigMtopAsync = NULL;
-static void TBDMtopAsync(id self, SEL _cmd, id req, id del) {
-    gMtopAsync++;
-    TBDNoteApi(@"async", req);
-    if (gOrigMtopAsync) gOrigMtopAsync(self, _cmd, req, del);
-}
-static MtopSendIMP gOrigMtopAsyncF = NULL;
-static void TBDMtopAsyncF(id self, SEL _cmd, id req, id del, id filter) {
-    gMtopAsyncF++;
-    TBDNoteApi(@"asyncF", req);
-    if (gOrigMtopAsyncF) gOrigMtopAsyncF(self, _cmd, req, del, filter);
-}
-typedef id (*MtopSyncIMP)(id, SEL, id);
-static MtopSyncIMP gOrigMtopSync = NULL;
-static id TBDMtopSync(id self, SEL _cmd, id req) {
-    gMtopSync++;
-    TBDNoteApi(@"sync", req);
-    return gOrigMtopSync ? gOrigMtopSync(self, _cmd, req) : nil;
-}
-typedef void (*MtopPrefetchIMP)(id, SEL, id, double, id, id);
-static MtopPrefetchIMP gOrigMtopPrefetch = NULL;
-static void TBDMtopPrefetch(id self, SEL _cmd, id req, double t, id cmp, id evt) {
-    gMtopPrefetch++;
-    TBDNoteApi(@"prefetch", req);
-    if (gOrigMtopPrefetch) gOrigMtopPrefetch(self, _cmd, req, t, cmp, evt);
-}
-
-// ============================================================== GROUP 4 =====
-// MyTaobao visit markers + Ultron second screen senders (v2) and v1 group 4.
-static int gMyDojo = 0, gMyUltron = 0, gSecHandle = 0, gSecReq = 0;
-static NSString *gMyLast = @"";
-typedef void (*AppearIMP)(id, SEL, BOOL);
-static AppearIMP gOrigMyDojo = NULL, gOrigMyUltron = NULL;
-static void TBDMyDojo(id self, SEL _cmd, BOOL anim) {
-    gMyDojo++;
-    gMyLast = [NSString stringWithFormat:@"Dojo@%.0fs", TBNow()];
-    TBEvent(@"MyTaobao(Dojo) viewWillAppear #%d", gMyDojo);
-    if (gOrigMyDojo) gOrigMyDojo(self, _cmd, anim);
-}
-static void TBDMyUltron(id self, SEL _cmd, BOOL anim) {
-    gMyUltron++;
-    gMyLast = [NSString stringWithFormat:@"Ultron@%.0fs", TBNow()];
-    TBEvent(@"MyTaobao(Ultron) viewWillAppear #%d", gMyUltron);
-    if (gOrigMyUltron) gOrigMyUltron(self, _cmd, anim);
-}
-static VoidIdIMP gOrigSecHandle = NULL;
-static void TBDSecHandle(id self, SEL _cmd, id arg) {
-    gSecHandle++;
-    TBEvent(@"UltronMainService handleSecondScreenRequest: %@", TBShort(arg, 80));
-    TBCapture(@"secHandleArg", TBStruct(arg, 150));
-    if (gOrigSecHandle) gOrigSecHandle(self, _cmd, arg);
-}
-typedef id (*SecReqIMP)(id, SEL, id);
-static SecReqIMP gOrigSecReq = NULL;
-static id TBDSecReq(id self, SEL _cmd, id arg) {
-    id r = gOrigSecReq ? gOrigSecReq(self, _cmd, arg) : nil;
-    gSecReq++;
-    TBEvent(@"UltronMainService secScreenRequest: %@ -> %@", TBShort(arg, 60), TBShort(r, 60));
-    TBCapture(@"secReqRet", TBStruct(r, 200));
-    return r;
-}
-// v1 group 4 (regression, expected 0)
-static int gSecData = 0, gFetchTab = 0, gEmbedTab = 0, gTabReq = 0, gCacheTab = 0;
-static NSString *gSecApi = @"", *gTabIds = @"", *gMainKeys = @"";
-static VoidIdIMP gOrigSecData = NULL, gOrigSecApi = NULL;
-static void TBDSecApi(id self, SEL _cmd, id name) {
-    gSecApi = TBShort(name, 80);
-    if (gOrigSecApi) gOrigSecApi(self, _cmd, name);
-}
-static void TBDSecData(id self, SEL _cmd, id data) {
-    gSecData++;
-    TBCapture(@"secData", TBStruct(data, 300));
-    if (gOrigSecData) gOrigSecData(self, _cmd, data);
-}
-typedef void (*FetchTabIMP)(id, SEL, id, id, id);
-static FetchTabIMP gOrigFetchTab = NULL;
-static void TBDFetchTab(id self, SEL _cmd, id tab, id content, id completion) {
-    gFetchTab++;
-    if (gOrigFetchTab) gOrigFetchTab(self, _cmd, tab, content, completion);
-}
-typedef id (*EmbedIMP)(id, SEL, id, id, long long, double);
-static EmbedIMP gOrigEmbed = NULL;
-static id TBDEmbed(id self, SEL _cmd, id content, id container, long long idx, double offY) {
-    id r = gOrigEmbed ? gOrigEmbed(self, _cmd, content, container, idx, offY) : nil;
-    gEmbedTab++;
-    return r;
-}
-typedef void (*CacheTabIMP)(id, SEL, id, id);
-static CacheTabIMP gOrigCacheTab = NULL;
-static void TBDCacheTab(id self, SEL _cmd, id tab, id content) {
-    gCacheTab++;
-    if (gOrigCacheTab) gOrigCacheTab(self, _cmd, tab, content);
-}
-typedef void (*TabReqIMP)(id, SEL, id, id, id, long long, id, id);
-static TabReqIMP gOrigTabReq = NULL;
-static void TBDTabReq(id self, SEL _cmd, id tabId, id appId, id channel, long long page, id param, id block) {
-    gTabReq++;
-    if (gOrigTabReq) gOrigTabReq(self, _cmd, tabId, appId, channel, page, param, block);
-}
-static VoidIdIMP gOrigMTBData = NULL, gOrigMTBModule = NULL;
-static void TBDMTBData(id self, SEL _cmd, id data) {
-    if ([gMainKeys length] == 0 && [data isKindOfClass:[NSDictionary class]]) {
-        gMainKeys = TBShort([(NSDictionary *)data allKeys], 250);
-    }
-    if (gOrigMTBData) gOrigMTBData(self, _cmd, data);
-}
-static void TBDMTBModule(id self, SEL _cmd, id data) {
-    if (gOrigMTBModule) gOrigMTBModule(self, _cmd, data);
-}
-
-// ============================================================== GROUP 5 =====
-// Cart recommend v1 (regression, expected 0; real cart APIs land in census).
-static int gCartCalls = 0, gCartOK = 0, gCartFail = 0, gHasRead = 0, gHasWrite = 0;
-static NSString *gCartScene = @"", *gHasLast = @"";
-typedef void (^TBDBlock1)(id);
-typedef void (*CartIMP)(id, SEL, id, id, TBDBlock1, TBDBlock1);
-static CartIMP gOrigCart = NULL;
-static void TBDCart(id self, SEL _cmd, id a, id params, TBDBlock1 ok, TBDBlock1 fail) {
-    gCartCalls++;
-    int budget = 400;
-    NSString *scene = TBFindScene(params, 0, &budget);
-    if (scene) gCartScene = scene;
-    if (gOrigCart) gOrigCart(self, _cmd, a, params, ok, fail);
-}
-static BoolIMP gOrigHas = NULL;
-static BOOL TBDHas(id self, SEL _cmd) {
-    BOOL r = gOrigHas ? gOrigHas(self, _cmd) : NO;
-    gHasRead++;
-    return r;
-}
-typedef void (*SetBoolIMP)(id, SEL, BOOL);
-static SetBoolIMP gOrigSetHas = NULL;
-static void TBDSetHas(id self, SEL _cmd, BOOL v) {
-    gHasWrite++;
-    if (gOrigSetHas) gOrigSetHas(self, _cmd, v);
-}
-
-// ============================================================== GROUP 6 =====
-// Home floating bar candidates (v2).
-static int gFloatView = 0, gFloatEvt = 0, gFloatLink = 0, gGwUI = 0, gGwEnd = 0;
-static NSString *gFloatProbe = @"", *gGwProbe = @"";
-static VoidIdIMP gOrigFloatView = NULL;
-static void TBDFloatView(id self, SEL _cmd, id v) {
-    gFloatView++;
-    gFloatProbe = [NSString stringWithFormat:@"%@ %@", NSStringFromClass([v class]), TBShort(v, 80)];
-    TBEvent(@"TBHomeViewController displayFloatView: %@", gFloatProbe);
-    TBCapture(@"floatView", TBStruct(v, 150));
-    if (gOrigFloatView) gOrigFloatView(self, _cmd, v);
-}
-typedef void (*FloatEvtIMP)(id, SEL, id, id, id);
-static FloatEvtIMP gOrigFloatEvt = NULL;
-static void TBDFloatEvt(id self, SEL _cmd, id evt, id args, id ctx) {
-    gFloatEvt++;
-    TBEvent(@"TBIFHFloatingBarNotifyEventHandler handleEvent args=%@", TBShort(args, 80));
-    TBCapture(@"floatEvtArgs", TBStruct(args, 200));
-    if (gOrigFloatEvt) gOrigFloatEvt(self, _cmd, evt, args, ctx);
-}
-static VoidIdIMP gOrigFloatLink = NULL;
-static void TBDFloatLink(id self, SEL _cmd, id note) {
-    gFloatLink++;
-    TBEvent(@"TBMyTaobaoLifeCycle handleHomePageFloatingBarLinkedNotification: %@", TBShort(note, 100));
-    if (gOrigFloatLink) gOrigFloatLink(self, _cmd, note);
-}
-static VoidIdIMP gOrigGwUI = NULL, gOrigGwEnd = NULL;
-static void TBDGwUI(id self, SEL _cmd, id arg) {
-    gGwUI++;
-    @try {
-        id fl = [self valueForKey:@"floatLayerSection"];
-        if (fl) gGwProbe = [NSString stringWithFormat:@"floatLayerSection=%@", TBShort(fl, 120)];
-    } @catch (NSException *e) { }
-    if (gOrigGwUI) gOrigGwUI(self, _cmd, arg);
-}
-static void TBDGwEnd(id self, SEL _cmd, id arg) {
-    gGwEnd++;
-    TBCapture(@"gwRespArg", TBStruct(arg, 150));
-    if (gOrigGwEnd) gOrigGwEnd(self, _cmd, arg);
-}
-
-// ------------------------------------------------------------ reporting ----
-static NSMutableString *gHookOK = nil, *gHookMiss = nil;
-
-static NSArray *TBDSortedApis(void) {
-    @synchronized (gLock) {
-        if (gApiCounts == nil) return @[];
-        return [gApiCounts keysSortedByValueUsingComparator:^NSComparisonResult(id a, id b) {
-            return [b compare:a];
-        }];
-    }
-}
-
-static NSString *TBDSummary(void) {
-    NSMutableString *s = [NSMutableString string];
-    [s appendString:@"TBDiag v2 淘宝10.69 只读普查\n"];
-    [s appendFormat:@"[开屏回归] 选片cold=%d hot=%d proc=%d | 展示 cold=%d hot=%d cur=%d exp=%d | SP shown=%d | TX=%d/%d | trace=%d (补丁生效应全0)\n",
-        gSelCold, gSelHot, gSelProc, gMgrCold, gMgrHot, gMgrCur, gMgrExp, gSPShown, gTXReq, gTXAnim, gTraceShow];
-    int total = gMtopSend + gMtopAsync + gMtopAsyncF + gMtopSync + gMtopPrefetch;
-    NSUInteger distinct = 0;
-    @synchronized (gLock) { distinct = [gApiCounts count]; }
-    [s appendFormat:@"[普查] MTOP总=%d (send=%d async=%d asyncF=%d sync=%d pre=%d) 不同API=%lu\n",
-        total, gMtopSend, gMtopAsync, gMtopAsyncF, gMtopSync, gMtopPrefetch, (unsigned long)distinct];
-    // keyword APIs first in summary
-    int shown = 0;
-    for (NSString *api in TBDSortedApis()) {
-        if (!TBDIsKeywordApi(api)) continue;
-        NSString *scene = nil;
-        @synchronized (gLock) { scene = gApiScene[api]; }
-        [s appendFormat:@"  %@ x%@%@\n", api, gApiCounts[api], scene ? [NSString stringWithFormat:@" [%@]", scene] : @""];
-        if (++shown >= 9) break;
-    }
-    [s appendFormat:@"[弹窗] notify=%d invQ=%d factory=%d | isPass=%d(过%d) preCheck=%d black=%d(中%d)\n  isPass末: %@\n  preKeys: %@\n",
-        gPopNotify, gInvQ, gFactory, gIsPass, gIsPassYes, gPreCheck, gBlackList, gBlackHit,
-        gIsPassProbe, gPreCheckKeys];
-    [s appendFormat:@"[横条] floatView=%d floatEvt=%d linked=%d gwUI=%d gwEnd=%d\n  float: %@\n",
-        gFloatView, gFloatEvt, gFloatLink, gGwUI, gGwEnd, gFloatProbe];
-    [s appendFormat:@"[我的] Dojo=%d Ultron=%d 末=%@ | secHandle=%d secReq=%d | v1组 setData=%d fetchTab=%d tabReq=%d\n",
-        gMyDojo, gMyUltron, gMyLast, gSecHandle, gSecReq, gSecData, gFetchTab, gTabReq];
-    [s appendFormat:@"[购物车v1组] getCartRecommend=%d has读=%d 写=%d (真实购物车API看普查)\n",
-        gCartCalls, gHasRead, gHasWrite];
-    [s appendFormat:@"[hook失败] %@\n", gHookMiss ?: @""];
-    if ([s length] > 1900) return [s substringToIndex:1900];
-    return s;
-}
-
-static void TBDWriteFile(void) {
-    @try {
-        NSString *dir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-        if (dir == nil) return;
-        NSMutableString *out = [NSMutableString string];
-        [out appendString:TBDSummary()];
-        [out appendFormat:@"\n[hook成功] %@\n", gHookOK ?: @""];
-        @synchronized (gLock) {
-            [out appendString:@"\n--- API census (count desc) ---\n"];
-            for (NSString *api in TBDSortedApis()) {
-                NSString *scene = gApiScene[api];
-                [out appendFormat:@"%@ x%@%@\n", api, gApiCounts[api], scene ? [NSString stringWithFormat:@" [%@]", scene] : @""];
+// Find every "section container" (array of dicts, or dict of dicts) in the
+// payload and confirm the history section is positively identified in at
+// least one of them; without that, fail open.
+static BOOL TCHistoryPresent(id node, int depth) {
+    if (node == nil || depth > 6) return NO;
+    if ([node isKindOfClass:[NSArray class]]) {
+        BOOL dictArray = NO;
+        for (id e in (NSArray *)node) if ([e isKindOfClass:[NSDictionary class]]) { dictArray = YES; break; }
+        if (dictArray) {
+            for (id e in (NSArray *)node) {
+                if (TCSubtreeContainsString(e, @"历史搜索", 0)) return YES;
             }
-            for (NSString *k in gCaptures) {
-                [out appendFormat:@"\n--- capture %@ ---\n%@\n", k, gCaptures[k]];
-            }
-            [out appendString:@"\n--- events ---\n"];
-            for (NSString *e in gEvents) [out appendFormat:@"%@\n", e];
         }
-        [out writeToFile:[dir stringByAppendingPathComponent:@"TBDiag-v2.txt"]
-              atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    } @catch (NSException *e) { }
-}
-
-// -------------------------------------------------------- presentation -----
-static id TBDTopVC(void) {
-    Class appCls = objc_getClass("UIApplication");
-    if (appCls == Nil) return nil;
-    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
-    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
-    id key = nil;
-    for (id w in windows) {
-        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
-        if (isKey) { key = w; break; }
-    }
-    if (key == nil) key = [windows firstObject];
-    if (key == nil) return nil;
-    id top = ((id (*)(id, SEL))objc_msgSend)(key, NSSelectorFromString(@"rootViewController"));
-    while (top != nil) {
-        id presented = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"presentedViewController"));
-        if (presented == nil) break;
-        top = presented;
-    }
-    return top;
-}
-
-static BOOL TBDTryShow(void) {
-    id top = TBDTopVC();
-    if (top == nil) return NO;
-    if ([NSStringFromClass([top class]) containsString:@"Alert"]) return NO;
-    id view = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"view"));
-    id win = view ? ((id (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"window")) : nil;
-    if (win == nil) return NO;
-    Class acCls = objc_getClass("UIAlertController");
-    Class aaCls = objc_getClass("UIAlertAction");
-    if (acCls == Nil || aaCls == Nil) return NO;
-    TBDWriteFile();
-    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
-        NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"TBDiag v2", TBDSummary(), 1L);
-    id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
-        NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
-    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
-    ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
-        NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
-    gShows++;
-    gPending = NO;
-    gLastShowAt = TBNow();
-    return YES;
-}
-
-static void TBDTick(int tick) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(), ^{
-        BOOL want = (gShows == 0) || (gPending && (TBNow() - gLastShowAt) >= 45.0 && gShows < 10);
-        if (want) TBDTryShow();
-        if (tick < 80) TBDTick(tick + 1);
-    });
-}
-
-// -------------------------------------------------------------- install ----
-static BOOL TBDHook(const char *clsName, const char *selName, BOOL isClass,
-                    IMP repl, IMP *origOut, const char *tag) {
-    Class cls = objc_getClass(clsName);
-    if (cls == Nil) {
-        @synchronized (gLock) { [gHookMiss appendFormat:@"%s(no-class) ", tag]; }
+        for (id e in (NSArray *)node) if (TCHistoryPresent(e, depth + 1)) return YES;
         return NO;
     }
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        for (id k in (NSDictionary *)node) if (TCHistoryPresent(((NSDictionary *)node)[k], depth + 1)) return YES;
+    }
+    return NO;
+}
+
+static void TCFilterSectionsInNode(id node, int depth) {
+    if (node == nil || depth > 6) return;
+    if ([node isKindOfClass:[NSMutableArray class]]) {
+        NSMutableArray *a = (NSMutableArray *)node;
+        BOOL dictArray = NO;
+        for (id e in a) if ([e isKindOfClass:[NSDictionary class]]) { dictArray = YES; break; }
+        if (dictArray) {
+            NSMutableArray *keep = [NSMutableArray arrayWithCapacity:[a count]];
+            for (id e in a) {
+                BOOL isTarget = TCSubtreeContainsAny(e, @[@"猜你想搜", @"淘宝热榜"], 0);
+                BOOL isHistory = TCSubtreeContainsString(e, @"历史搜索", 0);
+                if (isTarget && !isHistory) continue;
+                [keep addObject:e];
+            }
+            [a setArray:keep];
+        }
+        for (id e in a) TCFilterSectionsInNode(e, depth + 1);
+        return;
+    }
+    if ([node isKindOfClass:[NSMutableDictionary class]]) {
+        NSMutableDictionary *d = (NSMutableDictionary *)node;
+        // dict-of-sections shape: drop values that are target sections.
+        for (id k in [d allKeys]) {
+            id v = d[k];
+            if ([v isKindOfClass:[NSDictionary class]] &&
+                TCSubtreeContainsAny(v, @[@"猜你想搜", @"淘宝热榜"], 0) &&
+                !TCSubtreeContainsString(v, @"历史搜索", 0)) {
+                [d removeObjectForKey:k];
+            }
+        }
+        for (id k in [d allKeys]) TCFilterSectionsInNode(d[k], depth + 1);
+    }
+}
+
+// Returns filtered body, or nil to fail open (history not identified or
+// structure unrecognized).
+static id TCFilteredSearchBody(id body) {
+    if (![body isKindOfClass:[NSDictionary class]]) return nil;
+    id data = ((NSDictionary *)body)[@"data"];
+    id scope = data != nil ? data : body;
+    if (!TCHistoryPresent(scope, 0)) return nil;
+    NSMutableDictionary *b = TCMutableCopy(body, 0);
+    id d2 = b[@"data"];
+    TCFilterSectionsInNode(d2 != nil ? d2 : b, 0);
+    return b;
+}
+
+// ---- shared: write a new body back into the response ------------------
+static void TCSetBody(id resp, id newBody) {
+    @try {
+        TBMSet(resp, "setBody:", newBody);
+        NSData *jd = [NSJSONSerialization dataWithJSONObject:newBody options:0 error:nil];
+        if (jd != nil) {
+            NSString *js = [[NSString alloc] initWithData:jd encoding:NSUTF8StringEncoding];
+            if (js) TBMSet(resp, "setJson:", js);
+            TBMSet(resp, "setRawbody:", jd);
+        }
+    } @catch (NSException *e) { }
+}
+
+static id TCGetResponse(id self, SEL _cmd, id raw, id mreq) {
+    id resp = gOrigGetResp ? gOrigGetResp(self, _cmd, raw, mreq) : nil;
+    if (resp == nil) return resp;
+    @try {
+        id ok = TBM(resp, "isSucceed");
+        if (ok != nil && [ok respondsToSelector:@selector(boolValue)] && ![ok boolValue]) return resp;
+        NSString *api = TCApiOfResponse(resp);
+        if (api == nil) return resp;
+        if (TCCartMatched(resp, api)) {
+            id nb = TCEmptiedBody(TBM(resp, "body"));
+            if (nb != nil) TCSetBody(resp, nb);
+        } else if ([api isEqualToString:@"mtop.xsd.searchbar.info.get"]) {
+            id nb = TCFilteredSearchBody(TBM(resp, "body"));
+            if (nb != nil) TCSetBody(resp, nb);
+        }
+    } @catch (NSException *e) { }
+    return resp;
+}
+
+// ============================================================ install ======
+static BOOL TCHook(const char *clsName, const char *selName, BOOL isClass,
+                   IMP repl, IMP *origOut) {
+    Class cls = objc_getClass(clsName);
+    if (cls == Nil) return NO;
     SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
     Method m = isClass ? class_getClassMethod(cls, sel) : class_getInstanceMethod(cls, sel);
-    if (m == NULL) {
-        @synchronized (gLock) { [gHookMiss appendFormat:@"%s(no-method) ", tag]; }
-        return NO;
-    }
+    if (m == NULL) return NO;
     if (*origOut != NULL) return YES;
     *origOut = method_getImplementation(m);
     method_setImplementation(m, repl);
-    @synchronized (gLock) { [gHookOK appendFormat:@"%s ", tag]; }
     return YES;
 }
 
-static void TBDInstallAll(void) {
-    // Group 1: splash regression
-    TBDHook("TBBootImageManager", "isColdTaobaoSplashAdvWillShow", NO, (IMP)TBDGateColdI, (IMP *)&gOrigGateColdI, "gateColdI");
-    TBDHook("TBBootImageManager", "isColdTaobaoSplashAdvWillShow", YES, (IMP)TBDGateColdC, (IMP *)&gOrigGateColdC, "gateColdC");
-    TBDHook("TBBootImageManager", "isHotStartTaobaoSplashAdvWillShow", YES, (IMP)TBDGateHotC, (IMP *)&gOrigGateHotC, "gateHotC");
-    TBDHook("TBBootImageManager", "showBootImageAtColdStart:", NO, (IMP)TBDMgrCold, (IMP *)&gOrigMgrCold, "mgrCold");
-    TBDHook("TBBootImageManager", "showBootImageAtHotStart", NO, (IMP)TBDMgrHot, (IMP *)&gOrigMgrHot, "mgrHot");
-    TBDHook("TBBootImageManager", "showCurrentItem:isOpenUrlLaunch:configuration:", NO, (IMP)TBDShowCur, (IMP *)&gOrigShowCur, "showCur");
-    TBDHook("TBBootImageManager", "exposeSplashDisplay:isOpenUrlLaunch:configuration:", NO, (IMP)TBDExpose, (IMP *)&gOrigExpose, "expose");
-    TBDHook("TBBootImageItemSelector", "chooseValidBootImageInfo:isColdStart:completeBlock:", NO, (IMP)TBDChooseV, (IMP *)&gOrigChooseV, "chooseV");
-    TBDHook("TBBootImageItemSelector", "chooseValidBootImageInfo:isColdStart:completion:", NO, (IMP)TBDChooseB, (IMP *)&gOrigChooseB, "chooseB");
-    TBDHook("TBBootImageItemSelector", "processCommercialSplash:completion:", NO, (IMP)TBDProc, (IMP *)&gOrigProc, "procComm");
-    TBDHook("TBBootImageItemSelector", "traceShow:reason:bootImageInfoItem:", NO, (IMP)TBDTrace, (IMP *)&gOrigTrace, "traceShow");
-    TBDHook("SPSplashController", "onStart:", NO, (IMP)TBDSPStart, (IMP *)&gOrigSPStart, "spStart");
-    TBDHook("SPSplashController", "onViewShown:", NO, (IMP)TBDSPShown, (IMP *)&gOrigSPShown, "spShown");
-    TBDHook("TXSplashInteractRequestUtil", "startClaimedCouponRequest:bizType:isColdStart:finishedBlock:", NO, (IMP)TBDTXClaim, (IMP *)&gOrigTXClaim, "txClaim");
-    TBDHook("TXSplashInteractRequestUtil", "startAddToCartRequest:bizType:isColdStart:successBlock:failBlock:", NO, (IMP)TBDTXCart, (IMP *)&gOrigTXCart, "txCart");
-    TBDHook("TXSplashInteractUtil", "getTBAnimatedImageWithItem:block:", YES, (IMP)TBDTXAnim, (IMP *)&gOrigTXAnim, "txAnim");
-    // Group 2: popup + prefilter
-    TBDHook("TBHomePopLayerManager", "notifyPopLayer", NO, (IMP)TBDPopNotify, (IMP *)&gOrigPopNotify, "popNotify");
-    TBDHook("TBHomePopLayerManager", "notifyPopLayerEvent:sourceName:params:", NO, (IMP)TBDPopEvt, (IMP *)&gOrigPopEvt, "popEvt");
-    TBDHook("TBHomePopLayerManager", "handleColdStartSceneChange", NO, (IMP)TBDPopCold, (IMP *)&gOrigPopCold, "popCold");
-    TBDHook("TBHomePopLayerManager", "handleNormalBackToHomeScene", NO, (IMP)TBDPopBack, (IMP *)&gOrigPopBack, "popBack");
-    TBDHook("TBPLInventoryManager", "queryInventory:", YES, (IMP)TBDInvC, (IMP *)&gOrigInvC, "invC");
-    TBDHook("TBPLInventoryManager", "queryInventory:", NO, (IMP)TBDInvI, (IMP *)&gOrigInvI, "invI");
-    TBDHook("TBPLLayerFactory", "createLayerWithFrame:type:popRequest:attachVC:", NO, (IMP)TBDFactory, (IMP *)&gOrigFactory, "factory");
-    TBDHook("TBPLLayerFactory", "createLayerWithFrame:type:config:targetUrl:", NO, (IMP)TBDFactory2, (IMP *)&gOrigFactory2, "factory2");
-    TBDHook("TBHomeAwesomeAdapter", "triggerWithContainerParams:event:", NO, (IMP)TBDTrig, (IMP *)&gOrigTrig, "awesomeTrig");
-    TBDHook("TBHomeAwesomeAdapter", "currentContainerIdsWithPageId:", YES, (IMP)TBDContainers, (IMP *)&gOrigContainers, "containers");
-    TBDHook("TBPLInventoryModel", "isPass:andParam:layer:timestmap:", NO, (IMP)TBDIsPass, (IMP *)&gOrigIsPass, "isPass");
-    TBDHook("TBPLPreCheckCacheManager", "sendNetworkRequest:indexMap:finishBlock:", NO, (IMP)TBDPreCheck, (IMP *)&gOrigPreCheck, "preCheck");
-    TBDHook("TBPLBaseTriggerService", "isMatchBlackList:poplayerUri:", NO, (IMP)TBDBlack, (IMP *)&gOrigBlack, "blackList");
-    // Group 3: MTOP census
-    TBDHook("MtopService", "sendingRequest:delegate:startFilter:", NO, (IMP)TBDMtopSend, (IMP *)&gOrigMtopSend, "mtopSend");
-    TBDHook("MtopService", "async_call:delegate:", NO, (IMP)TBDMtopAsync, (IMP *)&gOrigMtopAsync, "mtopAsync");
-    TBDHook("MtopService", "async_call:delegate:startFilter:", NO, (IMP)TBDMtopAsyncF, (IMP *)&gOrigMtopAsyncF, "mtopAsyncF");
-    TBDHook("MtopService", "sync_call:", NO, (IMP)TBDMtopSync, (IMP *)&gOrigMtopSync, "mtopSync");
-    TBDHook("MtopService", "prefetch_call:productionTimeout:compareDelegate:eventDelegate:", NO, (IMP)TBDMtopPrefetch, (IMP *)&gOrigMtopPrefetch, "mtopPrefetch");
-    // Group 4: my page markers + second screen senders + v1 group 4
-    TBDHook("TBMyTaobaoViewController", "viewWillAppear:", NO, (IMP)TBDMyDojo, (IMP *)&gOrigMyDojo, "myDojo");
-    TBDHook("TBMyTaobaoUltronViewController", "viewWillAppear:", NO, (IMP)TBDMyUltron, (IMP *)&gOrigMyUltron, "myUltron");
-    TBDHook("TBMyTaobaoUltronMainService", "handleSecondScreenRequest:", NO, (IMP)TBDSecHandle, (IMP *)&gOrigSecHandle, "secHandle");
-    TBDHook("TBMyTaobaoUltronMainService", "secScreenRequest:", NO, (IMP)TBDSecReq, (IMP *)&gOrigSecReq, "secReq");
-    TBDHook("TBMyTaobaoSecScreenApiModel", "setApiName:", NO, (IMP)TBDSecApi, (IMP *)&gOrigSecApi, "secApi");
-    TBDHook("TBMyTaobaoSecScreenApiModel", "setData:", NO, (IMP)TBDSecData, (IMP *)&gOrigSecData, "secData");
-    TBDHook("TBRecmdEmbedTabContentService", "fetchTab:forContent:completion:", NO, (IMP)TBDFetchTab, (IMP *)&gOrigFetchTab, "fetchTab");
-    TBDHook("TBRecmdEmbedTabContentService", "embeddedTabWithContent:containerModel:tabIndex:offsetY:", NO, (IMP)TBDEmbed, (IMP *)&gOrigEmbed, "embedTab");
-    TBDHook("TBRecmdEmbedTabContentService", "cacheTab:withContent:", NO, (IMP)TBDCacheTab, (IMP *)&gOrigCacheTab, "cacheTab");
-    TBDHook("TBRecmdTabContentService", "old_requestTabContentTabId:appId:channel:page:param:block:", YES, (IMP)TBDTabReq, (IMP *)&gOrigTabReq, "tabReq");
-    TBDHook("TBMTBDataSource", "setData:", NO, (IMP)TBDMTBData, (IMP *)&gOrigMTBData, "mtbData");
-    TBDHook("TBMTBDataSource", "setModuleData:", NO, (IMP)TBDMTBModule, (IMP *)&gOrigMTBModule, "mtbModule");
-    // Group 5: cart v1 regression
-    TBDHook("AliXDetailCollectionService", "getCartRecommendMessage:params:withSuccessBlock:failedBlock:", YES, (IMP)TBDCart, (IMP *)&gOrigCart, "cartRecmd");
-    TBDHook("AliXDetailFeatureModel", "hasCartRecommend", NO, (IMP)TBDHas, (IMP *)&gOrigHas, "hasCartR");
-    TBDHook("AliXDetailFeatureModel", "setHasCartRecommend:", NO, (IMP)TBDSetHas, (IMP *)&gOrigSetHas, "setHasCartR");
-    // Group 6: home floating bar candidates
-    TBDHook("TBHomeViewController", "displayFloatView:", NO, (IMP)TBDFloatView, (IMP *)&gOrigFloatView, "floatView");
-    TBDHook("TBIFHFloatingBarNotifyEventHandler", "handleEvent:args:context:", NO, (IMP)TBDFloatEvt, (IMP *)&gOrigFloatEvt, "floatEvt");
-    TBDHook("TBMyTaobaoLifeCycle", "handleHomePageFloatingBarLinkedNotification:", NO, (IMP)TBDFloatLink, (IMP *)&gOrigFloatLink, "floatLink");
-    TBDHook("TBHRGatewayDataService", "uiRefresh:", NO, (IMP)TBDGwUI, (IMP *)&gOrigGwUI, "gwUI");
-    TBDHook("TBHRGatewayDataService", "responseDidEnd:", NO, (IMP)TBDGwEnd, (IMP *)&gOrigGwEnd, "gwEnd");
+// ========================================================== PopLayer =====
+// Class-wide block for marketing modals on Page_Home / Page_MyTaobao.
+//
+// Static evidence (see FORMAL_NOTES §1):
+// - TBPLInventoryManager queryInventory: is a freq-control GATE returning
+//   an NSString failure reason (nil = pass). There is no candidate set to
+//   filter; DIAG2's primary point is void. Do NOT touch it.
+// - The single funnel for layer creation in the main binary is
+//   TBPLLayerFactory -createLayerWithFrame:type:popRequest:attachVC:.
+//   Its only real caller (TBPLPageTriggerService -p_onReadyOperation:)
+//   explicitly nil-checks the result and cancels cleanly via the native
+//   "OnViewCustomFilter" lose path, and the factory itself returns nil by
+//   design for unregistered types. Returning nil for matched requests is
+//   a native-shaped outcome.
+// - Discrimination key: the request's event uri
+//   ([popRequest event] -> uri), matched by slot prefix:
+//     poplayer://Page_Home@popup_*
+//     poplayer://Page_MyTaobao@popup_*
+//   popup_guide_float_* is included: its config entries are field-identical
+//   to the modal slots (layerType=custom40, type=native, enqueue=true,
+//   modalThreshold=0.8); genuine float/resident/guide slots use float_* /
+//   resident prefixes and are untouched.
+// - Variant 2 (config:targetUrl:) has no caller in the main binary and its
+//   event.uri is always nil, so no point is set there.
+typedef struct { double x, y, w, h; } TCFrame;
+typedef id (*FactoryIMP)(id, SEL, TCFrame, id, id, id);
+static FactoryIMP gOrigFactory = NULL;
+
+static BOOL TCUriIsBlockedPop(NSString *uri) {
+    if (![uri isKindOfClass:[NSString class]]) return NO;
+    return [uri hasPrefix:@"poplayer://Page_Home@popup_"] ||
+           [uri hasPrefix:@"poplayer://Page_MyTaobao@popup_"];
 }
 
-__attribute__((constructor)) static void TBDEntry(void) {
+static id TCFactoryCreate(id self, SEL _cmd, TCFrame fr, id type, id popReq, id vc) {
+    @try {
+        id evt = TBM(popReq, "event");
+        id uri = TBM(evt, "uri");
+        if (TCUriIsBlockedPop(uri)) return nil;
+    } @catch (NSException *e) { }
+    return gOrigFactory ? gOrigFactory(self, _cmd, fr, type, popReq, vc) : nil;
+}
+// ===================================================== home float bar ====
+// TBHRContainerContentModel -floatLayerSection (IMP 0x10453af5c in the
+// pristine binary) forced to nil. Static basis (FORMAL_NOTES §4):
+// - The property's only static reader is the cache deepCopy (which copies
+//   base -> total through this getter); both producers (JSON parse init,
+//   deepCopy) pass through this getter/setter pair, so the getter is the
+//   single convergence point.
+// - The property is a leaf, parallel and independent of sections /
+//   popDatas / splashSection; nil is its natural "no floating layer"
+//   state. originalData (raw JSON) is stored independently at parse time.
+// - No sectionBizCode matching is attempted: the floating layer model
+//   carries no statically anchorable identifier, and the whole property
+//   exists solely for this floating layer.
+typedef id (*FloatGetterIMP)(id, SEL);
+static FloatGetterIMP gOrigFloatGetter = NULL;
+static id TCFloatLayerSection(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return nil;
+}
+
+// ===================================================== MyTaobao bottom ====
+// MTMainPageUserDataService -transformMainPageDataMode:snapshotSource:
+// (IMP 0x1040b699c) is the single C++ -> ObjC conversion point producing
+// MTMainPageDataModel; both local-cache and network page data pass it.
+// Its `components` array (MTComponentModel, order = layoutList) is the
+// page's module list. We remove exactly the element whose
+// moduleName == "basementTip" — the native second screen whose
+// nativeBasementData.dataList is the three tabs
+//   feeds=猜你喜欢 / collect=我的收藏 / xProject=我的评价
+// plus the feeds infoflow under the first tab. All other modules
+// (header, benefit, statistic, order, game, couponCard) pass untouched;
+// the mid-page statistic module is a separate component.
+typedef id (*TransformIMP)(id, SEL, id, long long);
+static TransformIMP gOrigTransform = NULL;
+static id TCTransform(id self, SEL _cmd, id json, long long source) {
+    id model = gOrigTransform ? gOrigTransform(self, _cmd, json, source) : nil;
+    if (model == nil) return model;
+    @try {
+        id comps = TBM(model, "components");
+        if ([comps isKindOfClass:[NSArray class]] && [(NSArray *)comps count] > 0) {
+            NSMutableArray *keep = [NSMutableArray arrayWithCapacity:[(NSArray *)comps count]];
+            BOOL removed = NO;
+            for (id c in (NSArray *)comps) {
+                id mn = TBM(c, "moduleName");
+                if ([mn isKindOfClass:[NSString class]] && [(NSString *)mn isEqualToString:@"basementTip"]) {
+                    removed = YES;
+                    continue;
+                }
+                [keep addObject:c];
+            }
+            if (removed) {
+                if ([comps isKindOfClass:[NSMutableArray class]]) {
+                    [(NSMutableArray *)comps setArray:keep];
+                } else {
+                    TBMSet(model, "setComponents:", keep);
+                }
+            }
+        }
+    } @catch (NSException *e) { }
+    return model;
+}
+
+static void TCInstallAll(void) {
+    TCHook("MtopService", "getResponse:mrequest:", NO, (IMP)TCGetResponse, (IMP *)&gOrigGetResp);
+    TCHook("TBPLLayerFactory", "createLayerWithFrame:type:popRequest:attachVC:", NO, (IMP)TCFactoryCreate, (IMP *)&gOrigFactory);
+    TCHook("TBHRContainerContentModel", "floatLayerSection", NO, (IMP)TCFloatLayerSection, (IMP *)&gOrigFloatGetter);
+    TCHook("MTMainPageUserDataService", "transformMainPageDataMode:snapshotSource:", NO, (IMP)TCTransform, (IMP *)&gOrigTransform);
+}
+
+__attribute__((constructor)) static void TCEntry(void) {
     @autoreleasepool {
-        gStart = [NSDate date];
-        gLock = [[NSObject alloc] init];
-        gEvents = [NSMutableArray array];
-        gCaptures = [NSMutableDictionary dictionary];
-        gHookOK = [NSMutableString string];
-        gHookMiss = [NSMutableString string];
-        TBDInstallAll();
+        TCInstallAll();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-            dispatch_get_main_queue(), ^{ TBDInstallAll(); TBDWriteFile(); });
-        TBDTick(0);
+            dispatch_get_main_queue(), ^{ TCInstallAll(); });
     }
 }
