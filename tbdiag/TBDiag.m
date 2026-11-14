@@ -859,10 +859,1172 @@ static void TCInstallAll(void) {
     TCHook("TBAppUIStyle", "currentTabbarVCItems", YES, (IMP)TCVCItems, (IMP *)&gOrigVCItems);
 }
 
+// TBDiag4 view-probe overlay (defined at the end of this file). The
+// formal7 filter code above is byte-for-byte TBClean 1.6; the overlay
+// adds ONLY read-only view introspection + the diag presentation.
+static void TD4Start(void);
+
 __attribute__((constructor)) static void TCEntry(void) {
     @autoreleasepool {
         TCInstallAll();
+        TD4Start();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
             dispatch_get_main_queue(), ^{ TCInstallAll(); });
+    }
+}
+
+// ============================================================ TBDiag4 ======
+// TBDiag4/1.0 — READ-ONLY view-layer probe overlay on the formal7 base
+// (TBClean 1.6, filters byte-for-byte identical, main binary P1+P3+P4
+// untouched). Why: the four remaining surfaces (cart recommend flow,
+// cart top activity banner ⑦, search-door sections, home floating bar)
+// all survived data-side filtering because their in-process data shapes
+// were never directly observed (diag3 / formal6 findings). Formal8
+// switches to a VIEW-layer approach, so this build photographs, once
+// per page visit, the view/component identity of each surface:
+// V1 home float bar: text-clue leaf ("超级88"/"领635元") -> ancestor
+// chain to the home root view, top-level container identity,
+// close-button presence, TBHomeViewController root children list.
+// V2 cart (Weex page): (a) UIKit layer — cart VC root children and
+// the Weex canvas (WXRootView); (b) Weex component tree via
+// runtime introspection (side-effect-free ivar graph walk from
+// the VC / canvas), root 3-layer skeleton, and the component
+// PATHS of the ⑦ banner component and the recommend-flow
+// component, located by text/attribute clues.
+// V3 search door (WHITELIST enumeration, user 2026-11-14 17:30:
+// the landing page keeps ONLY history; every other section is a
+// removal target): FULL section enumeration of every scroll
+// container on the door VC — per section: index, header view
+// class, header text, first-cell class, row count — each section
+// classified /, and sections
+// that are neither history nor the two known targets additionally
+// flagged. (The search box and the scan/voice/image
+// tool row are functional UI, not sections, and are excluded.)
+// Presentation reuses the TBDiag-proven pattern: alert pages titled
+// 「诊断4」 (one page per face, key identity lines first), anti-loss
+// retry, re-show on new dumps; the full dump text is also written to
+// Documents/TBDiag4.txt on every change (backup only).
+//
+// Safety: the overlay installs NO hooks and mutates NOTHING. A 1s
+// main-queue watcher classifies the visible page; after a face has
+// been frontmost for >=2.5s it runs ONE bounded dump (node budgets,
+// depth caps, @try everywhere, typed getters only — the formal1
+// isSucceed lesson applies to every primitive read here too).
+
+__attribute__((used)) static const char kTD4Version[] = "TBDiag4/1.0";
+
+// ------------------------------------------------------------- state -----
+static NSDate *gD4Start = nil;
+static id gD4Lock = nil;
+static NSMutableArray *gD4Events = nil; // short event lines
+static NSMutableArray *gD4FileParts = nil; // full dump records
+static NSString *gD4PageHome = nil; // popup page texts
+static NSString *gD4PageCart = nil;
+static NSString *gD4PageSearch = nil;
+static NSMutableArray *gD4PendingPages = nil; // page keys awaiting show
+static int gD4Shows = 0;
+static double gD4LastShowAt = -1000;
+// watcher state
+static int gD4CurKind = 0; // 0 none 1 home 2 cart 3 search
+static double gD4KindSince = 0;
+static BOOL gD4DumpedHome = NO, gD4DumpedCart = NO, gD4DumpedSearch = NO;
+static int gD4AbsentTicks = 0;
+
+static double D4Now(void) { return [[NSDate date] timeIntervalSinceDate:gD4Start];}
+
+static void D4Event(NSString *fmt,...) {
+va_list ap; va_start(ap, fmt);
+NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
+va_end(ap);
+@synchronized (gD4Lock) {
+[gD4Events addObject:[NSString stringWithFormat:@"[+%.0fs] %@", D4Now(), msg]];
+while ([gD4Events count] > 60) [gD4Events removeObjectAtIndex:0];
+}
+}
+
+static NSString *D4Short(id obj, NSUInteger cap) {
+if (obj == nil) return @"(nil)";
+NSString *s = nil;
+@try { s = [obj description];} @catch (NSException *e) { s = @"<desc-fail>";}
+if (s == nil) s = @"";
+s = [s stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+if ([s length] > cap) s = [[s substringToIndex:cap] stringByAppendingString:@"…"];
+return s;
+}
+
+static NSString *D4Cls(id obj) {
+return obj? NSStringFromClass([obj class]): @"(nil)";
+}
+
+// ------------------------------------------------- typed primitive reads --
+// CGRect is returned as an HFA of 4 doubles on arm64, so a struct-cast
+// msgSend is ABI-correct; declared locally to avoid any UIKit header
+// dependency (this dylib links Foundation only, like its predecessors).
+typedef struct D4Rect { double x, y, w, h;} D4Rect;
+static BOOL D4GetFrame(id v, D4Rect *out) {
+if (v == nil || out == NULL) return NO;
+SEL sel = @selector(frame);
+if (![v respondsToSelector:sel]) return NO;
+*out = ((D4Rect (*)(id, SEL))objc_msgSend)(v, sel);
+return YES;
+}
+static NSString *D4FrameStr(id v) {
+D4Rect r;
+if (!D4GetFrame(v, &r)) return @"f=?";
+return [NSString stringWithFormat:@"f=%.0f,%.0f %.0fx%.0f", r.x, r.y, r.w, r.h];
+}
+static BOOL D4GetBool(id obj, const char *selName, BOOL *out) {
+return TBMBool(obj, selName, out);
+}
+static BOOL D4GetInt(id obj, const char *selName, long long *out) {
+if (obj == nil || out == NULL) return NO;
+SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
+if (![obj respondsToSelector:sel]) return NO;
+*out = ((long long (*)(id, SEL))objc_msgSend)(obj, sel);
+return YES;
+}
+
+// ------------------------------------------------------- view utilities ---
+static NSArray *D4Subviews(id v) {
+id s = TBM(v, "subviews");
+return [s isKindOfClass:[NSArray class]]? (NSArray *)s: @[];
+}
+static id D4Superview(id v) { return TBM(v, "superview");}
+
+// Visible text of a single view (label / button / text field), or nil.
+static NSString *D4ViewText(id v) {
+if (v == nil) return nil;
+@try {
+NSString *cls = NSStringFromClass([v class]);
+id t = nil;
+if ([cls isEqualToString:@"UILabel"] || [v respondsToSelector:NSSelectorFromString(@"text")] &&
+([cls containsString:@"Label"] || [cls containsString:@"TextField"] || [cls containsString:@"TextView"])) {
+t = TBM(v, "text");
+}
+if (![t isKindOfClass:[NSString class]] || [(NSString *)t length] == 0) {
+if ([cls containsString:@"Button"]) {
+id tl = TBM(v, "titleLabel");
+id tt = TBM(tl, "text");
+if ([tt isKindOfClass:[NSString class]] && [(NSString *)tt length]) t = tt;
+else {
+id ct = TBM(v, "currentTitle");
+if ([ct isKindOfClass:[NSString class]] && [(NSString *)ct length]) t = ct;
+}
+}
+}
+if ([t isKindOfClass:[NSString class]] && [(NSString *)t length] > 0) {
+NSString *s = [(NSString *)t stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+return [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+}
+} @catch (NSException *e) {}
+return nil;
+}
+
+// DFS (bounded) collecting "Class「text」" entries for text-bearing
+// leaves, in tree order.
+static void D4CollectTexts(id v, int depth, int *budget, NSMutableArray *out, NSUInteger maxOut) {
+if (v == nil || depth > 16 || *budget <= 0 || [out count] >= maxOut) return;
+(*budget)--;
+@try {
+NSString *t = D4ViewText(v);
+if (t!= nil) {
+NSString *show = [t length] > 42? [[t substringToIndex:42] stringByAppendingString:@"…"]: t;
+[out addObject:[NSString stringWithFormat:@"%@「%@」", D4Cls(v), show]];
+}
+for (id sub in D4Subviews(v)) {
+D4CollectTexts(sub, depth + 1, budget, out, maxOut);
+if (*budget <= 0 || [out count] >= maxOut) return;
+}
+} @catch (NSException *e) {}
+}
+
+// DFS (bounded) finding leaf views whose text contains any needle;
+// results appended to `hits` (views retained by the array).
+static void D4FindTextLeaves(id v, NSArray *needles, int depth, int *budget,
+NSMutableArray *hits, NSUInteger maxHits) {
+if (v == nil || depth > 18 || *budget <= 0 || [hits count] >= maxHits) return;
+(*budget)--;
+@try {
+NSString *t = D4ViewText(v);
+if (t!= nil) {
+for (NSString *n in needles) {
+if ([t rangeOfString:n].location!= NSNotFound) { [hits addObject:v]; return;}
+}
+}
+for (id sub in D4Subviews(v)) {
+D4FindTextLeaves(sub, needles, depth + 1, budget, hits, maxHits);
+if (*budget <= 0 || [hits count] >= maxHits) return;
+}
+} @catch (NSException *e) {}
+}
+
+// DFS (bounded) finding the first view whose class name equals `name`.
+static id D4FindClass(id v, NSString *name, int depth, int *budget) {
+if (v == nil || depth > 18 || *budget <= 0) return nil;
+(*budget)--;
+@try {
+if ([NSStringFromClass([v class]) isEqualToString:name]) return v;
+for (id sub in D4Subviews(v)) {
+id hit = D4FindClass(sub, name, depth + 1, budget);
+if (hit!= nil) return hit;
+if (*budget <= 0) return nil;
+}
+} @catch (NSException *e) {}
+return nil;
+}
+
+// DFS (bounded) collecting all views of the given exact classes.
+static void D4FindAllClass(id v, NSSet *names, int depth, int *budget,
+NSMutableArray *out, NSUInteger maxOut) {
+if (v == nil || depth > 18 || *budget <= 0 || [out count] >= maxOut) return;
+(*budget)--;
+@try {
+if ([names containsObject:NSStringFromClass([v class])]) [out addObject:v];
+for (id sub in D4Subviews(v)) {
+D4FindAllClass(sub, names, depth + 1, budget, out, maxOut);
+if (*budget <= 0 || [out count] >= maxOut) return;
+}
+} @catch (NSException *e) {}
+}
+
+// Comma-joined names of properties (class + up to 2 superclasses),
+// bounded. Used to expose the exact accessor names formal8 needs.
+static NSString *D4PropertyOutline(Class cls) {
+NSMutableArray *names = [NSMutableArray array];
+@try {
+Class c = cls;
+for (int lvl = 0; c!= Nil && lvl < 3; lvl++, c = class_getSuperclass(c)) {
+unsigned int n = 0;
+objc_property_t *props = class_copyPropertyList(c, &n);
+for (unsigned int i = 0; i < n && [names count] < 70; i++) {
+[names addObject:[NSString stringWithUTF8String:property_getName(props[i])]];
+}
+if (props) free(props);
+}
+} @catch (NSException *e) {}
+return [names componentsJoinedByString:@","];
+}
+
+// Object-typed ivar names of a class (+1 superclass level), bounded.
+static NSArray *D4ObjectIvarNames(Class cls) {
+NSMutableArray *names = [NSMutableArray array];
+@try {
+Class c = cls;
+for (int lvl = 0; c!= Nil && lvl < 2; lvl++, c = class_getSuperclass(c)) {
+unsigned int n = 0;
+Ivar *ivars = class_copyIvarList(c, &n);
+for (unsigned int i = 0; i < n && [names count] < 90; i++) {
+const char *enc = ivar_getTypeEncoding(ivars[i]);
+if (enc!= NULL && enc[0] == '@') {
+[names addObject:[NSString stringWithUTF8String:ivar_getName(ivars[i])]];
+}
+}
+if (ivars) free(ivars);
+}
+} @catch (NSException *e) {}
+return names;
+}
+
+static id D4GetIvar(id obj, const char *name) {
+if (obj == nil) return nil;
+@try {
+Ivar iv = class_getInstanceVariable([obj class], name);
+if (iv == NULL) return nil;
+const char *enc = ivar_getTypeEncoding(iv);
+if (enc == NULL || enc[0]!= '@') return nil;
+return object_getIvar(obj, iv);
+} @catch (NSException *e) { return nil;}
+}
+
+// -------------------------------------------------- visible VC resolve ----
+// Walk key window -> tab selection -> nav visible -> presented chain
+// (skipping alert controllers). Returns the deepest visible VC; the
+// tab-root VC is returned via outRoot when resolvable.
+static id D4TopVC(id *outRoot) {
+    if (outRoot) *outRoot = nil;
+    Class appCls = objc_getClass("UIApplication");
+    if (appCls == Nil) return nil;
+    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
+    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
+    id key = nil;
+    for (id w in windows) {
+        BOOL k = NO;
+        if (D4GetBool(w, "isKeyWindow", &k) && k) { key = w; break; }
+    }
+    if (key == nil) key = [windows firstObject];
+    if (key == nil) return nil;
+    id root = TBM(key, "rootViewController");
+    if (root == nil) return nil;
+    id cur = root;
+    // Unwrap the tab selection once, remembering the tab-root VC.
+    Class tabCls = objc_getClass("UITabBarController");
+    if (tabCls != Nil && [cur isKindOfClass:tabCls]) {
+        id sel = TBM(cur, "selectedViewController");
+        if (sel != nil) {
+            cur = sel;
+            Class navCls = objc_getClass("UINavigationController");
+            id r = sel;
+            if (navCls != Nil && [sel isKindOfClass:navCls]) {
+                NSArray *stack = TBM(sel, "viewControllers");
+                if ([stack isKindOfClass:[NSArray class]] && [stack count]) r = [stack firstObject];
+            }
+            if (outRoot) *outRoot = r;
+        }
+    }
+    // Follow nav-visible + presented to the visible leaf VC.
+    for (int guard = 0; guard < 12; guard++) {
+        id next = nil;
+        Class navCls = objc_getClass("UINavigationController");
+        if (navCls != Nil && [cur isKindOfClass:navCls]) {
+            next = TBM(cur, "visibleViewController");
+        }
+        if (next == nil) {
+            id presented = TBM(cur, "presentedViewController");
+            if (presented != nil && ![NSStringFromClass([presented class]) containsString:@"Alert"]) {
+                next = presented;
+            }
+        }
+        if (next == nil || next == cur) break;
+        cur = next;
+    }
+    if (outRoot && *outRoot == nil) *outRoot = cur;
+    return cur;
+}
+
+// ============================================================ V1: home ====
+// Float bar: locate by text clue, walk the ancestor chain to the home
+// root view, identify the top-level container (the direct root child
+// on that chain), its constraint outline, and close-button presence.
+static NSString *D4DumpHome(id vc) {
+    NSMutableString *s = [NSMutableString string];
+    @try {
+        id rootView = TBM(vc, "view");
+        [s appendFormat:@"VC=%@\n", D4Cls(vc)];
+        NSArray *children = D4Subviews(rootView);
+        [s appendFormat:@"根视图直子×%lu:\n", (unsigned long)[children count]];
+        NSUInteger ci = 0;
+        for (id ch in children) {
+            BOOL hid = NO; D4GetBool(ch, "isHidden", &hid);
+            [s appendFormat:@" %lu %@ %@%@\n", (unsigned long)ci++, D4Cls(ch),
+             D4FrameStr(ch), hid ? @" hidden" : @""];
+            if (ci >= 24) { [s appendString:@" …(截断)\n"]; break; }
+        }
+        int budget = 6000;
+        NSMutableArray *hits = [NSMutableArray array];
+        D4FindTextLeaves(rootView, @[@"超级88", @"领635"], 0, &budget, hits, 3);
+        if ([hits count] == 0) {
+            [s appendString:@"横条叶子:未找到「超级88/领635元」文本(条可能未展示)\n"];
+            int b2 = 4000;
+            NSMutableArray *texts = [NSMutableArray array];
+            D4CollectTexts(rootView, 0, &b2, texts, 30);
+            [s appendFormat:@"页面文本样本:[%@]\n", [texts componentsJoinedByString:@" | "]];
+            return s;
+        }
+        id leaf = [hits firstObject];
+        NSString *lt = D4ViewText(leaf);
+        if ([lt length] > 34) lt = [[lt substringToIndex:34] stringByAppendingString:@"…"];
+        [s appendFormat:@"横条叶子:%@「%@」\n", D4Cls(leaf), lt ?: @""];
+        // Ancestor chain, leaf -> root view.
+        NSMutableArray *chain = [NSMutableArray array];
+        id node = leaf;
+        for (int g = 0; node != nil && g < 24; g++) {
+            [chain addObject:node];
+            if (node == rootView) break;
+            node = D4Superview(node);
+        }
+        [s appendString:@"祖先链(叶→根):\n"];
+        NSUInteger li = 0;
+        id topContainer = nil;
+        for (id n in chain) {
+            [s appendFormat:@" L%lu %@ %@\n", (unsigned long)li++, D4Cls(n), D4FrameStr(n)];
+            if (D4Superview(n) == rootView) topContainer = n;
+        }
+        if (topContainer == nil && [chain count] > 1) topContainer = chain[[chain count] - 2];
+        if (topContainer != nil) {
+            BOOL tam = YES; D4GetBool(topContainer, "translatesAutoresizingMaskIntoConstraints", &tam);
+            id cons = TBM(topContainer, "constraints");
+            NSUInteger ncons = [cons isKindOfClass:[NSArray class]] ? [cons count] : 0;
+            [s appendFormat:@"顶层容器:%@ %@ mask自动=%@ 约束×%lu\n",
+             D4Cls(topContainer), D4FrameStr(topContainer), tam ? @"Y" : @"N",
+             (unsigned long)ncons];
+            if ([cons isKindOfClass:[NSArray class]]) {
+                NSUInteger shown = 0;
+                for (id c in (NSArray *)cons) {
+                    if (shown++ >= 3) break;
+                    [s appendFormat:@" 约束:%@\n", D4Short(c, 76)];
+                }
+            }
+            // Close button inside the same container?
+            int b3 = 2500;
+            NSMutableArray *closeHits = [NSMutableArray array];
+            D4FindTextLeaves(topContainer, @[@"×", @"✕", @"✖"], 0, &b3, closeHits, 2);
+            int nb = 0;
+            NSMutableArray *btnClasses = [NSMutableArray array];
+            int b4 = 2500;
+            NSMutableArray *btns = [NSMutableArray array];
+            D4FindAllClass(topContainer, [NSSet setWithObject:@"UIButton"], 0, &b4, btns, 12);
+            nb = (int)[btns count];
+            for (id b in btns) if (![btnClasses containsObject:D4Cls(b)]) [btnClasses addObject:D4Cls(b)];
+            // Buttons in Taobao are often custom classes; count any view
+            // whose class name contains "Button" or "Close" as well.
+            NSString *closeInfo = [closeHits count]
+                ? [NSString stringWithFormat:@"有(×文本叶 %@)", D4Cls([closeHits firstObject])]
+                : @"未见×文本";
+            [s appendFormat:@"容器内UIButton×%d%@ 关闭线索:%@\n",
+             nb, [btnClasses count] ? [NSString stringWithFormat:@"[%@]", [btnClasses componentsJoinedByString:@","]] : @"",
+             closeInfo];
+        }
+    } @catch (NSException *e) {
+        [s appendFormat:@"(dump异常:%@)\n", [e name]];
+    }
+    return s;
+}
+
+// ============================================================ V2: cart ====
+// Weex component accessors are read defensively: Alibaba's fork may
+// name them differently, so every read tries selector -> ivar, and the
+// root component's full property outline is recorded for formal8.
+static NSString *D4CompType(id comp) {
+    id t = TBM(comp, "type");
+    if ([t isKindOfClass:[NSString class]] && [(NSString *)t length]) return (NSString *)t;
+    id iv = D4GetIvar(comp, "_type");
+    if ([iv isKindOfClass:[NSString class]]) return (NSString *)iv;
+    return @"?";
+}
+static NSString *D4CompRef(id comp) {
+    id t = TBM(comp, "ref");
+    if ([t isKindOfClass:[NSString class]] && [(NSString *)t length]) return (NSString *)t;
+    id iv = D4GetIvar(comp, "_ref");
+    if ([iv isKindOfClass:[NSString class]]) return (NSString *)iv;
+    return @"?";
+}
+static NSArray *D4CompChildren(id comp, NSString **usedSel) {
+    static const char *cands[] = {"childComponents", "subcomponents", "children", "components", NULL};
+    for (int i = 0; cands[i] != NULL; i++) {
+        id v = TBM(comp, cands[i]);
+        if ([v isKindOfClass:[NSArray class]]) {
+            if (usedSel) *usedSel = [NSString stringWithUTF8String:cands[i]];
+            return (NSArray *)v;
+        }
+    }
+    static const char *ivars[] = {"_childComponents", "_subcomponents", "_children", NULL};
+    for (int i = 0; ivars[i] != NULL; i++) {
+        id v = D4GetIvar(comp, ivars[i]);
+        if ([v isKindOfClass:[NSArray class]]) {
+            if (usedSel) *usedSel = [NSString stringWithFormat:@"ivar:%s", ivars[i]];
+            return (NSArray *)v;
+        }
+    }
+    if (usedSel) *usedSel = @"无";
+    return @[];
+}
+static id D4CompLoadedView(id comp) {
+    // Only the already-materialized view; never trigger a lazy load.
+    id v = D4GetIvar(comp, "_view");
+    if (v != nil && [v isKindOfClass:objc_getClass("UIView")]) return v;
+    return nil;
+}
+// Concatenated string content of attributes/styles (bounded DFS) for
+// clue scanning; also returns the top-level key list via outKeys.
+static NSString *D4CompAttrBlob(id comp, NSString **outKeys) {
+    NSMutableString *blob = [NSMutableString string];
+    NSMutableArray *keyList = [NSMutableArray array];
+    static const char *attrSels[] = {"attributes", "styles", NULL};
+    for (int ai = 0; attrSels[ai] != NULL; ai++) {
+        const char *selName = attrSels[ai];
+        id d = TBM(comp, selName);
+        if (![d isKindOfClass:[NSDictionary class]]) continue;
+        if (selName[0] == 'a') {
+            for (id k in (NSDictionary *)d) {
+                if ([k isKindOfClass:[NSString class]]) [keyList addObject:(NSString *)k];
+            }
+        }
+        int budget = 160;
+        NSMutableArray *stack = [NSMutableArray arrayWithObject:d];
+        while ([stack count] && budget > 0) {
+            id cur = [stack lastObject]; [stack removeLastObject];
+            budget--;
+            if ([cur isKindOfClass:[NSString class]]) {
+                [blob appendString:(NSString *)cur]; [blob appendString:@" "];
+            } else if ([cur isKindOfClass:[NSDictionary class]]) {
+                for (id k in (NSDictionary *)cur) {
+                    if ([k isKindOfClass:[NSString class]]) { [blob appendString:(NSString *)k]; [blob appendString:@" "]; }
+                    [stack addObject:((NSDictionary *)cur)[k]];
+                }
+            } else if ([cur isKindOfClass:[NSArray class]]) {
+                for (id e in (NSArray *)cur) [stack addObject:e];
+            }
+            if ([blob length] > 20000) break;
+        }
+    }
+    if (outKeys) *outKeys = [keyList componentsJoinedByString:@","];
+    return blob;
+}
+
+// Side-effect-free ivar graph walk from the seeds, hunting a
+// WXComponent (root candidate), a WXSDKInstance, or a
+// WXComponentManager. Records the discovery path for formal8.
+static void D4HuntWeex(id seedVC, id seedCanvas,
+                       id *outComp, id *outInstance, NSString **outRoute) {
+    *outComp = nil; *outInstance = nil; *outRoute = @"未找到";
+    Class compCls = objc_getClass("WXComponent");
+    NSMutableArray *queue = [NSMutableArray array];
+    NSMutableDictionary *paths = [NSMutableDictionary dictionary];
+    NSMutableSet *visited = [NSMutableSet set];
+    if (seedVC != nil) {
+        [queue addObject:seedVC];
+        paths[[NSValue valueWithPointer:(__bridge void *)seedVC]] = @"VC";
+    }
+    if (seedCanvas != nil) {
+        [queue addObject:seedCanvas];
+        paths[[NSValue valueWithPointer:(__bridge void *)seedCanvas]] = @"WXRootView";
+    }
+    // Direct selector attempts on the seeds first (cheap, common names).
+    static const char *seedSels[] = {"rootComponent", "wxInstance", "sdkInstance", "weexInstance", "instance", "componentManager", NULL};
+    for (id seed in @[seedVC ?: (id)[NSNull null], seedCanvas ?: (id)[NSNull null]]) {
+        if ([seed isEqual:[NSNull null]]) continue;
+        for (int si = 0; seedSels[si] != NULL; si++) {
+            const char *selName = seedSels[si];
+            id v = TBM(seed, selName);
+            if (v == nil) continue;
+            if (compCls != Nil && [v isKindOfClass:compCls] && *outComp == nil) {
+                *outComp = v;
+                *outRoute = [NSString stringWithFormat:@"%@ -[%s]→ %@", (seed == seedVC) ? @"VC" : @"WXRootView", selName, D4Cls(v)];
+            }
+            if ([NSStringFromClass([v class]) isEqualToString:@"WXSDKInstance"] && *outInstance == nil) {
+                *outInstance = v;
+            }
+            if (![queue containsObject:v]) {
+                [queue addObject:v];
+                paths[[NSValue valueWithPointer:(__bridge void *)v]] =
+                    [NSString stringWithFormat:@"%@.%s", (seed == seedVC) ? @"VC" : @"WXRootView", selName];
+            }
+        }
+    }
+    int budget = 260;
+    NSUInteger qi = 0;
+    while (qi < [queue count] && budget > 0) {
+        id obj = queue[qi++];
+        NSValue *key = [NSValue valueWithPointer:(__bridge void *)obj];
+        if ([visited containsObject:key]) continue;
+        [visited addObject:key];
+        NSString *myPath = paths[key] ?: @"?";
+        if (compCls != Nil && [obj isKindOfClass:compCls] && *outComp == nil && obj != seedVC) {
+            *outComp = obj;
+            *outRoute = myPath;
+        }
+        if ([NSStringFromClass([obj class]) isEqualToString:@"WXSDKInstance"] && *outInstance == nil) {
+            *outInstance = obj;
+        }
+        // From an instance/manager, a direct rootComponent read wins.
+        if (*outComp == nil &&
+            ([NSStringFromClass([obj class]) containsString:@"WXSDKInstance"] ||
+             [NSStringFromClass([obj class]) containsString:@"ComponentManager"])) {
+            id rc = TBM(obj, "rootComponent");
+            if (rc != nil && compCls != Nil && [rc isKindOfClass:compCls]) {
+                *outComp = rc;
+                *outRoute = [myPath stringByAppendingString:@" -[rootComponent]"];
+            }
+        }
+        if (*outComp != nil && *outInstance != nil) break;
+        // Expand object-typed ivars only (passive storage, no getters).
+        for (NSString *ivName in D4ObjectIvarNames([obj class])) {
+            if (budget-- <= 0) break;
+            id v = D4GetIvar(obj, [ivName UTF8String]);
+            if (v == nil) continue;
+            NSValue *vk = [NSValue valueWithPointer:(__bridge void *)v];
+            if ([visited containsObject:vk] || paths[vk] != nil) continue;
+            // Do not wander into view/controller graphs from here —
+            // the canvas subtree is handled by the UIKit dump.
+            NSString *vcn = NSStringFromClass([v class]);
+            if ([vcn isEqualToString:@"WXRootView"]) continue;
+            [queue addObject:v];
+            paths[vk] = [NSString stringWithFormat:@"%@ -ivar:%@→ %@", myPath, ivName, vcn];
+            if (compCls != Nil && [v isKindOfClass:compCls] && *outComp == nil) {
+                *outComp = v;
+                *outRoute = paths[vk];
+            }
+            if ([vcn isEqualToString:@"WXSDKInstance"] && *outInstance == nil) *outInstance = v;
+        }
+    }
+}
+
+// Recursive component walk: 3-layer skeleton + clue-based target
+// location (banner by 超级88 containment, recommend by type/ref/attr).
+static void D4WalkComponents(id comp, NSString *path, int depth, int *budget,
+                             NSMutableString *skeleton, NSMutableArray *targets) {
+    if (comp == nil || *budget <= 0) return;
+    (*budget)--;
+    @try {
+        NSString *type = D4CompType(comp);
+        NSString *ref = D4CompRef(comp);
+        NSString *myPath = [path length] ? [path stringByAppendingFormat:@">%@", type] : type;
+        if (depth <= 3 && [skeleton length] < 2600) {
+            for (int i = 0; i < depth; i++) [skeleton appendString:@" "];
+            [skeleton appendFormat:@"%@(ref=%@)%@\n", type, ref,
+             depth == 0 ? [NSString stringWithFormat:@" 类=%@", D4Cls(comp)] : @""];
+        }
+        // Clue checks (bounded, once per node).
+        NSString *keys = nil;
+        NSString *blob = D4CompAttrBlob(comp, &keys);
+        BOOL bannerAttr = [blob rangeOfString:@"超级88"].location != NSNotFound ||
+                          [blob rangeOfString:@"icart_top_banner"].location != NSNotFound ||
+                          [blob rangeOfString:@"topAdBanner"].location != NSNotFound;
+        BOOL bannerView = NO;
+        if (!bannerAttr) {
+            id lv = D4CompLoadedView(comp);
+            if (lv != nil) {
+                int b = 900;
+                NSMutableArray *hits = [NSMutableArray array];
+                D4FindTextLeaves(lv, @[@"超级88"], 0, &b, hits, 1);
+                bannerView = [hits count] > 0;
+            }
+        }
+        NSString *lowType = [type lowercaseString];
+        NSString *lowRef = [ref lowercaseString];
+        BOOL recLike = [lowType rangeOfString:@"feed"].location != NSNotFound ||
+                       [lowType rangeOfString:@"recommend"].location != NSNotFound ||
+                       [lowType rangeOfString:@"banner"].location != NSNotFound ||
+                       [lowRef rangeOfString:@"feed"].location != NSNotFound ||
+                       [lowRef rangeOfString:@"recommend"].location != NSNotFound ||
+                       [blob rangeOfString:@"recommend_cart"].location != NSNotFound;
+        if (bannerAttr || bannerView) {
+            // Every ancestor of the banner view also "contains" it;
+            // cap the banner lines so the leaf-most entries survive
+            // (DFS reaches ancestors first, so keep the cap generous
+            // and rely on the file copy for the full chain).
+            NSUInteger nb = 0;
+            for (NSString *t in targets) if ([t hasPrefix:@"⑦路径:"]) nb++;
+            if (nb < 10) {
+                [targets addObject:[NSString stringWithFormat:@"⑦路径:%@ 类=%@ ref=%@ 命中=%@ attr键=[%@]",
+                    myPath, D4Cls(comp), ref, bannerAttr ? @"attr" : @"view", keys ?: @""]];
+            }
+        } else if (recLike && [targets count] < 16) {
+            [targets addObject:[NSString stringWithFormat:@"荐候选:%@ 类=%@ ref=%@ attr键=[%@]",
+                myPath, D4Cls(comp), ref,
+                keys != nil && [keys length] > 90 ? [[keys substringToIndex:90] stringByAppendingString:@"…"] : (keys ?: @"")]];
+        }
+        NSString *used = nil;
+        NSArray *kids = D4CompChildren(comp, &used);
+        for (id k in kids) {
+            D4WalkComponents(k, myPath, depth + 1, budget, skeleton, targets);
+            if (*budget <= 0) return;
+        }
+    } @catch (NSException *e) { }
+}
+
+static NSString *D4DumpCart(id vc, id visibleVC) {
+    NSMutableString *s = [NSMutableString string];
+    @try {
+        id rootView = TBM(vc, "view");
+        [s appendFormat:@"VC=%@ 可见VC=%@\n", D4Cls(vc), D4Cls(visibleVC)];
+        NSArray *children = D4Subviews(rootView);
+        [s appendFormat:@"UIKit根直子×%lu:\n", (unsigned long)[children count]];
+        NSUInteger ci = 0;
+        for (id ch in children) {
+            [s appendFormat:@" %lu %@ %@\n", (unsigned long)ci++, D4Cls(ch), D4FrameStr(ch)];
+            if (ci >= 20) { [s appendString:@" …(截断)\n"]; break; }
+        }
+        int budget = 5000;
+        id canvas = D4FindClass(rootView, @"WXRootView", 0, &budget);
+        if (canvas == nil) {
+            // Fallback: any class whose name contains "RootView" + Weex.
+            int b2 = 5000;
+            NSMutableArray *cands = [NSMutableArray array];
+            D4FindAllClass(rootView, [NSSet setWithObjects:@"WXRootView", nil], 0, &b2, cands, 1);
+            canvas = [cands firstObject];
+        }
+        [s appendFormat:@"Weex画布:%@\n", canvas ? [NSString stringWithFormat:@"%@ %@", D4Cls(canvas), D4FrameStr(canvas)] : @"未找到WXRootView"];
+        // VC ivar names are recorded in every case — on failure they
+        // are formal8's map to the right accessor.
+        [s appendFormat:@"VC对象ivar:[%@]\n",
+         [D4ObjectIvarNames([vc class]) componentsJoinedByString:@","]];
+        id comp = nil, instance = nil;
+        NSString *route = nil;
+        D4HuntWeex(vc, canvas, &comp, &instance, &route);
+        [s appendFormat:@"实例:%@ 路径:%@\n",
+         instance ? D4Cls(instance) : @"未找到", route ?: @"-"];
+        if (comp == nil) {
+            [s appendString:@"组件树:未拿到(内省路径已试:种子选择器+ivar图遍历)\n"];
+            if (canvas != nil) {
+                [s appendFormat:@"画布对象ivar:[%@]\n",
+                 [D4ObjectIvarNames([canvas class]) componentsJoinedByString:@","]];
+            }
+            if (instance != nil) {
+                [s appendFormat:@"实例属性:[%@]\n", D4PropertyOutline([instance class])];
+                [s appendFormat:@"实例ivar:[%@]\n",
+                 [D4ObjectIvarNames([instance class]) componentsJoinedByString:@","]];
+            }
+            return s;
+        }
+        NSString *usedSel = nil;
+        NSArray *rootKids = D4CompChildren(comp, &usedSel);
+        (void)rootKids;
+        NSString *rootKeys = nil;
+        (void)D4CompAttrBlob(comp, &rootKeys);
+        [s appendFormat:@"根组件:类=%@ type=%@ ref=%@ 子访问器=%@ attr键=[%@]\n",
+         D4Cls(comp), D4CompType(comp), D4CompRef(comp), usedSel ?: @"?",
+         rootKeys != nil && [rootKeys length] > 120 ? [[rootKeys substringToIndex:120] stringByAppendingString:@"…"] : (rootKeys ?: @"")];
+        [s appendFormat:@"根组件属性:[%@]\n", D4PropertyOutline([comp class])];
+        NSMutableString *skeleton = [NSMutableString string];
+        NSMutableArray *targets = [NSMutableArray array];
+        int wbudget = 420;
+        D4WalkComponents(comp, @"", 0, &wbudget, skeleton, targets);
+        // Targets first: the alert page is truncated at ~1900 chars and
+        // the component paths are the key identity formal8 needs.
+        if ([targets count]) {
+            [s appendString:@"定位结果:\n"];
+            for (NSString *t in targets) [s appendFormat:@" %@\n", t];
+        } else {
+            [s appendString:@"定位结果:⑦/推荐候选均未命中(见组件树与attr键)\n"];
+        }
+        [s appendString:@"组件树(根3层):\n"];
+        [s appendString:skeleton];
+    } @catch (NSException *e) {
+        [s appendFormat:@"(dump异常:%@)\n", [e name]];
+    }
+    return s;
+}
+
+// ========================================================== V3: search ====
+// WHITELIST enumeration (user 2026-11-14 17:30): the landing page
+// keeps ONLY the history section; every other section is a removal
+// target for formal8. So this dump enumerates EVERY section of every
+// scroll container on the door VC — index, header class, header text,
+// first-cell class, row count — and classifies each: history text ->
+//; anything else ->, plus
+// when it is neither of the two known targets. (The search box and
+// the scan/voice/image tool row are functional UI, not sections.)
+static NSString *D4SectionVerdict(NSString *headerText) {
+if (headerText == nil || [headerText length] == 0) return @"";
+if ([headerText rangeOfString:@"历史"].location!= NSNotFound) return @"";
+NSString *v = @"";
+if ([headerText rangeOfString:@"猜你想搜"].location == NSNotFound &&
+[headerText rangeOfString:@"淘宝热榜"].location == NSNotFound) {
+v = [v stringByAppendingString:@""];
+}
+return v;
+}
+
+static NSString *D4HeaderText(id headerView) {
+if (headerView == nil) return @"";
+int budget = 500;
+NSMutableArray *texts = [NSMutableArray array];
+D4CollectTexts(headerView, 0, &budget, texts, 6);
+NSMutableArray *plain = [NSMutableArray array];
+for (NSString *t in texts) {
+// strip the leading "Class「" and trailing "」" added by the
+// collector — for section lines the raw text reads better.
+NSString *p = t;
+NSRange open = [p rangeOfString:@"「"];
+NSRange close = [p rangeOfString:@"」" options:NSBackwardsSearch];
+if (open.location!= NSNotFound && close.location!= NSNotFound &&
+close.location > open.location) {
+p = [p substringWithRange:NSMakeRange(open.location + 1, close.location - open.location - 1)];
+}
+[plain addObject:p];
+}
+return [plain componentsJoinedByString:@"/"];
+}
+
+static id D4IndexPath(long item, long section) {
+Class ipCls = objc_getClass("NSIndexPath");
+if (ipCls == Nil) return nil;
+SEL sel = NSSelectorFromString(@"indexPathForItem:inSection:");
+if (![ipCls respondsToSelector:sel]) return nil;
+return ((id (*)(id, SEL, long, long))objc_msgSend)(ipCls, sel, item, section);
+}
+
+// Enumerate one UICollectionView: returns lines + tallies via out args.
+static void D4EnumCollection(id cv, NSMutableString *s, int *nHist, int *nDrop, int *nUnknown) {
+long long sections = 0;
+if (!D4GetInt(cv, "numberOfSections", &sections)) {
+[s appendString:@" numberOfSections 读不到\n"];
+return;
+}
+if (sections > 30) sections = 30;
+id ds = TBM(cv, "dataSource");
+for (long long sec = 0; sec < sections; sec++) {
+long long items = -1;
+SEL nItemsSel = NSSelectorFromString(@"numberOfItemsInSection:");
+if ([cv respondsToSelector:nItemsSel]) {
+items = ((long long (*)(id, SEL, long long))objc_msgSend)(cv, nItemsSel, sec);
+}
+// Header: dataSource-created view first (works offscreen),
+// then the collection view's own materialized view.
+id header = nil;
+id ipath = D4IndexPath(0, sec);
+if (ds!= nil && ipath!= nil) {
+SEL dsSel = NSSelectorFromString(@"collectionView:viewForSupplementaryElementOfKind:atIndexPath:");
+if ([ds respondsToSelector:dsSel]) {
+@try {
+header = ((id (*)(id, SEL, id, id, id))objc_msgSend)(ds, dsSel, cv,
+@"UICollectionElementKindSectionHeader", ipath);
+} @catch (NSException *e) { header = nil;}
+}
+}
+if (header == nil && ipath!= nil) {
+SEL svSel = NSSelectorFromString(@"supplementaryViewForElementKind:atIndexPath:");
+if ([cv respondsToSelector:svSel]) {
+@try {
+header = ((id (*)(id, SEL, id, id))objc_msgSend)(cv, svSel,
+@"UICollectionElementKindSectionHeader", ipath);
+} @catch (NSException *e) { header = nil;}
+}
+}
+NSString *htext = D4HeaderText(header);
+NSString *verdict = D4SectionVerdict(htext);
+if ([verdict containsString:@"保留"]) (*nHist)++;
+else if ([verdict containsString:@"去除目标"]) {
+(*nDrop)++;
+if ([verdict containsString:@"未知段"]) (*nUnknown)++;
+}
+id cell0 = nil;
+if (ipath!= nil) {
+SEL cSel = NSSelectorFromString(@"cellForItemAtIndexPath:");
+if ([cv respondsToSelector:cSel]) {
+@try { cell0 = ((id (*)(id, SEL, id))objc_msgSend)(cv, cSel, ipath);}
+@catch (NSException *e) { cell0 = nil;}
+}
+}
+[s appendFormat:@" #%lld rows=%lld header=%@ 文本「%@」 cell0=%@ %@\n",
+sec, items,
+header? D4Cls(header): @"未物化",
+[htext length]? htext: @"",
+cell0? D4Cls(cell0): @"未物化",
+verdict];
+}
+}
+
+static void D4EnumTable(id tv, NSMutableString *s, int *nHist, int *nDrop, int *nUnknown) {
+long long sections = 0;
+if (!D4GetInt(tv, "numberOfSections", &sections)) {
+[s appendString:@" numberOfSections 读不到\n"];
+return;
+}
+if (sections > 30) sections = 30;
+id delegate = TBM(tv, "delegate");
+for (long long sec = 0; sec < sections; sec++) {
+long long rows = -1;
+SEL nrSel = NSSelectorFromString(@"numberOfRowsInSection:");
+if ([tv respondsToSelector:nrSel]) {
+rows = ((long long (*)(id, SEL, long long))objc_msgSend)(tv, nrSel, sec);
+}
+id header = nil;
+if (delegate!= nil) {
+SEL dSel = NSSelectorFromString(@"tableView:viewForHeaderInSection:");
+if ([delegate respondsToSelector:dSel]) {
+@try {
+header = ((id (*)(id, SEL, id, long long))objc_msgSend)(delegate, dSel, tv, sec);
+} @catch (NSException *e) { header = nil;}
+}
+}
+NSString *htext = D4HeaderText(header);
+NSString *verdict = D4SectionVerdict(htext);
+if ([verdict containsString:@"保留"]) (*nHist)++;
+else if ([verdict containsString:@"去除目标"]) {
+(*nDrop)++;
+if ([verdict containsString:@"未知段"]) (*nUnknown)++;
+}
+id cell0 = nil;
+id ipath = nil;
+Class ipCls = objc_getClass("NSIndexPath");
+if (ipCls!= Nil) {
+SEL ipSel = NSSelectorFromString(@"indexPathForRow:inSection:");
+if ([ipCls respondsToSelector:ipSel]) {
+ipath = ((id (*)(id, SEL, long, long))objc_msgSend)(ipCls, ipSel, 0, sec);
+}
+}
+if (ipath!= nil) {
+SEL cSel = NSSelectorFromString(@"cellForRowAtIndexPath:");
+if ([tv respondsToSelector:cSel]) {
+@try { cell0 = ((id (*)(id, SEL, id))objc_msgSend)(tv, cSel, ipath);}
+@catch (NSException *e) { cell0 = nil;}
+}
+}
+[s appendFormat:@" #%lld rows=%lld header=%@ 文本「%@」 cell0=%@ %@\n",
+sec, rows,
+header? D4Cls(header): @"未物化",
+[htext length]? htext: @"",
+cell0? D4Cls(cell0): @"未物化",
+verdict];
+}
+}
+
+// Bounded skeleton dump for the non-list (Swift/Muise) fallback.
+static void D4Skeleton(id v, int depth, int *budget, NSMutableString *s) {
+if (v == nil || depth > 4 || *budget <= 0 || [s length] > 2400) return;
+(*budget)--;
+@try {
+for (int i = 0; i < depth; i++) [s appendString:@" "];
+NSString *t = D4ViewText(v);
+[s appendFormat:@"%@ %@%@\n", D4Cls(v), D4FrameStr(v),
+t? [NSString stringWithFormat:@"「%@」", [t length] > 24? [[t substringToIndex:24] stringByAppendingString:@"…"]: t]: @""];
+for (id sub in D4Subviews(v)) {
+D4Skeleton(sub, depth + 1, budget, s);
+if (*budget <= 0 || [s length] > 2400) return;
+}
+} @catch (NSException *e) {}
+}
+
+static NSString *D4DumpSearch(id vc) {
+NSMutableString *s = [NSMutableString string];
+@try {
+id rootView = TBM(vc, "view");
+[s appendFormat:@"VC=%@\n", D4Cls(vc)];
+Class cvCls = objc_getClass("UICollectionView");
+Class tvCls = objc_getClass("UITableView");
+NSMutableArray *containers = [NSMutableArray array];
+int budget = 6000;
+// Collect scroll containers in tree order (bounded DFS inline).
+NSMutableArray *stack = [NSMutableArray arrayWithObject:rootView];
+while ([stack count] && budget > 0) {
+id cur = [stack lastObject]; [stack removeLastObject];
+budget--;
+@try {
+BOOL isCV = cvCls!= Nil && [cur isKindOfClass:cvCls];
+BOOL isTV = tvCls!= Nil && [cur isKindOfClass:tvCls];
+if ((isCV || isTV) && ![containers containsObject:cur]) {
+[containers addObject:cur];
+if ([containers count] >= 3) break;
+continue; // do not descend into a found container
+}
+NSArray *subs = D4Subviews(cur);
+for (NSUInteger i = [subs count]; i-- > 0;) [stack addObject:subs[i]];
+} @catch (NSException *e) {}
+}
+int nHist = 0, nDrop = 0, nUnknown = 0;
+if ([containers count] == 0) {
+[s appendString:@"列表容器:未找到 UICollectionView/UITableView(疑 Swift/Muise 门)\n"];
+int b1 = 3000;
+NSMutableArray *hosting = [NSMutableArray array];
+D4FindAllClass(rootView, [NSSet setWithObject:@"UIHostingView"], 0, &b1, hosting, 1);
+// UIHostingView is generic; also scan by name fragment.
+[s appendFormat:@"UIHostingView:%@\n", [hosting count]? @"有": @"未检出(按类名精确匹配)"];
+Class svCls = objc_getClass("UIScrollView");
+id scroll = nil;
+int b2 = 4000;
+if (svCls!= Nil) {
+// first UIScrollView in tree order
+NSMutableArray *stack2 = [NSMutableArray arrayWithObject:rootView];
+while ([stack2 count] && b2 > 0 && scroll == nil) {
+id cur = [stack2 lastObject]; [stack2 removeLastObject];
+b2--;
+if ([cur isKindOfClass:svCls]) { scroll = cur; break;}
+NSArray *subs = D4Subviews(cur);
+for (NSUInteger i = [subs count]; i-- > 0;) [stack2 addObject:subs[i]];
+}
+}
+if (scroll!= nil) {
+[s appendFormat:@"滚动视图:%@ %@\n结构骨架:\n", D4Cls(scroll), D4FrameStr(scroll)];
+int b3 = 90;
+D4Skeleton(scroll, 0, &b3, s);
+} else {
+[s appendString:@"滚动视图:未找到\n"];
+}
+int b4 = 5000;
+NSMutableArray *texts = [NSMutableArray array];
+D4CollectTexts(rootView, 0, &b4, texts, 50);
+[s appendFormat:@"页面文本序:[%@]\n", [texts componentsJoinedByString:@" | "]];
+return s;
+}
+NSUInteger ci = 0;
+for (id c in containers) {
+[s appendFormat:@"容器%lu:%@ %@\n", (unsigned long)ci++, D4Cls(c), D4FrameStr(c)];
+if (cvCls!= Nil && [c isKindOfClass:cvCls]) D4EnumCollection(c, s, &nHist, &nDrop, &nUnknown);
+else D4EnumTable(c, s, &nHist, &nDrop, &nUnknown);
+}
+[s appendFormat:@"汇总:历史×%d 去除目标×%d 其中未知段×%d\n", nHist, nDrop, nUnknown];
+} @catch (NSException *e) {
+[s appendFormat:@"(dump异常:%@)\n", [e name]];
+}
+return s;
+}
+
+// ------------------------------------------------------------ output -----
+static NSString *D4Overview(void) {
+    NSMutableString *s = [NSMutableString string];
+    @synchronized (gD4Lock) {
+        [s appendFormat:@"TBDiag4/1.0 · 运行%.0fs · 基线=正式版7过滤(只读视图探针)\n", D4Now()];
+        [s appendFormat:@"[首页横条] %@\n", gD4DumpedHome ? @"已dump" : @"待触发(停在首页)"] ;
+        [s appendFormat:@"[购物车] %@\n", gD4DumpedCart ? @"已dump" : @"待触发(停在购物车)"] ;
+        [s appendFormat:@"[搜索] %@\n", gD4DumpedSearch ? @"已dump" : @"待触发(停在搜索落地页,不输词)"] ;
+        [s appendString:@"每面dump后自动补弹该面页,逐页截图即可。\n"];
+        NSUInteger from = [gD4Events count] > 5 ? [gD4Events count] - 5 : 0;
+        for (NSUInteger i = from; i < [gD4Events count]; i++) {
+            [s appendFormat:@"%@\n", gD4Events[i]];
+        }
+    }
+    return s;
+}
+
+static void D4WriteFile(void) {
+    @try {
+        NSString *dir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        if (dir == nil) return;
+        NSMutableString *out = [NSMutableString string];
+        [out appendString:D4Overview()];
+        @synchronized (gD4Lock) {
+            for (NSString *part in gD4FileParts) [out appendFormat:@"\n==== %@\n", part];
+            [out appendString:@"\n--- events ---\n"];
+            for (NSString *e in gD4Events) [out appendFormat:@"%@\n", e];
+        }
+        [out writeToFile:[dir stringByAppendingPathComponent:@"TBDiag4.txt"]
+              atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    } @catch (NSException *e) { }
+}
+
+static void D4StoreDump(NSString *pageKey, NSString *text) {
+    @synchronized (gD4Lock) {
+        if ([pageKey isEqualToString:@"首页"]) gD4PageHome = [text copy];
+        else if ([pageKey isEqualToString:@"购物车"]) gD4PageCart = [text copy];
+        else if ([pageKey isEqualToString:@"搜索"]) gD4PageSearch = [text copy];
+        [gD4FileParts addObject:[NSString stringWithFormat:@"[+%.0fs] %@\n%@", D4Now(), pageKey, text]];
+        while ([gD4FileParts count] > 8) [gD4FileParts removeObjectAtIndex:0];
+        [gD4PendingPages removeObject:pageKey];
+        [gD4PendingPages addObject:pageKey];
+    }
+    D4Event(@"dump完成:%@", pageKey);
+    D4WriteFile();
+}
+
+// -------------------------------------------------------- presentation -----
+static NSString *D4PageText(NSString *key) {
+    NSString *t = nil;
+    @synchronized (gD4Lock) {
+        if ([key isEqualToString:@"首页"]) t = gD4PageHome;
+        else if ([key isEqualToString:@"购物车"]) t = gD4PageCart;
+        else if ([key isEqualToString:@"搜索"]) t = gD4PageSearch;
+    }
+    if ([key isEqualToString:@"总览"] || t == nil) t = D4Overview();
+    if ([t length] > 1900) t = [t substringToIndex:1900];
+    return t;
+}
+
+static BOOL D4TryShow(void) {
+    NSString *key = nil;
+    @synchronized (gD4Lock) {
+        if ([gD4PendingPages count] == 0) return NO;
+        if (gD4Shows > 0 && (D4Now() - gD4LastShowAt) < 25.0) return NO;
+        if (gD4Shows >= 16) return NO;
+        key = [gD4PendingPages firstObject];
+    }
+    id top = D4TopVC(NULL);
+    if (top == nil) return NO;
+    if ([NSStringFromClass([top class]) containsString:@"Alert"]) return NO;
+    id view = TBM(top, "view");
+    id win = view ? TBM(view, "window") : nil;
+    if (win == nil) return NO;
+    Class acCls = objc_getClass("UIAlertController");
+    Class aaCls = objc_getClass("UIAlertAction");
+    if (acCls == Nil || aaCls == Nil) return NO;
+    NSString *title = [key isEqualToString:@"总览"] ? @"诊断4"
+        : [NSString stringWithFormat:@"诊断4·%@", key];
+    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
+        NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
+        title, D4PageText(key), 1L);
+    id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
+        NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
+    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
+    ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
+        NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
+    @synchronized (gD4Lock) {
+        [gD4PendingPages removeObject:key];
+        gD4Shows++;
+    }
+    gD4LastShowAt = D4Now();
+    return YES;
+}
+
+static void D4PresentTick(int tick) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+        if (!D4TryShow()) D4WriteFile();
+        if (tick < 260) D4PresentTick(tick + 1);
+    });
+}
+
+// ------------------------------------------------------------- watcher -----
+static const int D4K_NONE = 0, D4K_HOME = 1, D4K_CART = 2, D4K_SEARCH = 3;
+static id gD4LastRoot = nil;
+static int gD4CachedKind = 0;
+
+static int D4Classify(id rootVC, id visibleVC) {
+    if (visibleVC != nil &&
+        [NSStringFromClass([visibleVC class]) containsString:@"SearchDoor"]) {
+        return D4K_SEARCH;
+    }
+    Class homeCls = objc_getClass("TBHomeViewController");
+    if (rootVC != nil && homeCls != Nil && [rootVC isKindOfClass:homeCls]) {
+        return D4K_HOME;
+    }
+    if (rootVC == nil) return D4K_NONE;
+    if (rootVC == gD4LastRoot) return gD4CachedKind;
+    // Cart test (bounded): Weex canvas + 购物车 text in the tab root.
+    int kind = D4K_NONE;
+    @try {
+        id rv = TBM(rootVC, "view");
+        if (rv != nil) {
+            int b1 = 2600;
+            id canvas = D4FindClass(rv, @"WXRootView", 0, &b1);
+            if (canvas != nil) {
+                int b2 = 2600;
+                NSMutableArray *hits = [NSMutableArray array];
+                D4FindTextLeaves(rv, @[@"购物车"], 0, &b2, hits, 1);
+                if ([hits count]) kind = D4K_CART;
+            }
+        }
+    } @catch (NSException *e) { }
+    gD4LastRoot = rootVC;
+    gD4CachedKind = kind;
+    return kind;
+}
+
+static void D4WatchTick(int tick) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+        @try {
+            id rootVC = nil;
+            id visibleVC = D4TopVC(&rootVC);
+            int kind = D4Classify(rootVC, visibleVC);
+            double now = D4Now();
+            if (kind != gD4CurKind) {
+                gD4CurKind = kind;
+                gD4KindSince = now;
+                gD4AbsentTicks = 0;
+            } else if (kind == D4K_NONE) {
+                gD4AbsentTicks++;
+            }
+            // Re-arm a face after >=3s spent on another kind.
+            if (kind != D4K_HOME && (now - gD4KindSince) >= 3.0) gD4DumpedHome = NO;
+            if (kind != D4K_CART && (now - gD4KindSince) >= 3.0) gD4DumpedCart = NO;
+            if (kind != D4K_SEARCH && (now - gD4KindSince) >= 3.0) gD4DumpedSearch = NO;
+            double stayed = now - gD4KindSince;
+            if (kind == D4K_HOME && !gD4DumpedHome && stayed >= 2.5 && rootVC != nil) {
+                gD4DumpedHome = YES;
+                D4StoreDump(@"首页", D4DumpHome(rootVC));
+            } else if (kind == D4K_CART && !gD4DumpedCart && stayed >= 2.5 && rootVC != nil) {
+                gD4DumpedCart = YES;
+                D4StoreDump(@"购物车", D4DumpCart(rootVC, visibleVC));
+            } else if (kind == D4K_SEARCH && !gD4DumpedSearch && stayed >= 2.5 && visibleVC != nil) {
+                gD4DumpedSearch = YES;
+                D4StoreDump(@"搜索", D4DumpSearch(visibleVC));
+            }
+        } @catch (NSException *e) { }
+        if (tick < 1500) D4WatchTick(tick + 1);
+    });
+}
+
+static void TD4Start(void) {
+    @autoreleasepool {
+        gD4Start = [NSDate date];
+        gD4Lock = [[NSObject alloc] init];
+        gD4Events = [NSMutableArray array];
+        gD4FileParts = [NSMutableArray array];
+        gD4PendingPages = [NSMutableArray array];
+        @synchronized (gD4Lock) { [gD4PendingPages addObject:@"总览"]; }
+        D4Event(@"TBDiag4 启动(基线正式版7, 只读视图探针)");
+        D4WatchTick(0);
+        D4PresentTick(0);
     }
 }
