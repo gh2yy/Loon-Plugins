@@ -1,76 +1,228 @@
-// TBDiag3 — in-process PROBE build on the formal4 filter base (TBClean 1.4)
-// for Taobao 10.69.0 (com.taobao.taobao4iphone).
+// TBClean — formal ad-filter dylib for Taobao 10.69.0 (com.taobao.taobao4iphone).
 //
-// Why this build exists: the formal4 session's Loon capture (428) proved
-// that the cart / MyTaobao / home-container / searchdoor traffic rides the
-// xnet/SPDY private channel and never traverses the proxy, so no capture
-// can supply the in-process shapes the four still-failing surfaces need
-// (work/CAP428_ANALYSIS.md). This build settles them in ONE session with
-// read-only probes, feeding the formal6 construction.
+// No UI, no logging UI, no popups. All filters are process-internal,
+// data-side disposals applied AFTER data arrives; nothing blocks, rejects
+// or reroutes any request, and no signing / routing / search-result /
+// product-detail / order path is touched (ANALYSIS §7.3 red lines).
+// The splash fix is NOT in this dylib: it is the main-binary patch set
+// P1+P3+P4 (work/patches6.json, see FORMAL_NOTES "formal6" / F below).
 //
-// Filter base: IDENTICAL to formal4/5 (TBClean 1.3/1.4) with ONE change:
-//   - MyTaobao: the containerType 3->2 downgrade write is DISABLED so the
-//     probe reads the factory's native output values. Everything else
-//     (PopLayer block, cart/bag response filters, float getter nil,
-//     search parser filter, tab slot removal) is byte-for-byte the
-//     formal4 logic.
-// Probes (read-only, zero data modification):
-//   P1 cart/bag: at -[MtopService getResponse:mrequest:], for the target
-//      API set (awesome.get / awesome.recommend / WirelessRecommend
-//      family / mtop.trade.query.bag) record the api's real value, the
-//      request biz/ext parameter key sets, the containerParams value's
-//      actual type + top-level keys + recommend_cart_main/_sxc substring
-//      presence, and a step-by-step replay of the formal4 discrimination
-//      (wouldMatch + which step fails). For query.bag additionally: the
-//      response data top-level keys and the key path at which
-//      topAdBanner_1 (and the icart_top_banner template string) appears.
-//   P2 MyTaobao: at +[MTComponentModel creatComponent:componentData:]
-//      record, for moduleName==basementTip, the component's real
-//      containerType, the componentData key set, and call counts.
-//   P3 home float bar: TBHRContainerContentModel -floatLayerSection
-//      getter call count + caller return addresses (as offsets into the
-//      main binary, symbolizable later); -setFloatLayerSection: records
-//      the class + key/property outline of the first non-nil value set.
-//   P4 search: at TBXSearchActivationTppParser -getProcessedData: exit,
-//      record every itemsArray entry's tItemType + name (pre-filter).
-// Presentation: TBDiag-proven alert (title "诊断3", anti-loss retry,
-// re-show on new captures) + the same content written to
-// Documents/TBDiag3.txt on every show.
+// Modules:
+//   1. PopLayer class-wide block (unchanged from formal4): TBPLLayerFactory
+//      (variant 1) layer creation re-check by request event uri slot
+//      (Page_Home / Page_MyTaobao popup_* modal slots only), returning nil,
+//      which the sole caller treats as a native "filtered" cancellation.
+//   2. Cart recommend (REWRITTEN in formal6). Formal4 discrimination
+//      (serialize biz+ext+... into one 64K-capped, depth-6 blob and test
+//      the containerId substring) failed 6/6 recorded samples at the
+//      substring step in the diag3 in-process probe (isSucceed passed on
+//      all 6). The blob test's survival depended on NSDictionary
+//      iteration order against a shared length cap, and its samples were
+//      dominated by same-API-set non-cart traffic. Formal6 replaces it
+//      with three independent layers, each fail-open:
+//      (a) Object-level recursive match at the getResponse point: DFS
+//          over the request's biz/ext parameter objects (depth 12, node
+//          budget, JSON-string values parsed and re-walked), matching
+//          key "containerId" == recommend_cart_main/recommend_cart_sxc,
+//          the ids as dictionary KEYS (the gateway containerParams
+//          morphology), and any string key/value containing either id.
+//          No global serialization, no shared cap.
+//      (b) Weex bridge tagging: at -[WXMtopRequest generateMtopRequest]
+//          exit, the freshly built MtopExtRequest still carries the JS
+//          data verbatim; if the same object-level match hits there, the
+//          request instance is tagged (associated object). getResponse
+//          accepts the tag on response.request as a match (the response
+//          provably stores the very MtopExtRequest that was sent —
+//          CAP428 instruction-level check). If MTOP ever clones the
+//          request, the tag is simply absent and layer (a) still applies.
+//      (c) Native consumption guard: -[TBRecmdContentDataRepo
+//          processResData:success:error:oriDic:page:] — for a repo whose
+//          own containerId is a cart id, a successful TBRecmdLoadDataResData
+//          gets its sections emptied before processing, which is exactly
+//          the shape of a native empty page (the method itself merges
+//          resData.sections into the repo's contentData). Covers the
+//          classic (non-gateway) TBRecmd path; the dosa gateway path's
+//          model conversion is not hooked (see FORMAL_NOTES formal6 A).
+//      The response-side action is unchanged: empty the cart container's
+//      arrays / the data payload of this one matched request, envelope
+//      scalars preserved.
+//   3. Cart top activity banner (target 7, UNCHANGED from formal4 —
+//      status-quo per formal6 B): api=mtop.trade.query.bag response-side
+//      pruning by the structural anchors data field "topAdBanner_1" /
+//      DinamicX template "icart_top_banner". Diag3 evidence: neither
+//      anchor appeared in the one recorded real query.bag response
+//      (the probe's key-path DFS was node-budgeted, so deep presence is
+//      not fully excluded), and tracing the wlm 1.255.0 constant pool
+//      shows both names are JS-side model/template identifiers with no
+//      other wire-key candidate in the pool — the wire field feeding
+//      topAdBanner_1 could not be pinned from the compiled bundle, so
+//      no new anchor is guessed. Dual anchor, fail open when absent.
+//   4. Search landing sections (UNCHANGED from formal4 — status-quo per
+//      formal6 E): exit filter at TBXSearchActivationTppParser
+//      -getProcessedData:. History sections (tItemType nt_history /
+//      nt_combine_history / nt_multimodal_history) are kept
+//      unconditionally; sections whose own "name" contains 猜你想搜 /
+//      淘宝热榜 and whose tItemType is not a history type are dropped;
+//      fail-open on any shape mismatch. Formal6 static work found NO
+//      ObjC-visible assembly exit equivalent to getProcessedData: in
+//      the Swift/XSL new door (SearchDoor BodyComponent exposes only
+//      init; its data assembly is Swift-internal, rendering goes
+//      through Meta/Muise models built inside Swift), so there is no
+//      second point to dual-hook — this module remains UNVERIFIED
+//      (diag3 recorded parser x0, but the user was on the suggestion
+//      page; whether the landing page fully triggered the parser is
+//      undetermined, as is whether 10.69 serves this account the new
+//      door). The two sections' tItemType values remain unknown.
+//   5. Home floating bar (UNCHANGED behavior from formal4, diagnosis
+//      completed in formal6 D): TBHRContainerContentModel
+//      -floatLayerSection getter forced to nil. Diag3 recorded the
+//      getter being read exactly twice with the hook active: caller 1
+//      symbolizes to TBHRGwLoadCacheAction -deepCopyBaseAsTotal: (the
+//      cache deepCopy — the only app-code caller), caller 2's return
+//      address lands outside the main binary's __text (it resolves
+//      into a system-framework frame, consistent with a KVC
+//      valueForKey: read). The bar still renders with the getter
+//      returning nil on every read, so the rendering consumer does
+//      NOT depend on this property's value (it reads the model's
+//      originalData or a remote-module model instead). The true
+//      consumption point could not be pinned statically; the getter
+//      hook is kept as-is (it provably neutralizes the deepCopy path)
+//      and this surface is explicitly NOT claimed fixed.
+//   6. MyTaobao bottom section (basementTip) (REWRITTEN in formal6;
+//      the formal4 factory-exit containerType 3->2 downgrade is
+//      REMOVED — diag3 proved the factory and the native value 3 are
+//      exactly as designed, yet the section still rendered, i.e. the
+//      downgrade is ineffective on the rendering side). Formal6 removes
+//      the section at the two points where the consumer's OWN data
+//      structures are populated — never a parallel copy:
+//      (a) Full assembly: -[MTMainPageDataModel setComponents:] is the
+//          single entry through which every model instance receives
+//          its module list (+creatMainPageDataModel:global:
+//          mainPageDataSource: only calls the setters). The incoming
+//          array is filtered of moduleName == "basementTip" before the
+//          original setter stores it, so the model's one and only
+//          components list — the list Dojo assembly consumes — simply
+//          never contains the module. Every model in the process
+//          (full build, prefetch build) passes this same setter, so no
+//          two ObjC models can disagree about the module's presence
+//          (buildSnapshotData's new-vs-prefetched comparison compares
+//          two identically filtered lists).
+//      (b) Incremental updates: -[MTMainPageUserDataService
+//          listenComponentsChange:] wraps the registered block so a
+//          change dictionary carrying "basementTip" is forwarded
+//          without that entry (a basementTip-only change becomes an
+//          empty dictionary, which the VC's block natively treats as
+//          "no change" and posts no Dojo event for). This closes the
+//          one channel formal2 left open: the C++ diff force-pushes
+//          basementTip (nativeBasementTipForceDiff) into an assembly
+//          that — under formal2's transform-only removal — had no such
+//          component. Formal6 cuts that delivery at the boundary.
+//      Why this is not formal2 again: formal2 removed the element at
+//      the transform exit ONLY, leaving the incremental force-diff
+//      channel delivering a phantom component to the Dojo layer; its
+//      exact ANR mechanism was never proven (no hang log), but the
+//      open channel is a hard fact of the binary. Formal6 filters at
+//      the model's own setter (uniform across all builds) AND at the
+//      incremental delivery boundary; nothing is removed from any
+//      list after a consumer has seen it, and the page's native
+//      refresh flow proceeds with the filtered model exactly as if
+//      the server had not sent the module (server-driven pages add
+//      and drop modules through this same model routinely).
+//      Residuals: the listenLayerData* channels and getFieldData:
+//      can still carry basementTip DATA, but data without an assembled
+//      component has nothing to render into (the section's existence
+//      comes from components alone).
+//   7. Tab bar slot 2 (guangguang/video) (unchanged from formal4):
+//      filter the return value of +[TBAppUIStyle currentTabbarVCItems]
+//      (count==5 and element[1] matches by url "taobao://guangguang/root"
+//      or attractBiz "tab2" only; tags not renumbered; fail-open
+//      otherwise). Verified on device in formal4 — 定版.
 //
-// Safety: every probe body is @try/@catch wrapped and fail-open; typed
-// getters only (isSucceed/containerType NEVER go through the
-// id-returning TBM — formal1 crash lesson); recording is bounded
-// (per-API samples, capped lists) and lock-guarded; probes never alter
-// any value they read.
+//   F. Splash (main-binary patches P1+P3+P4, NOT in this dylib):
+//      formal4 shipped P1 (validate first check always fails) + P3
+//      (Launcher selection always empty). User report 2026-11-14
+//      16:27: after ~10 minutes in the background, foregrounding showed
+//      a splash again — with a DOWNLOADED ordinary creative, not the
+//      preset 超级88 image. Instruction-level trace of the hot path:
+//      showBootImageAtHotStart (gates: hasEnteredBackgroundSinceLaunch,
+//      isHotStartSplashLimited, backgroundWaitSeconds vs
+//      enterBackgroundTime) -> prepareForSplash: -> prepareForNewArch:
+//      -> TBBootImageItemSelector chooseNewArchSplashDataForStart:
+//      completion: — which fetches the four bizCodes PLUS
+//      fetchAllDynamicPriorityItems (downloaded creatives) and calls
+//      processCommercialSplash:completion:. That function assembles
+//      candidates from the classic fetch AND from the external data
+//      service (ext_bootImageItems under enableExtSplash, setting
+//      activateNewCommercialSplash); only one of its branches funnels
+//      into chooseValid (hence validate/P1), and no validate/chooseValid
+//      call exists on the ext/dynamic-priority branch. The downloaded
+//      creative matches that branch's inventory exactly. So P1/P3 guard
+//      the classic + Launcher selection funnels, but the new-arch
+//      commercial branch can still hand an item to the completion.
+//      Fix (strategy: convergence point, not whack-a-mole): P4 forces
+//      -[TBBootImageManager showCurrentItem:isOpenUrlLaunch:
+//      configuration:] to return NO at its header. That method is the
+//      BootImage stack's single display convergence — its only two
+//      call sites are the cold path (showBootImageAtColdStart:) and
+//      the hot-start completion block, and the Launcher fallback's
+//      display also ends here. NO is a design-native return (nil
+//      current item -> NO), and both callers' NO teardown is verified
+//      instruction-level: cold sends FLASHVIEWDISDISAPPEARED and
+//      proceeds to the home page; hot removes the placeholder image
+//      and sends BootImageDidFinishNotification. The success-only
+//      hide callback is installed inside exposeSplashDisplay only on
+//      the success path; no caller waits on it, and all completion
+//      signaling is synchronous on the caller side — nothing can hang
+//      waiting for a display that never happened. TX-flavored
+//      interactive items render through this same BootImage display
+//      path (TXSplashInteractUtil is file/image utilities and
+//      TXSplashInteractRequestUtil only performs post-click claim /
+//      add-to-cart requests), so they are covered by the same point.
+//      Residual: SPSplashController (WMCore Weex snapshot) is a launch
+//      snapshot host with no ad selection of its own — not an
+//      independent ad presenter on current evidence (diag1's shown
+//      creative traced to BootImage); if a non-BootImage creative ever
+//      appears, that channel is the remaining suspect. The hot-start
+//      threshold is the fatigue client's backgroundWaitSeconds server
+//      config (observed trigger ≈ 10 min in this session).
+//
+// Marker: TBClean/1.5 (formal6)
+// formal6 changes vs formal4/5 (1.3/1.4): module 2 rewritten (object-
+// level recursive match + Weex bridge tagging + repo consumption
+// guard; blob serializer removed); module 6 rewritten (model setter
+// filter + listenComponentsChange: wrapper; factory downgrade hook
+// removed); modules 1, 3, 4, 5, 7 logic unchanged (3/4/5 comments
+// updated with diag3/formal6 findings); main binary patch set grows
+// from P1+P3 to P1+P3+P4 (splash display convergence, face F).
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dispatch/dispatch.h>
-#import <mach-o/dyld.h>
 
 // Build identity, verifiable in the compiled artifact (strings).
-__attribute__((used)) static const char kTD3Version[] = "TBDiag3/1.0";
+__attribute__((used)) static const char kTCVersion[] = "TBClean/1.5";
 
 // ------------------------------------------------------------ utilities ----
-// (Identical to TBClean 1.4 — see its header for the isSucceed warning.)
+// WARNING: TBM is ONLY for selectors whose return type is an object (id).
+// Passing a primitive-returning selector (BOOL/int/...) makes the msgSend
+// result register be read as an object pointer; under ARC that value is
+// then retained, which is exactly the formal1 launch crash: -isSucceed
+// returns BOOL, TBM(resp,"isSucceed") produced the "pointer" 0x1 and
+// objc_retain(0x1) faulted. Primitive getters MUST go through TBMBool /
+// a correctly-typed cast instead.
 static id TBM(id obj, const char *selName) {
     if (obj == nil) return nil;
     SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
     if (![obj respondsToSelector:sel]) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(obj, sel);
 }
+// Typed getter for BOOL-returning selectors. Returns YES when the value
+// was actually read into *out.
 static BOOL TBMBool(id obj, const char *selName, BOOL *out) {
     if (obj == nil || out == NULL) return NO;
     SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
     if (![obj respondsToSelector:sel]) return NO;
     *out = ((BOOL (*)(id, SEL))objc_msgSend)(obj, sel);
-    return YES;
-}
-static BOOL TBMInt(id obj, const char *selName, long long *out) {
-    if (obj == nil || out == NULL) return NO;
-    SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
-    if (![obj respondsToSelector:sel]) return NO;
-    *out = ((long long (*)(id, SEL))objc_msgSend)(obj, sel);
     return YES;
 }
 static void TBMSet(id obj, const char *selName, id val) {
@@ -80,28 +232,7 @@ static void TBMSet(id obj, const char *selName, id val) {
     ((void (*)(id, SEL, id))objc_msgSend)(obj, sel, val);
 }
 
-static void TCAppendSerialized(id obj, NSMutableString *out, int depth) {
-    if (obj == nil || depth > 6 || [out length] > 65536) return;
-    if ([obj isKindOfClass:[NSString class]]) { [out appendString:(NSString *)obj]; [out appendString:@" "]; return; }
-    if ([obj isKindOfClass:[NSDictionary class]]) {
-        for (id k in (NSDictionary *)obj) {
-            TCAppendSerialized(k, out, depth + 1);
-            TCAppendSerialized(((NSDictionary *)obj)[k], out, depth + 1);
-        }
-        return;
-    }
-    if ([obj isKindOfClass:[NSArray class]]) {
-        for (id e in (NSArray *)obj) TCAppendSerialized(e, out, depth + 1);
-        return;
-    }
-    if ([obj isKindOfClass:[NSData class]]) {
-        NSString *s = [[NSString alloc] initWithData:(NSData *)obj encoding:NSUTF8StringEncoding];
-        if (s) { [out appendString:s]; [out appendString:@" "]; }
-        return;
-    }
-    return;
-}
-
+// Deep-copy a JSON-shaped object into mutable containers.
 static id TCMutableCopy(id obj, int depth) {
     if (obj == nil || depth > 12) return obj;
     if ([obj isKindOfClass:[NSDictionary class]]) {
@@ -117,78 +248,12 @@ static id TCMutableCopy(id obj, int depth) {
     return obj;
 }
 
-// ------------------------------------------------------------- diag state --
-static NSDate *gStart = nil;
-static id gLock = nil;
-static NSMutableArray *gEvents = nil;
-static NSMutableString *gHookOK = nil, *gHookMiss = nil;
-static int gShows = 0;
-static BOOL gPending = NO;
-static double gLastShowAt = 0;
-static uintptr_t gMainBase = 0;
-
-// P1: per-api seen counts, recorded samples, would-match tallies.
-static NSMutableDictionary *gApiSeen = nil;    // api -> NSNumber count
-static NSMutableDictionary *gApiRecN = nil;    // api -> NSNumber recorded
-static NSMutableArray *gCartRecs = nil;        // NSString records (cart set)
-static NSMutableArray *gBagRecs = nil;         // NSString records (query.bag)
-static int gCartMatch = 0, gCartFailOk = 0, gCartFailSub = 0;
-static int gBagAct = 0;                        // of recorded bag samples
-static NSString *gBagAnchorLine = @"";
-// P2: MyTaobao factory.
-static int gFactoryTotal = 0, gBaseCalls = 0;
-static NSString *gBaseFirst = @"", *gBaseLast = @"";
-// P3: float getter/setter.
-static int gFloatGetCalls = 0, gFloatSetCalls = 0;
-static NSMutableDictionary *gFloatCallers = nil; // "0xOFFSET" -> count
-static NSString *gFloatSetVal = @"";
-// P4: search parser.
-static int gParserCalls = 0, gSearchDroppedLast = -1;
-static NSString *gSearchSnap = @"", *gSearchTypes = @"";
-
-static double TDNow(void) { return [[NSDate date] timeIntervalSinceDate:gStart]; }
-
-static void TDEvent(NSString *fmt, ...) {
-    va_list ap; va_start(ap, fmt);
-    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
-    va_end(ap);
-    @synchronized (gLock) {
-        [gEvents addObject:[NSString stringWithFormat:@"[+%.1fs] %@", TDNow(), msg]];
-        while ([gEvents count] > 120) [gEvents removeObjectAtIndex:0];
-    }
-}
-
-static NSString *TDShort(id obj, NSUInteger cap) {
-    if (obj == nil) return @"(nil)";
-    NSString *s = nil;
-    @try { s = [obj description]; } @catch (NSException *e) { s = @"<desc-fail>"; }
-    if (s == nil) s = @"";
-    s = [s stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
-    if ([s length] > cap) s = [[s substringToIndex:cap] stringByAppendingString:@"…"];
-    return s;
-}
-
-// Sorted top-level keys of a dict, bounded; "(not-dict:<class>)" otherwise.
-static NSString *TDKeysOf(id obj) {
-    if (obj == nil) return @"(nil)";
-    if (![obj isKindOfClass:[NSDictionary class]]) {
-        return [NSString stringWithFormat:@"(not-dict:%@)", NSStringFromClass([obj class])];
-    }
-    NSArray *keys = [[(NSDictionary *)obj allKeys] sortedArrayUsingSelector:@selector(compare:)];
-    NSMutableString *out = [NSMutableString string];
-    NSUInteger n = 0;
-    for (id k in keys) {
-        if (n++ > 0) [out appendString:@","];
-        NSString *ks = [k isKindOfClass:[NSString class]] ? (NSString *)k : TDShort(k, 30);
-        if ([ks length] > 40) ks = [[ks substringToIndex:40] stringByAppendingString:@"…"];
-        [out appendString:ks];
-        if (n >= 40) { [out appendString:@",…"]; break; }
-    }
-    return out;
-}
-
 // ============================================================ MTOP core ====
-// Formal4 point, unchanged: -[MtopService getResponse:mrequest:].
+// Single response-side point: -[MtopService getResponse:mrequest:]
+// (IMP 0x1002e1e18) builds the MtopExtResponse that requestFinished:
+// then dispatches to the caller delegate (succeed:response: /
+// failed:response:). The response carries its own request, so api name
+// + params are read from the response itself; no send-side state is kept.
 typedef id (*GetRespIMP)(id, SEL, id, id);
 static GetRespIMP gOrigGetResp = NULL;
 
@@ -198,6 +263,12 @@ static NSString *TCApiOfResponse(id resp) {
     return [n isKindOfClass:[NSString class]] ? n : nil;
 }
 
+// ---- cart recommend -----------------------------------------------------
+// API set (V4_A_CART.md): the two real cart paths are the native
+// TBRecmd gateway (awesome.get) and the Weex CartFeeds component
+// (awesome.recommend); the WirelessRecommend family is kept for the
+// sibling containers that share the gateway. Case-insensitive because
+// the family ships both capitalizations.
 static BOOL TCCartAPI(NSString *api) {
     if (![api isKindOfClass:[NSString class]]) return NO;
     return [api caseInsensitiveCompare:@"mtop.taobao.wireless.home.awesome.get"] == NSOrderedSame ||
@@ -207,23 +278,97 @@ static BOOL TCCartAPI(NSString *api) {
            [api caseInsensitiveCompare:@"mtop.relationrecommend.wirelessrecommend.recommend"] == NSOrderedSame;
 }
 
-// Formal4 discrimination, unchanged (read-only replay is used by P1).
-static BOOL TCCartMatched(id resp) {
-    id req = TBM(resp, "request");
-    if (req == nil) return NO;
-    NSMutableString *blob = [NSMutableString string];
-    @try {
-        TCAppendSerialized(TBM(req, "getBizParameters"), blob, 0);
-        TCAppendSerialized(TBM(req, "getExtParameters"), blob, 0);
-        TCAppendSerialized(TBM(req, "pageName"), blob, 0);
-        TCAppendSerialized(TBM(req, "pageUrl"), blob, 0);
-        TCAppendSerialized(TBM(req, "bizID"), blob, 0);
-        TCAppendSerialized(TBM(req, "openBizData"), blob, 0);
-    } @catch (NSException *e) { return NO; }
-    return [blob rangeOfString:@"recommend_cart_main"].location != NSNotFound ||
-           [blob rangeOfString:@"recommend_cart_sxc"].location != NSNotFound;
+// Object-level recursive cart-container match (formal6 module 2a/2b).
+// Walks the actual parameter objects — no serialization, no shared
+// length cap, no dependence on dictionary iteration order. Matches:
+//   * a "containerId" key whose string value is a cart id;
+//   * a cart id appearing as a dictionary KEY (gateway containerParams
+//     morphology: the id keys the per-container parameter dict);
+//   * any string key or value CONTAINING a cart id (covers the ids
+//     embedded in JSON-string values at any nesting level);
+//   * JSON-string values are parsed and re-walked (escaped forms).
+// Bounded: depth 12, node budget per call. Scalars are never sent
+// -description; only genuine string content is inspected.
+static BOOL TCStrHasCartId(NSString *s) {
+    return [s rangeOfString:@"recommend_cart_main"].location != NSNotFound ||
+           [s rangeOfString:@"recommend_cart_sxc"].location != NSNotFound;
+}
+static BOOL TCStrIsCartId(NSString *s) {
+    return [s isEqualToString:@"recommend_cart_main"] ||
+           [s isEqualToString:@"recommend_cart_sxc"];
 }
 
+static BOOL TCDeepCartWalk(id node, int depth, int *budget) {
+    if (node == nil || depth > 12 || *budget <= 0) return NO;
+    (*budget)--;
+    if ([node isKindOfClass:[NSString class]]) {
+        NSString *s = (NSString *)node;
+        if (TCStrHasCartId(s)) return YES;
+        NSUInteger len = [s length];
+        if (len >= 2 && len <= 262144) {
+            // JSON-string value? Parse and re-walk the object graph.
+            NSRange ws = [s rangeOfCharacterFromSet:[NSCharacterSet whitespaceCharacterSet]];
+            NSUInteger first = (ws.location == 0) ? 1 : 0;
+            unichar c = [s characterAtIndex:first];
+            if (c == '{' || c == '[') {
+                NSData *d = [s dataUsingEncoding:NSUTF8StringEncoding];
+                id parsed = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+                if (parsed != nil && parsed != node) {
+                    return TCDeepCartWalk(parsed, depth + 1, budget);
+                }
+            }
+        }
+        return NO;
+    }
+    if ([node isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *d = (NSDictionary *)node;
+        for (id k in d) {
+            if ([k isKindOfClass:[NSString class]]) {
+                NSString *ks = (NSString *)k;
+                id v = d[k];
+                if ([ks isEqualToString:@"containerId"] &&
+                    [v isKindOfClass:[NSString class]] && TCStrIsCartId((NSString *)v)) return YES;
+                if (TCStrHasCartId(ks)) return YES;
+            }
+            if (TCDeepCartWalk(d[k], depth + 1, budget)) return YES;
+            if (*budget <= 0) return NO;
+        }
+        return NO;
+    }
+    if ([node isKindOfClass:[NSArray class]]) {
+        for (id e in (NSArray *)node) {
+            if (TCDeepCartWalk(e, depth + 1, budget)) return YES;
+            if (*budget <= 0) return NO;
+        }
+        return NO;
+    }
+    if ([node isKindOfClass:[NSData class]]) {
+        NSString *s = [[NSString alloc] initWithData:(NSData *)node encoding:NSUTF8StringEncoding];
+        if (s) return TCDeepCartWalk(s, depth + 1, budget);
+        return NO;
+    }
+    return NO;
+}
+
+// Tag set on MtopExtRequest instances built by the Weex bridge whose
+// own (verbatim JS) params matched the cart containers.
+static char TCCartTagKey;
+
+static BOOL TCCartParamsMatch(id req) {
+    if (req == nil) return NO;
+    if (objc_getAssociatedObject(req, &TCCartTagKey) != nil) return YES;
+    @try {
+        int budget = 4000;
+        if (TCDeepCartWalk(TBM(req, "getBizParameters"), 0, &budget)) return YES;
+        budget = 4000;
+        if (TCDeepCartWalk(TBM(req, "getExtParameters"), 0, &budget)) return YES;
+    } @catch (NSException *e) { }
+    return NO;
+}
+
+// Empty every array value inside a (mutable) dict, recursing into
+// nested dicts; scalars (ret codes, totals, paging flags) stay intact
+// so the consumer's native "empty result" path runs.
 static void TCEmptyArraysDeep(NSMutableDictionary *d, int depth) {
     if (depth > 3) return;
     for (id k in [d allKeys]) {
@@ -236,6 +381,10 @@ static void TCEmptyArraysDeep(NSMutableDictionary *d, int depth) {
     }
 }
 
+// Returns the emptied body, or nil to fail open. Gateway-shaped
+// responses keyed by containerId are emptied surgically (only the cart
+// container's subtree); other shapes fall back to emptying the whole
+// `data` payload of this one matched request (formal3 behavior).
 static id TCEmptiedCartBody(id body) {
     if (![body isKindOfClass:[NSDictionary class]]) return nil;
     NSMutableDictionary *b = TCMutableCopy(body, 0);
@@ -262,7 +411,14 @@ static id TCEmptiedCartBody(id body) {
     return b;
 }
 
-// ---- cart top activity banner (target 7) — formal4, unchanged -----------
+// ---- cart top activity banner (target 7) --------------------------------
+// Identity (V4_A_CART.md §7, formal6 B status-quo): the banner card
+// inside the query.bag HIERARCHY structure — data field
+// "topAdBanner_1", rendered by the DinamicX template
+// "icart_top_banner". Copy text / amounts are server content and are
+// never used as keys. Checkout, the cart body and the JS filter rows
+// (降价/分组/常购/失效) are different nodes/fields and are not touched;
+// the API itself is never blocked.
 static BOOL TCDictHasBannerTemplate(NSDictionary *d) {
     for (id k in d) {
         id v = d[k];
@@ -281,6 +437,8 @@ static void TCStripBannerInNode(id node, int depth, BOOL *acted) {
             *acted = YES;
         }
         for (id k in [d allKeys]) TCStripBannerInNode(d[k], depth + 1, acted);
+        // A dict that directly carries the banner template id IS the
+        // banner node; empty it (never the root envelope itself).
         if (depth > 0 && TCDictHasBannerTemplate(d)) {
             [d removeAllObjects];
             *acted = YES;
@@ -301,6 +459,8 @@ static void TCStripBannerInNode(id node, int depth, BOOL *acted) {
     }
 }
 
+// Returns the pruned body, or nil to fail open (neither anchor present
+// anywhere — the banner is not in this response shape).
 static id TCFilteredBagBody(id body) {
     if (![body isKindOfClass:[NSDictionary class]]) return nil;
     NSMutableDictionary *b = TCMutableCopy(body, 0);
@@ -309,6 +469,10 @@ static id TCFilteredBagBody(id body) {
     return acted ? b : nil;
 }
 
+// ---- shared: write a new body back into the response ------------------
+// All-or-nothing: serialize FIRST; only when the new body serializes
+// cleanly are body/json/rawbody written (together, consistently). Any
+// failure leaves the original response completely untouched (fail-open).
 static void TCSetBody(id resp, id newBody) {
     @try {
         if (![newBody isKindOfClass:[NSDictionary class]]) return;
@@ -322,176 +486,27 @@ static void TCSetBody(id resp, id newBody) {
     } @catch (NSException *e) { }
 }
 
-// ============================================================ P1 probes ====
-// containerParams morphology: actual type, top-level keys (string form
-// parsed when possible), recommend_cart_main/_sxc presence.
-static NSString *TDContainerParamsInfo(id paramsDict) {
-    if (![paramsDict isKindOfClass:[NSDictionary class]]) return @"params-not-dict";
-    id cp = ((NSDictionary *)paramsDict)[@"containerParams"];
-    if (cp == nil) return @"absent";
-    if ([cp isKindOfClass:[NSString class]]) {
-        NSString *s = (NSString *)cp;
-        BOOL hasMain = [s rangeOfString:@"recommend_cart_main"].location != NSNotFound;
-        BOOL hasSxc = [s rangeOfString:@"recommend_cart_sxc"].location != NSNotFound;
-        NSString *keys = @"unparsed";
-        @try {
-            NSData *d = [s dataUsingEncoding:NSUTF8StringEncoding];
-            id parsed = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
-            if ([parsed isKindOfClass:[NSDictionary class]]) keys = TDKeysOf(parsed);
-            else if (parsed != nil) keys = [NSString stringWithFormat:@"(json:%@)", NSStringFromClass([parsed class])];
-        } @catch (NSException *e) { keys = @"parse-exc"; }
-        return [NSString stringWithFormat:@"NSString len=%lu main=%d sxc=%d keys=[%@]",
-                (unsigned long)[s length], hasMain, hasSxc, keys];
-    }
-    if ([cp isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *d = (NSDictionary *)cp;
-        return [NSString stringWithFormat:@"NSDictionary main=%d sxc=%d keys=[%@]",
-                d[@"recommend_cart_main"] != nil, d[@"recommend_cart_sxc"] != nil, TDKeysOf(d)];
-    }
-    return [NSString stringWithFormat:@"other:%@", NSStringFromClass([cp class])];
-}
-
-// Bounded DFS collecting key paths at which `keyName` occurs as a dict
-// key, or at which a string value contains `needle`. Keys only — values
-// are never recorded.
-static void TDSearchPaths(id node, NSString *path, int depth, int *budget,
-                          NSString *keyName, NSString *needle,
-                          NSMutableArray *keyPaths, NSMutableArray *strPaths) {
-    if (node == nil || depth > 8 || *budget <= 0) return;
-    (*budget)--;
-    if ([node isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *d = (NSDictionary *)node;
-        for (id k in d) {
-            NSString *ks = [k isKindOfClass:[NSString class]] ? (NSString *)k : TDShort(k, 24);
-            NSString *child = [path length] ? [path stringByAppendingFormat:@".%@", ks] : ks;
-            if (keyName != nil && [ks isEqualToString:keyName] && [keyPaths count] < 3) {
-                [keyPaths addObject:child];
-            }
-            TDSearchPaths(d[k], child, depth + 1, budget, keyName, needle, keyPaths, strPaths);
-            if (*budget <= 0) return;
-        }
-        return;
-    }
-    if ([node isKindOfClass:[NSArray class]]) {
-        NSArray *a = (NSArray *)node;
-        NSUInteger n = MIN([a count], (NSUInteger)60);
-        for (NSUInteger i = 0; i < n; i++) {
-            TDSearchPaths(a[i], [path stringByAppendingFormat:@"[%lu]", (unsigned long)i],
-                          depth + 1, budget, keyName, needle, keyPaths, strPaths);
-            if (*budget <= 0) return;
-        }
-        return;
-    }
-    if (needle != nil && [node isKindOfClass:[NSString class]] &&
-        [(NSString *)node rangeOfString:needle].location != NSNotFound && [strPaths count] < 3) {
-        [strPaths addObject:path];
-    }
-}
-
-// Read-only probe at the getResponse point. Runs BEFORE the formal4
-// filter rewrites anything; every value is read through the proven
-// getters; any exception aborts the probe only.
-static void TDProbeMTOP(id resp, NSString *api, BOOL isCart, BOOL isBag) {
-    @try {
-        BOOL full = NO;
-        @synchronized (gLock) {
-            int seen = [gApiSeen[api] intValue] + 1;
-            gApiSeen[api] = @(seen);
-            int recN = [gApiRecN[api] intValue];
-            if (recN < 3) { gApiRecN[api] = @(recN + 1); full = YES; }
-        }
-        if (!full) return;
-        id req = TBM(resp, "request");
-        if (req == nil) {
-            @synchronized (gLock) {
-                [(isBag ? gBagRecs : gCartRecs) addObject:
-                    [NSString stringWithFormat:@"api=%@ request=nil", api]];
-                gPending = YES;
-            }
-            return;
-        }
-        // apiVersion: best-effort, guarded (getter existence unproven).
-        NSString *ver = @"?";
-        id v1 = TBM(req, "getApiVersion");
-        if ([v1 isKindOfClass:[NSString class]]) ver = (NSString *)v1;
-        else {
-            id v2 = TBM(req, "apiVersion");
-            if ([v2 isKindOfClass:[NSString class]]) ver = (NSString *)v2;
-        }
-        BOOL ok = YES; BOOL okRead = TBMBool(resp, "isSucceed", &ok);
-        BOOL okEff = (!okRead || ok); // formal4 proceeds when unread/false->skip
-        id biz = TBM(req, "getBizParameters");
-        id ext = TBM(req, "getExtParameters");
-        NSString *pageName = TBM(req, "pageName");
-        if (![pageName isKindOfClass:[NSString class]]) pageName = @"-";
-        else if ([pageName length] > 60) pageName = [[pageName substringToIndex:60] stringByAppendingString:@"…"];
-
-        if (isCart) {
-            BOOL sub = TCCartMatched(resp);
-            NSString *cpInfo = TDContainerParamsInfo(biz);
-            if ([cpInfo isEqualToString:@"absent"]) {
-                NSString *alt = TDContainerParamsInfo(ext);
-                if (![alt isEqualToString:@"absent"]) cpInfo = [@"(in ext) " stringByAppendingString:alt];
-            }
-            NSString *failStep = sub ? @"-" : (okEff ? @"substring" : @"isSucceed");
-            BOOL would = okEff && sub;
-            NSString *rec = [NSString stringWithFormat:
-                @"api=%@ ver=%@ ok=%@ bizKeys=[%@] extKeys=[%@] pageName=%@ containerParams={%@} steps: api=1 ok=%d sub=%d => wouldMatch=%@ failStep=%@",
-                api, ver, okRead ? (ok ? @"1" : @"0") : @"?",
-                TDKeysOf(biz), TDKeysOf(ext), pageName, cpInfo,
-                okEff, sub, would ? @"YES" : @"NO", failStep];
-            @synchronized (gLock) {
-                [gCartRecs addObject:rec];
-                if (would) gCartMatch++;
-                else if (!okEff) gCartFailOk++;
-                else gCartFailSub++;
-                gPending = YES;
-            }
-            TDEvent(@"P1 cart %@", rec);
-        } else if (isBag) {
-            id body = TBM(resp, "body");
-            NSString *dataKeys = @"-";
-            NSMutableArray *kp = [NSMutableArray array], *sp = [NSMutableArray array];
-            if ([body isKindOfClass:[NSDictionary class]]) {
-                id data = ((NSDictionary *)body)[@"data"];
-                if ([data isKindOfClass:[NSDictionary class]]) dataKeys = TDKeysOf(data);
-                else if (data != nil) dataKeys = [NSString stringWithFormat:@"(data:%@)", NSStringFromClass([data class])];
-                int budget = 4000;
-                TDSearchPaths(body, @"body", 0, &budget, @"topAdBanner_1", @"icart_top_banner", kp, sp);
-            }
-            BOOL wouldAct = (TCFilteredBagBody(body) != nil);
-            NSString *rec = [NSString stringWithFormat:
-                @"api=%@ ver=%@ ok=%@ dataKeys=[%@] topAdBanner_1@[%@] icart_top_banner@[%@] formal4WouldAct=%@",
-                api, ver, okRead ? (ok ? @"1" : @"0") : @"?", dataKeys,
-                [kp componentsJoinedByString:@" ; "], [sp componentsJoinedByString:@" ; "],
-                wouldAct ? @"YES" : @"NO"];
-            @synchronized (gLock) {
-                [gBagRecs addObject:rec];
-                if (wouldAct) gBagAct++;
-                gBagAnchorLine = [NSString stringWithFormat:@"字段@%@ 模板@%@",
-                    [kp firstObject] ?: @"-", [sp firstObject] ?: @"-"];
-                gPending = YES;
-            }
-            TDEvent(@"P1 bag %@", rec);
-        }
-    } @catch (NSException *e) { }
-}
-
 static id TCGetResponse(id self, SEL _cmd, id raw, id mreq) {
     id resp = gOrigGetResp ? gOrigGetResp(self, _cmd, raw, mreq) : nil;
     if (resp == nil) return resp;
     @try {
+        // Step 1: read ONLY the api name — a single object-typed getter,
+        // class-checked in TCApiOfResponse. Non-target APIs return here:
+        // for them NOT ONE other field of the response is read or touched.
         NSString *api = TCApiOfResponse(resp);
         if (api == nil) return resp;
         BOOL isCart = TCCartAPI(api);
         BOOL isBag = [api isEqualToString:@"mtop.trade.query.bag"];
         if (!isCart && !isBag) return resp;
-        // Probe first, on the untouched response; filter after (formal4).
-        TDProbeMTOP(resp, api, isCart, isBag);
+        // Step 2 (target APIs only): failure responses pass untouched.
+        // isSucceed returns BOOL, so it is read through the typed helper —
+        // NEVER through the id-returning TBM (formal1 crash root cause).
         BOOL ok = YES;
         if (TBMBool(resp, "isSucceed", &ok) && !ok) return resp;
+        // Step 3: each filter validates every level it touches and
+        // returns nil (fail-open) on any shape mismatch.
         if (isCart) {
-            if (TCCartMatched(resp)) {
+            if (TCCartParamsMatch(TBM(resp, "request"))) {
                 id nb = TCEmptiedCartBody(TBM(resp, "body"));
                 if (nb != nil) TCSetBody(resp, nb);
             }
@@ -503,9 +518,100 @@ static id TCGetResponse(id self, SEL _cmd, id raw, id mreq) {
     return resp;
 }
 
+// ---- cart layer (b): Weex bridge tagging --------------------------------
+// -[WXMtopRequest generateMtopRequest] (IMP 0x101254058) builds the
+// MtopExtRequest out of the JS-supplied parameters. At this exit the
+// request's biz/ext parameters are the JS data verbatim — before any
+// TBSDK/MtopService-side copying — so the object-level match is run
+// here too, and a hit tags the request instance. The response-side
+// point (layer a) honors the tag; if the instance does not survive to
+// the response, the tag is simply never seen (fail-open).
+typedef id (*GenMtopIMP)(id, SEL);
+static GenMtopIMP gOrigGenMtop = NULL;
+
+static id TCGenerateMtopRequest(id self, SEL _cmd) {
+    id req = gOrigGenMtop ? gOrigGenMtop(self, _cmd) : nil;
+    if (req == nil) return req;
+    @try {
+        int budget = 4000;
+        BOOL hit = TCDeepCartWalk(TBM(req, "getBizParameters"), 0, &budget);
+        if (!hit) {
+            budget = 4000;
+            hit = TCDeepCartWalk(TBM(req, "getExtParameters"), 0, &budget);
+        }
+        if (hit) {
+            objc_setAssociatedObject(req, &TCCartTagKey, @YES,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    } @catch (NSException *e) { }
+    return req;
+}
+
+// ---- cart layer (c): native repo consumption guard ----------------------
+// -[TBRecmdContentDataRepo processResData:success:error:oriDic:page:]
+// (IMP 0x104b93cfc) is where a fetched page's parsed model is merged
+// into the repo: for the TBRecmdLoadDataResData shape it reads
+// resData.sections and appends them into the repo's contentData, then
+// runs the normal update/refresh funnel (loading status is reset at
+// its head, so the state machine completes exactly as for a native
+// empty page). For a repo whose own containerId is a cart id, a
+// successful resData gets its sections emptied before the original
+// implementation runs. Arguments are forwarded verbatim; page is only
+// passed through, never interpreted.
+typedef void (*ProcessResIMP)(id, SEL, id, BOOL, id, id, long long);
+static ProcessResIMP gOrigProcessRes = NULL;
+
+static void TCProcessResData(id self, SEL _cmd, id resData, BOOL success,
+                             id error, id oriDic, long long page) {
+    @try {
+        if (success && resData != nil) {
+            id cid = TBM(self, "containerId");
+            if ([cid isKindOfClass:[NSString class]] && TCStrIsCartId((NSString *)cid)) {
+                Class rc = objc_getClass("TBRecmdLoadDataResData");
+                if (rc != Nil && [resData isKindOfClass:rc]) {
+                    TBMSet(resData, "setSections:", [NSArray array]);
+                }
+            }
+        }
+    } @catch (NSException *e) { }
+    if (gOrigProcessRes) gOrigProcessRes(self, _cmd, resData, success, error, oriDic, page);
+}
+
+// ============================================================ install ======
+static BOOL TCHook(const char *clsName, const char *selName, BOOL isClass,
+                   IMP repl, IMP *origOut) {
+    Class cls = objc_getClass(clsName);
+    if (cls == Nil) return NO;
+    SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
+    Method m = isClass ? class_getClassMethod(cls, sel) : class_getInstanceMethod(cls, sel);
+    if (m == NULL) return NO;
+    if (*origOut != NULL) return YES;
+    *origOut = method_getImplementation(m);
+    method_setImplementation(m, repl);
+    return YES;
+}
+
 // ========================================================== PopLayer =====
-// Formal4 module 1, unchanged (the probe build keeps the block so the
-// session matches the formal environment).
+// Class-wide block for marketing modals on Page_Home / Page_MyTaobao.
+// (Unchanged from formal4; see FORMAL_NOTES §1 for the full evidence.)
+// - The single funnel for layer creation in the main binary is
+//   TBPLLayerFactory -createLayerWithFrame:type:popRequest:attachVC:.
+//   Its only real caller (TBPLPageTriggerService -p_onReadyOperation:)
+//   explicitly nil-checks the result and cancels cleanly via the native
+//   "OnViewCustomFilter" lose path, and the factory itself returns nil
+//   by design for unregistered types. Returning nil for matched
+//   requests is a native-shaped outcome.
+// - Discrimination key: the request's event uri
+//   ([popRequest event] -> uri), matched by slot prefix:
+//     poplayer://Page_Home@popup_*
+//     poplayer://Page_MyTaobao@popup_*
+//   popup_guide_float_* is included: its config entries are
+//   field-identical to the modal slots; genuine float/resident/guide
+//   slots use float_* / resident prefixes and are untouched.
+// - Variant 2 (config:targetUrl:) has no caller in the main binary and
+//   its event.uri is always nil, so no point is set there.
+// - queryInventory: is a freq-control gate with no candidate set;
+//   deliberately NOT touched.
 typedef struct { double x, y, w, h; } TCFrame;
 typedef id (*FactoryIMP)(id, SEL, TCFrame, id, id, id);
 static FactoryIMP gOrigFactory = NULL;
@@ -525,75 +631,40 @@ static id TCFactoryCreate(id self, SEL _cmd, TCFrame fr, id type, id popReq, id 
     return gOrigFactory ? gOrigFactory(self, _cmd, fr, type, popReq, vc) : nil;
 }
 
-// ============================================== P3: home float bar =======
-// Getter: formal4 forces nil (unchanged) + probe records call count and
-// caller return addresses as offsets from the main binary base, for
-// after-the-fact symbolization. Setter: pure pass-through + records the
-// first non-nil value's class and key/property outline.
+// ===================================================== home float bar ====
+// TBHRContainerContentModel -floatLayerSection (IMP 0x10453af5c in the
+// pristine binary) forced to nil — formal4 behavior, kept as-is.
+// Formal6 D findings (diag3 caller symbolization): the getter IS read
+// (x2 in the probe session) — once from TBHRGwLoadCacheAction
+// -deepCopyBaseAsTotal: (return address in function 0x10453d564, the
+// only app-code caller) and once through a system-framework frame
+// (return address outside the main binary __text, consistent with a
+// KVC valueForKey: read). With the getter returning nil on every read
+// the bar still renders, so the rendering consumer does not depend on
+// this property (originalData is stored independently at parse time);
+// the true consumption point is not statically pinnable. This hook
+// provably neutralizes the deepCopy path; the surface is NOT claimed
+// fixed (see FORMAL_NOTES formal6 D).
 typedef id (*FloatGetterIMP)(id, SEL);
 static FloatGetterIMP gOrigFloatGetter = NULL;
-typedef void (*FloatSetterIMP)(id, SEL, id);
-static FloatSetterIMP gOrigFloatSetter = NULL;
-
-static NSString *TDValueOutline(id val) {
-    NSMutableString *out = [NSMutableString stringWithFormat:@"类=%@", NSStringFromClass([val class])];
-    @try {
-        if ([val isKindOfClass:[NSDictionary class]]) {
-            [out appendFormat:@" 键=[%@]", TDKeysOf(val)];
-        } else if ([val isKindOfClass:[NSArray class]]) {
-            NSArray *a = (NSArray *)val;
-            [out appendFormat:@" 数组×%lu 首元类=%@", (unsigned long)[a count],
-             [a count] ? NSStringFromClass([[a firstObject] class]) : @"-"];
-        } else {
-            // Model object: its property names are the "key outline".
-            unsigned int n = 0;
-            objc_property_t *props = class_copyPropertyList([val class], &n);
-            NSMutableString *names = [NSMutableString string];
-            for (unsigned int i = 0; i < n && i < 48; i++) {
-                if (i) [names appendString:@","];
-                [names appendString:[NSString stringWithUTF8String:property_getName(props[i])]];
-            }
-            if (props) free(props);
-            [out appendFormat:@" 属性=[%@]", names];
-        }
-    } @catch (NSException *e) { [out appendString:@" (outline-exc)"]; }
-    return out;
+static id TCFloatLayerSection(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return nil;
 }
 
-static id TDFloatLayerSection(id self, SEL _cmd) {
-    @try {
-        void *ra = __builtin_return_address(0);
-        uintptr_t off = (uintptr_t)ra - gMainBase;
-        @synchronized (gLock) {
-            gFloatGetCalls++;
-            NSString *key = [NSString stringWithFormat:@"0x%lx", (unsigned long)off];
-            int c = [gFloatCallers[key] intValue] + 1;
-            if (c == 1 && [gFloatCallers count] >= 12) {
-                // cap distinct callers; keep counting the total only
-            } else {
-                gFloatCallers[key] = @(c);
-            }
-        }
-    } @catch (NSException *e) { }
-    return nil; // formal4 behavior, unchanged
-}
-
-static void TDFloatSetLayerSection(id self, SEL _cmd, id val) {
-    @try {
-        @synchronized (gLock) {
-            gFloatSetCalls++;
-            if (val != nil && [gFloatSetVal length] == 0) {
-                gFloatSetVal = TDValueOutline(val);
-                gPending = YES;
-            }
-        }
-    } @catch (NSException *e) { }
-    if (gOrigFloatSetter) gOrigFloatSetter(self, _cmd, val);
-}
-
-// ============================================== P4: search sections ======
-// Formal4 module 4 (parser-exit filter) + probe recording the pre-filter
-// itemsArray's tItemType/name list.
+// ============================================== search landing sections ====
+// TBXSearchActivationTppParser -getProcessedData: (IMP 0x104731210)
+// exit filter — unchanged from formal4 (formal6 E status-quo: no
+// ObjC-visible equivalent assembly exit exists in the Swift/XSL new
+// door, so there is no second point to dual-hook; this module remains
+// unverified). At this point the section list (itemsArray) is fully
+// assembled and network + cache paths have converged. History
+// protection is by tItemType (a stable client-compared constant), NOT
+// by title: the three history types are the only tItemType values the
+// client itself ever compares literally. The two target sections'
+// tItemType values are server-side pass-through constants that never
+// appear literally in the client; the section "name" field remains
+// the only client-visible key.
 typedef id (*ParserIMP)(id, SEL, id);
 static ParserIMP gOrigParser = NULL;
 
@@ -605,58 +676,16 @@ static BOOL TCHistoryType(id t) {
            [s isEqualToString:@"nt_multimodal_history"];
 }
 
-static void TDProbeSearchItems(id out) {
-    @try {
-        if (![out isKindOfClass:[NSDictionary class]]) return;
-        id items = ((NSDictionary *)out)[@"itemsArray"];
-        if (![items isKindOfClass:[NSArray class]]) return;
-        NSArray *a = (NSArray *)items;
-        NSMutableString *snap = [NSMutableString string];
-        NSMutableString *types = [NSMutableString string];
-        NSUInteger n = 0;
-        for (id sec in a) {
-            if (n++ > 0) { [snap appendString:@"\n"]; }
-            if ([sec isKindOfClass:[NSDictionary class]]) {
-                NSDictionary *sd = (NSDictionary *)sec;
-                id t = sd[@"tItemType"], nm = sd[@"name"];
-                NSString *ts = [t isKindOfClass:[NSString class]] ? (NSString *)t
-                    : [NSString stringWithFormat:@"<%@>", t ? NSStringFromClass([t class]) : @"nil"];
-                NSString *ns = [nm isKindOfClass:[NSString class]] ? (NSString *)nm
-                    : [NSString stringWithFormat:@"<%@>", nm ? NSStringFromClass([nm class]) : @"nil"];
-                if ([ns length] > 30) ns = [[ns substringToIndex:30] stringByAppendingString:@"…"];
-                [snap appendFormat:@"%@ | %@", ts, ns];
-                if ([types length] < 700) {
-                    if ([types length]) [types appendString:@","];
-                    [types appendString:ts];
-                }
-            } else {
-                [snap appendFormat:@"<%@>", NSStringFromClass([sec class])];
-            }
-            if (n >= 40) { [snap appendString:@"\n…(截断)"]; break; }
-        }
-        @synchronized (gLock) {
-            gParserCalls++;
-            if (![snap isEqualToString:gSearchSnap]) {
-                gSearchSnap = [snap copy];
-                gSearchTypes = [types copy];
-                gPending = YES;
-            }
-        }
-    } @catch (NSException *e) { }
-}
-
 static id TCGetProcessedData(id self, SEL _cmd, id raw) {
     id out = gOrigParser ? gOrigParser(self, _cmd, raw) : nil;
     if (out == nil) return out;
-    TDProbeSearchItems(out); // pre-filter snapshot
     @try {
         if (![out isKindOfClass:[NSDictionary class]]) return out;
         id items = ((NSDictionary *)out)[@"itemsArray"];
         if (![items isKindOfClass:[NSArray class]]) return out;
         NSArray *a = (NSArray *)items;
-        NSMutableArray *keep = nil;
+        NSMutableArray *keep = nil; // built lazily at the first drop
         NSUInteger idx = 0;
-        int dropped = 0;
         for (id sec in a) {
             BOOL drop = NO;
             if ([sec isKindOfClass:[NSDictionary class]]) {
@@ -671,63 +700,111 @@ static id TCGetProcessedData(id self, SEL _cmd, id raw) {
                 }
             }
             if (drop) {
-                dropped++;
                 if (keep == nil) keep = [[a subarrayWithRange:NSMakeRange(0, idx)] mutableCopy];
             } else if (keep != nil) {
                 [keep addObject:sec];
             }
             idx++;
         }
-        @synchronized (gLock) { gSearchDroppedLast = dropped; }
-        if (keep == nil) return out;
+        if (keep == nil) return out; // nothing dropped: original untouched
         NSMutableDictionary *o = [out mutableCopy];
         o[@"itemsArray"] = keep;
         return o;
     } @catch (NSException *e) { return out; }
 }
 
-// ============================================== P2: MyTaobao factory =====
-// Formal4 hooked +[MTComponentModel creatComponent:componentData:] to
-// rewrite basementTip's containerType 3->2. IN THIS BUILD THE REWRITE
-// IS DISABLED: the hook only records the native values (real
-// containerType, componentData keys, call counts) and returns the
-// component untouched.
-typedef id (*CreateCompIMP)(id, SEL, id, id);
-static CreateCompIMP gOrigCreateComp = NULL;
+// ===================================================== MyTaobao bottom ====
+// Formal6 module 6 (see the header for the full rationale). The
+// formal4 factory-exit downgrade hook on
+// +[MTComponentModel creatComponent:componentData:] is REMOVED: diag3
+// proved the factory fires for basementTip with native containerType 3,
+// yet the downgraded build still rendered the section.
+//
+// (a) -[MTMainPageDataModel setComponents:] — every model instance is
+// built by +creatMainPageDataModel:global:mainPageDataSource:, whose
+// implementation only calls the three setters; filtering here means
+// the model's own (only) components list never contains basementTip,
+// for full and prefetch builds alike.
+typedef void (*SetComponentsIMP)(id, SEL, id);
+static SetComponentsIMP gOrigSetComponents = NULL;
 
-static id TDCreateComponent(id self, SEL _cmd, id name, id data) {
-    id comp = gOrigCreateComp ? gOrigCreateComp(self, _cmd, name, data) : nil;
-    if (comp == nil) return comp;
+static BOOL TCIsBasementTip(id comp) {
+    id mn = TBM(comp, "moduleName");
+    return [mn isKindOfClass:[NSString class]] &&
+           [(NSString *)mn isEqualToString:@"basementTip"];
+}
+
+static void TCMySetComponents(id self, SEL _cmd, id components) {
+    id pass = components;
     @try {
-        @synchronized (gLock) { gFactoryTotal++; }
-        id mn = TBM(comp, "moduleName");
-        BOOL byComp = [mn isKindOfClass:[NSString class]] && [(NSString *)mn isEqualToString:@"basementTip"];
-        BOOL byName = [name isKindOfClass:[NSString class]] && [(NSString *)name isEqualToString:@"basementTip"];
-        if (byComp || byName) {
-            int idx = 0;
-            @synchronized (gLock) { idx = ++gBaseCalls; }
-            long long ct = -9999;
-            BOOL ctRead = TBMInt(comp, "containerType", &ct);
-            NSString *rec = [NSString stringWithFormat:
-                @"#%d name参数=%@ comp.moduleName=%@ containerType=%@ data类=%@ data键=[%@]",
-                idx,
-                [name isKindOfClass:[NSString class]] ? TDShort(name, 40) : TDShort(name, 24),
-                [mn isKindOfClass:[NSString class]] ? (NSString *)mn : TDShort(mn, 24),
-                ctRead ? [NSString stringWithFormat:@"%lld", ct] : @"读不到",
-                NSStringFromClass([data class]), TDKeysOf(data)];
-            @synchronized (gLock) {
-                if (idx == 1) gBaseFirst = [rec copy];
-                gBaseLast = [rec copy];
-                gPending = YES;
+        if ([components isKindOfClass:[NSArray class]]) {
+            NSArray *a = (NSArray *)components;
+            NSMutableArray *keep = nil; // built lazily at the first drop
+            NSUInteger idx = 0;
+            for (id comp in a) {
+                if (TCIsBasementTip(comp)) {
+                    if (keep == nil) keep = [[a subarrayWithRange:NSMakeRange(0, idx)] mutableCopy];
+                } else if (keep != nil) {
+                    [keep addObject:comp];
+                }
+                idx++;
             }
-            TDEvent(@"P2 %@", rec);
+            if (keep != nil) pass = keep;
         }
-    } @catch (NSException *e) { }
-    return comp;
+    } @catch (NSException *e) { pass = components; }
+    if (gOrigSetComponents) gOrigSetComponents(self, _cmd, pass);
+}
+
+// (b) -[MTMainPageUserDataService listenComponentsChange:] — the sole
+// registration point for component-change blocks (its only caller is
+// TBMyTaobaoViewController -listenComponentsChange). The block
+// receives an NSDictionary<moduleName, MTComponentModel> of CHANGED
+// components (C++ diff output; basementTip is force-diffed via
+// nativeBasementTipForceDiff). The wrapper forwards the dictionary
+// without the basementTip entry; a basementTip-only change becomes an
+// empty dictionary, which the VC block treats as "no change" (it
+// posts the Dojo component-changed event only for a non-empty array
+// built from the dictionary). The original block is retained by the
+// wrapper; the wrapper is heap-copied before registration, matching
+// the lifetime the C++ listener table expects.
+typedef void (*ListenIMP)(id, SEL, id);
+static ListenIMP gOrigListenComponents = NULL;
+
+static void TCMyListenComponentsChange(id self, SEL _cmd, id block) {
+    id pass = block;
+    @try {
+        if (block != nil) {
+            id origBlock = block;
+            void (^wrapper)(NSDictionary *) = ^(NSDictionary *change) {
+                NSDictionary *out = change;
+                @try {
+                    if ([change isKindOfClass:[NSDictionary class]] &&
+                        ((NSDictionary *)change)[@"basementTip"] != nil) {
+                        if ([change count] == 1) {
+                            out = [NSDictionary dictionary];
+                        } else {
+                            NSMutableDictionary *m = [change mutableCopy];
+                            [m removeObjectForKey:@"basementTip"];
+                            out = m;
+                        }
+                    }
+                } @catch (NSException *e) { out = change; }
+                ((void (^)(NSDictionary *))origBlock)(out);
+            };
+            pass = [wrapper copy];
+        }
+    } @catch (NSException *e) { pass = block; }
+    if (gOrigListenComponents) gOrigListenComponents(self, _cmd, pass);
 }
 
 // ======================================================== tab bar slot ====
-// Formal4 module 7, unchanged.
+// +[TBAppUIStyle currentTabbarVCItems] (IMP 0x10012ba80) — unchanged
+// from formal4, verified on device. The slot-2 (guangguang) item is
+// removed at this single source; every derived array (viewControllers,
+// tab items, ItemConfig, attract bizMap) shortens together, so
+// positional routing stays consistent and badges (located by biz
+// string, tag only a bounds gate) are unaffected. Identity is by code
+// literals (url / attractBiz), never by the rotating title/artwork.
 typedef id (*VCItemsIMP)(id, SEL);
 static VCItemsIMP gOrigVCItems = NULL;
 
@@ -754,192 +831,22 @@ static id TCVCItems(id self, SEL _cmd) {
     } @catch (NSException *e) { return items; }
 }
 
-// ============================================================ summary ======
-static NSString *TD3Summary(void) {
-    NSMutableString *s = [NSMutableString string];
-    @synchronized (gLock) {
-        [s appendFormat:@"TBDiag3/1.0 · 运行%.0fs · 基线=正式版4过滤(我的页降级已关)\n", TDNow()];
-        // P1 cart
-        NSMutableString *seen = [NSMutableString string];
-        for (NSString *api in [gApiSeen allKeys]) {
-            NSString *short4 = api;
-            if ([short4 hasPrefix:@"mtop.taobao.wireless.home."]) short4 = [short4 substringFromIndex:26];
-            else if ([short4 hasPrefix:@"mtop.relationrecommend."]) short4 = [short4 substringFromIndex:23];
-            else if ([short4 hasPrefix:@"mtop."]) short4 = [short4 substringFromIndex:5];
-            [seen appendFormat:@"%@×%@ ", short4, gApiSeen[api]];
-        }
-        [s appendFormat:@"[购] 见:{%@} 判读样本%d: 命中%d ok失败%d 串失败%d\n",
-         seen, (int)[gCartRecs count], gCartMatch, gCartFailOk, gCartFailSub];
-        // P1 bag
-        [s appendFormat:@"[⑦] bag样本%d 正式版4会动手%d %@\n",
-         (int)[gBagRecs count], gBagAct, gBagAnchorLine];
-        // P2
-        [s appendFormat:@"[我] 工厂总%d basementTip×%d\n", gFactoryTotal, gBaseCalls];
-        if (gBaseCalls > 0) {
-            NSString *b = gBaseLast;
-            if ([b length] > 300) b = [[b substringToIndex:300] stringByAppendingString:@"…"];
-            [s appendFormat:@"  末次:%@\n", b];
-        }
-        // P3
-        NSMutableString *callers = [NSMutableString string];
-        for (NSString *k in gFloatCallers) [callers appendFormat:@"%@×%@ ", k, gFloatCallers[k]];
-        [s appendFormat:@"[横] getter×%d 调用方[%@] setter×%d\n", gFloatGetCalls, callers, gFloatSetCalls];
-        if ([gFloatSetVal length]) {
-            NSString *fv = gFloatSetVal;
-            if ([fv length] > 260) fv = [[fv substringToIndex:260] stringByAppendingString:@"…"];
-            [s appendFormat:@"  首次非空置入:%@\n", fv];
-        }
-        // P4
-        [s appendFormat:@"[搜] parser×%d 最近剔除%d\n", gParserCalls, gSearchDroppedLast];
-        if ([gSearchTypes length]) {
-            NSString *t = gSearchTypes;
-            if ([t length] > 300) t = [[t substringToIndex:300] stringByAppendingString:@"…"];
-            [s appendFormat:@"  types:%@\n", t];
-        }
-        if ([gHookMiss length]) [s appendFormat:@"[hook失败] %@\n", gHookMiss];
-    }
-    if ([s length] > 1900) return [s substringToIndex:1900];
-    return s;
+static void TCInstallAll(void) {
+    TCHook("MtopService", "getResponse:mrequest:", NO, (IMP)TCGetResponse, (IMP *)&gOrigGetResp);
+    TCHook("WXMtopRequest", "generateMtopRequest", NO, (IMP)TCGenerateMtopRequest, (IMP *)&gOrigGenMtop);
+    TCHook("TBRecmdContentDataRepo", "processResData:success:error:oriDic:page:", NO, (IMP)TCProcessResData, (IMP *)&gOrigProcessRes);
+    TCHook("TBPLLayerFactory", "createLayerWithFrame:type:popRequest:attachVC:", NO, (IMP)TCFactoryCreate, (IMP *)&gOrigFactory);
+    TCHook("TBHRContainerContentModel", "floatLayerSection", NO, (IMP)TCFloatLayerSection, (IMP *)&gOrigFloatGetter);
+    TCHook("TBXSearchActivationTppParser", "getProcessedData:", NO, (IMP)TCGetProcessedData, (IMP *)&gOrigParser);
+    TCHook("MTMainPageDataModel", "setComponents:", NO, (IMP)TCMySetComponents, (IMP *)&gOrigSetComponents);
+    TCHook("MTMainPageUserDataService", "listenComponentsChange:", NO, (IMP)TCMyListenComponentsChange, (IMP *)&gOrigListenComponents);
+    TCHook("TBAppUIStyle", "currentTabbarVCItems", YES, (IMP)TCVCItems, (IMP *)&gOrigVCItems);
 }
 
-static void TDWriteFile(void) {
-    @try {
-        NSString *dir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-        if (dir == nil) return;
-        NSMutableString *out = [NSMutableString string];
-        [out appendString:TD3Summary()];
-        @synchronized (gLock) {
-            [out appendFormat:@"\n[hook成功] %@\n[主二进制基址] 0x%lx\n",
-             gHookOK ?: @"", (unsigned long)gMainBase];
-            [out appendString:@"\n--- P1 cart records ---\n"];
-            for (NSString *r in gCartRecs) [out appendFormat:@"%@\n", r];
-            [out appendString:@"\n--- P1 bag records ---\n"];
-            for (NSString *r in gBagRecs) [out appendFormat:@"%@\n", r];
-            [out appendString:@"\n--- P2 basementTip first ---\n"];
-            [out appendFormat:@"%@\n--- P2 basementTip last ---\n%@\n", gBaseFirst, gBaseLast];
-            [out appendString:@"\n--- P4 search itemsArray (tItemType | name, 最近一次) ---\n"];
-            [out appendFormat:@"%@\n", gSearchSnap];
-            [out appendString:@"\n--- events ---\n"];
-            for (NSString *e in gEvents) [out appendFormat:@"%@\n", e];
-        }
-        [out writeToFile:[dir stringByAppendingPathComponent:@"TBDiag3.txt"]
-              atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    } @catch (NSException *e) { }
-}
-
-// -------------------------------------------------------- presentation -----
-// TBDiag-proven presentation (v1/v2): top-VC walk, alert, 15s tick with
-// anti-loss retry, re-show when new captures land (>=45s apart, <=10).
-static id TDTopVC(void) {
-    Class appCls = objc_getClass("UIApplication");
-    if (appCls == Nil) return nil;
-    id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
-    NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
-    id key = nil;
-    for (id w in windows) {
-        char isKey = ((char (*)(id, SEL))objc_msgSend)(w, NSSelectorFromString(@"isKeyWindow"));
-        if (isKey) { key = w; break; }
-    }
-    if (key == nil) key = [windows firstObject];
-    if (key == nil) return nil;
-    id top = ((id (*)(id, SEL))objc_msgSend)(key, NSSelectorFromString(@"rootViewController"));
-    while (top != nil) {
-        id presented = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"presentedViewController"));
-        if (presented == nil) break;
-        top = presented;
-    }
-    return top;
-}
-
-static BOOL TDTryShow(void) {
-    id top = TDTopVC();
-    if (top == nil) return NO;
-    if ([NSStringFromClass([top class]) containsString:@"Alert"]) return NO;
-    id view = ((id (*)(id, SEL))objc_msgSend)(top, NSSelectorFromString(@"view"));
-    id win = view ? ((id (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"window")) : nil;
-    if (win == nil) return NO;
-    Class acCls = objc_getClass("UIAlertController");
-    Class aaCls = objc_getClass("UIAlertAction");
-    if (acCls == Nil || aaCls == Nil) return NO;
-    TDWriteFile();
-    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
-        NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        @"诊断3", TD3Summary(), 1L);
-    id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
-        NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
-    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
-    ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
-        NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
-    gShows++;
-    @synchronized (gLock) { gPending = NO; }
-    gLastShowAt = TDNow();
-    return YES;
-}
-
-static void TDTick(int tick) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(), ^{
-        BOOL want = NO;
-        @synchronized (gLock) {
-            want = (gShows == 0) || (gPending && (TDNow() - gLastShowAt) >= 45.0 && gShows < 10);
-        }
-        if (want) TDTryShow();
-        else {
-            BOOL pend = NO;
-            @synchronized (gLock) { pend = gPending; }
-            if (pend) TDWriteFile(); // keep the file fresh even between shows
-        }
-        if (tick < 80) TDTick(tick + 1);
-    });
-}
-
-// -------------------------------------------------------------- install ----
-static BOOL TDHook(const char *clsName, const char *selName, BOOL isClass,
-                   IMP repl, IMP *origOut, const char *tag) {
-    Class cls = objc_getClass(clsName);
-    if (cls == Nil) {
-        @synchronized (gLock) { [gHookMiss appendFormat:@"%s(no-class) ", tag]; }
-        return NO;
-    }
-    SEL sel = NSSelectorFromString([NSString stringWithUTF8String:selName]);
-    Method m = isClass ? class_getClassMethod(cls, sel) : class_getInstanceMethod(cls, sel);
-    if (m == NULL) {
-        @synchronized (gLock) { [gHookMiss appendFormat:@"%s(no-method) ", tag]; }
-        return NO;
-    }
-    if (*origOut != NULL) return YES;
-    *origOut = method_getImplementation(m);
-    method_setImplementation(m, repl);
-    @synchronized (gLock) { [gHookOK appendFormat:@"%s ", tag]; }
-    return YES;
-}
-
-static void TDInstallAll(void) {
-    TDHook("MtopService", "getResponse:mrequest:", NO, (IMP)TCGetResponse, (IMP *)&gOrigGetResp, "getResp");
-    TDHook("TBPLLayerFactory", "createLayerWithFrame:type:popRequest:attachVC:", NO, (IMP)TCFactoryCreate, (IMP *)&gOrigFactory, "factory");
-    TDHook("TBHRContainerContentModel", "floatLayerSection", NO, (IMP)TDFloatLayerSection, (IMP *)&gOrigFloatGetter, "floatGet");
-    TDHook("TBHRContainerContentModel", "setFloatLayerSection:", NO, (IMP)TDFloatSetLayerSection, (IMP *)&gOrigFloatSetter, "floatSet");
-    TDHook("TBXSearchActivationTppParser", "getProcessedData:", NO, (IMP)TCGetProcessedData, (IMP *)&gOrigParser, "parser");
-    TDHook("MTComponentModel", "creatComponent:componentData:", YES, (IMP)TDCreateComponent, (IMP *)&gOrigCreateComp, "createComp");
-    TDHook("TBAppUIStyle", "currentTabbarVCItems", YES, (IMP)TCVCItems, (IMP *)&gOrigVCItems, "vcItems");
-}
-
-__attribute__((constructor)) static void TD3Entry(void) {
+__attribute__((constructor)) static void TCEntry(void) {
     @autoreleasepool {
-        gStart = [NSDate date];
-        gLock = [[NSObject alloc] init];
-        gEvents = [NSMutableArray array];
-        gHookOK = [NSMutableString string];
-        gHookMiss = [NSMutableString string];
-        gApiSeen = [NSMutableDictionary dictionary];
-        gApiRecN = [NSMutableDictionary dictionary];
-        gCartRecs = [NSMutableArray array];
-        gBagRecs = [NSMutableArray array];
-        gFloatCallers = [NSMutableDictionary dictionary];
-        gMainBase = (uintptr_t)_dyld_get_image_header(0);
-        TDInstallAll();
+        TCInstallAll();
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-            dispatch_get_main_queue(), ^{ TDInstallAll(); TDWriteFile(); });
-        TDTick(0);
+            dispatch_get_main_queue(), ^{ TCInstallAll(); });
     }
 }
