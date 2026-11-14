@@ -186,7 +186,7 @@
 //      threshold is the fatigue client's backgroundWaitSeconds server
 //      config (observed trigger ≈ 10 min in this session).
 //
-// Marker: TBClean/1.5 (formal6)
+// Marker: TBClean/1.6 (formal7)
 // formal6 changes vs formal4/5 (1.3/1.4): module 2 rewritten (object-
 // level recursive match + Weex bridge tagging + repo consumption
 // guard; blob serializer removed); module 6 rewritten (model setter
@@ -200,7 +200,7 @@
 #import <dispatch/dispatch.h>
 
 // Build identity, verifiable in the compiled artifact (strings).
-__attribute__((used)) static const char kTCVersion[] = "TBClean/1.5";
+__attribute__((used)) static const char kTCVersion[] = "TBClean/1.6";
 
 // ------------------------------------------------------------ utilities ----
 // WARNING: TBM is ONLY for selectors whose return type is an object (id).
@@ -764,9 +764,24 @@ static void TCMySetComponents(id self, SEL _cmd, id components) {
 // without the basementTip entry; a basementTip-only change becomes an
 // empty dictionary, which the VC block treats as "no change" (it
 // posts the Dojo component-changed event only for a non-empty array
-// built from the dictionary). The original block is retained by the
-// wrapper; the wrapper is heap-copied before registration, matching
-// the lifetime the C++ listener table expects.
+// built from the dictionary). The wrapper is heap-copied before
+// registration, matching the lifetime the C++ listener table expects.
+//
+// LIFETIME (formal7 fix): the incoming block is a STACK block literal
+// built in the caller's own frame (TBMyTaobaoViewController
+// -listenComponentsChange constructs it on its stack, invoke
+// 0x104090c28). It must be heap-copied HERE, synchronously, while
+// that frame is alive. Formal6 captured it as a plain `id`, whose
+// block-copy helper degenerates to objc_storeStrong (retain) — and
+// retain is a no-op on a stack block — so the wrapper dangled the
+// moment the registering frame returned; when the change event later
+// fired on the main queue, the dead block's invoke field read back
+// as 0 and the call jumped to address 0 (crash log
+// Taobao4iPhone-2026-11-14-170611.ips: PC=0, LR = wrapper block
+// invoke +532, exactly the origBlock call site). Declaring the
+// variable block-typed and assigning an explicit [block copy] makes
+// the wrapper's copy helper use BLOCK_FIELD_IS_BLOCK semantics, so
+// the heap copy's lifetime is tied to the wrapper's.
 typedef void (*ListenIMP)(id, SEL, id);
 static ListenIMP gOrigListenComponents = NULL;
 
@@ -774,7 +789,8 @@ static void TCMyListenComponentsChange(id self, SEL _cmd, id block) {
     id pass = block;
     @try {
         if (block != nil) {
-            id origBlock = block;
+            void (^origBlock)(NSDictionary *) =
+                (void (^)(NSDictionary *))[block copy];
             void (^wrapper)(NSDictionary *) = ^(NSDictionary *change) {
                 NSDictionary *out = change;
                 @try {
