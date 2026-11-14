@@ -2,7 +2,7 @@
   "images": [
     {
       "filename": "AppIcon-Any.png",
-      "idiom": "universal",
+      "idiom": "iphone",
       "platform": "ios",
       "size": "1024x1024"
     },
@@ -14,7 +14,7 @@
         }
       ],
       "filename": "AppIcon-Dark.png",
-      "idiom": "universal",
+      "idiom": "iphone",
       "platform": "ios",
       "size": "1024x1024"
     }
