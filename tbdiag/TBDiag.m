@@ -874,7 +874,7 @@ __attribute__((constructor)) static void TCEntry(void) {
 }
 
 // ============================================================ TBDiag4 ======
-// TBDiag4.2 — READ-ONLY view-layer probe overlay on the formal7 base
+// TBDiag4.3 — READ-ONLY view-layer probe overlay on the formal7 base
 // (TBClean 1.6, filters byte-for-byte identical, main binary P1+P3+P4
 // untouched). Why: the four remaining surfaces (cart recommend flow,
 // cart top activity banner ⑦, search-door sections, home floating bar)
@@ -900,30 +900,34 @@ __attribute__((constructor)) static void TCEntry(void) {
 // that are neither history nor the two known targets additionally
 // flagged 【未知段】. (The search box and the scan/voice/image
 // tool row are functional UI, not sections, and are excluded.)
-// Presentation (4.2 — user call 2026-11-14 18:06: shake trigger.
-// The 4.0/4.1 auto-presentation machinery — cold-start overview,
-// 120s startup grace, 8s dwell, once-per-face arming, modal-busy
-// present queue — is DELETED in full; on device the 4.1 build
-// popped nothing at all because its queue gate never opened): the
-// ONLY trigger is the user's shake. Shake detection swizzles
-// -motionEnded:withEvent: on UIWindow and UIViewController (1s
-// debounce against the dual responder path, original IMPs always
-// called through); the handler classifies the CURRENT page on the
-// spot, runs that face's dump immediately, writes
-// Documents/TBDiag4.txt (that face's page text is overwritten with
-// the fresh dump), and presents the face's 「诊断4」 page from the
-// host's topmost VC at once. Off-scope pages get a short hint
-// naming the current VC class. Shakes are repeatable without
-// limit: walk to a page, shake, screenshot; when the page state
-// changes, shake again to re-dump.
+// Presentation (4.3 — user spec 2026-11-14 18:29, verbatim in
+// substance: "give it 30 seconds; from entering the app, after
+// 30 seconds, you pop up; in those 30 seconds I'll pass through
+// search and cart"): a 1s main-queue watcher starts at process
+// launch and classifies the current page; whenever a target
+// face (home/cart/search) is current it silently dumps that
+// face (first sighting per stay; re-entries overwrite with the
+// latest pass), and at T-2s it refreshes the then-current face
+// once more so a slow-loading page is not captured as an empty
+// shell. NOTHING pops during the 30s — she spends them walking
+// cart and search. At T=30s the captured faces pop in fixed
+// order (home -> cart -> search), one at a time, chained off
+// each alert's dismiss button; a face never visited simply
+// does not pop. ONE fallback and nothing else: a face still
+// unvisited at T=30s pops alone, immediately, the first time
+// she enters it afterwards (covers login taking longer than
+// 30s). No grace period, no dwell requirement, no modal-busy
+// gate, no present queue beyond that fixed sequence. Every
+// dump also lands in Documents/TBDiag4.txt.
 //
-// Safety: the overlay mutates NOTHING and hooks nothing except the
-// two motionEnded: swizzles above. Dumps are bounded (node
-// budgets, depth caps, @try everywhere, typed getters only —
-// the formal1 isSucceed lesson applies to every primitive read
-// here too).
+// Safety: the overlay mutates NOTHING and hooks nothing; the
+// only machinery is a 1s dispatch-source watcher on the main
+// queue plus the presentation helper below. Dumps are bounded
+// (node budgets, depth caps, @try everywhere, typed getters
+// only — the formal1 isSucceed lesson applies to every
+// primitive read here too).
 
-__attribute__((used)) static const char kTD4Version[] = "TBDiag4.2/1.0";
+__attribute__((used)) static const char kTD4Version[] = "TBDiag4.3/1.0";
 
 // ------------------------------------------------------------- state -----
 static NSDate *gD4Start = nil;
@@ -934,12 +938,16 @@ static NSString *gD4PageHome = nil; // popup page texts
 static NSString *gD4PageCart = nil;
 static NSString *gD4PageSearch = nil;
 static BOOL gD4DumpedHome = NO, gD4DumpedCart = NO, gD4DumpedSearch = NO;
-// shake state (4.2): whether one of our alerts is on screen, when it
-// went up (stale-flag recovery), and the last accepted shake time
-// (1s debounce — one shake can arrive via both swizzled classes).
+// presentation flag (whether one of our alerts is on screen)
+// and the 4.3 timer state: the time base is gD4Start; the
+// watcher classifies every second and dumps each visited face
+// silently; at T=30s the fixed-order sequence takes over.
 static BOOL gD4Showing = NO;
-static double gD4ShowAt = -1000;
-static double gD4LastShakeAt = -1000;
+static BOOL gD4SeqStarted = NO;   // the T=30s sequence has begun
+static BOOL gD4SeqDone = NO;      // ... and has finished
+static int  gD4SeqIdx = 0;        // next face: 0=home 1=cart 2=search
+static int  gD4LastKind = 0;      // last classified face (T-2s refresh)
+static BOOL gD4Refreshed = NO;    // the T-2s refresh already ran
 
 static double D4Now(void) { return [[NSDate date] timeIntervalSinceDate:gD4Start];}
 
@@ -1856,11 +1864,11 @@ return s;
 static NSString *D4Overview(void) {
     NSMutableString *s = [NSMutableString string];
     @synchronized (gD4Lock) {
-        [s appendFormat:@"TBDiag4.2 · 运行%.0fs · 基线=正式版7过滤(只读视图探针,摇一摇触发)\n", D4Now()];
-        [s appendFormat:@"[首页横条] %@\n", gD4DumpedHome ? @"已dump" : @"待触发(在此页摇一摇)"] ;
-        [s appendFormat:@"[购物车] %@\n", gD4DumpedCart ? @"已dump" : @"待触发(在此页摇一摇)"] ;
-        [s appendFormat:@"[搜索] %@\n", gD4DumpedSearch ? @"已dump" : @"待触发(在此页摇一摇)"] ;
-        [s appendString:@"操作:停在哪页摇一下,就弹哪页,可重复摇;弹出来截图即可。\n"];
+        [s appendFormat:@"TBDiag4.3 · 运行%.0fs · 基线=正式版7过滤(只读视图探针,30秒定时版)\n", D4Now()];
+        [s appendFormat:@"[首页横条] %@\n", gD4DumpedHome ? @"已dump" : @"未拍到"] ;
+        [s appendFormat:@"[购物车] %@\n", gD4DumpedCart ? @"已dump" : @"未拍到"] ;
+        [s appendFormat:@"[搜索] %@\n", gD4DumpedSearch ? @"已dump" : @"未拍到"] ;
+        [s appendString:@"操作:打开app后30秒内把购物车、搜索页各进去一趟,30秒到自动依次弹窗,逐个点掉逐个截图即可。\n"];
         NSUInteger from = [gD4Events count] > 5 ? [gD4Events count] - 5 : 0;
         for (NSUInteger i = from; i < [gD4Events count]; i++) {
             [s appendFormat:@"%@\n", gD4Events[i]];
@@ -1947,51 +1955,115 @@ static int D4Classify(id rootVC, id visibleVC) {
     return kind;
 }
 
-// ------------------------------------------------------- shake trigger -----
-// 4.2: the ONLY trigger. -motionEnded:withEvent: is swizzled on both
-// UIWindow and UIViewController (a shake can enter through either
-// responder path, hence the 1s debounce in D4OnShake); the original
-// IMP is always invoked afterwards. UIEventSubtypeMotionShake == 3,
-// kept as a literal so this file needs no UIKit import (the overlay's
-// established style).
-static const long D4ShakeSubtype = 3;
-typedef void (*D4MotionIMP)(id, SEL, long, id);
-static D4MotionIMP gD4OrigMotionWindow = NULL;
-static D4MotionIMP gD4OrigMotionVC = NULL;
+// -------------------------------------------------- 30s timer trigger --
+// 4.3: the ONLY trigger logic, exactly per the user's spec (see
+// the header). The 4.2 shake swizzles are deleted in full: no
+// responder swizzles, no debounce, no stale-flag recovery.
+static void D4PresentText(NSString *title, NSString *text, int attempt);
+static void D4AfterDismiss(void);
+static dispatch_source_t gD4Timer = NULL;
 
-static void D4OnShake(void);
-
-static void D4MotionWindow(id self, SEL _cmd, long subtype, id event) {
-    if (subtype == D4ShakeSubtype) D4OnShake();
-    if (gD4OrigMotionWindow) gD4OrigMotionWindow(self, _cmd, subtype, event);
-}
-static void D4MotionVC(id self, SEL _cmd, long subtype, id event) {
-    if (subtype == D4ShakeSubtype) D4OnShake();
-    if (gD4OrigMotionVC) gD4OrigMotionVC(self, _cmd, subtype, event);
-}
-
-static void D4InstallShakeOne(const char *clsName, D4MotionIMP repl, D4MotionIMP *outOrig) {
+static void D4DumpFace(int kind) {
     @try {
-        Class cls = objc_getClass(clsName);
-        if (cls == Nil) return;
-        SEL sel = NSSelectorFromString(@"motionEnded:withEvent:");
-        Method m = class_getInstanceMethod(cls, sel);
-        if (m == NULL) return;
-        IMP orig = method_getImplementation(m);
-        // class_replaceMethod adds an override on cls when the method
-        // is only inherited (the usual case — UIResponder defines
-        // it), and replaces cls's own IMP otherwise.
-        class_replaceMethod(cls, sel, (IMP)repl, method_getTypeEncoding(m));
-        *outOrig = (D4MotionIMP)orig;
+        id rootVC = nil;
+        id visibleVC = D4TopVC(&rootVC);
+        if (kind == D4K_HOME && rootVC != nil) {
+            gD4DumpedHome = YES;
+            D4StoreDump(@"首页", D4DumpHome(rootVC));
+        } else if (kind == D4K_CART && rootVC != nil) {
+            gD4DumpedCart = YES;
+            D4StoreDump(@"购物车", D4DumpCart(rootVC, visibleVC));
+        } else if (kind == D4K_SEARCH && visibleVC != nil) {
+            gD4DumpedSearch = YES;
+            D4StoreDump(@"搜索", D4DumpSearch(visibleVC));
+        }
     } @catch (NSException *e) { }
 }
 
-static void D4InstallShake(void) {
-    D4InstallShakeOne("UIWindow", D4MotionWindow, &gD4OrigMotionWindow);
-    D4InstallShakeOne("UIViewController", D4MotionVC, &gD4OrigMotionVC);
-    D4Event(@"摇一摇触发已装(UIWindow=%@,UIViewController=%@)",
-            gD4OrigMotionWindow ? @"OK" : @"未装",
-            gD4OrigMotionVC ? @"OK" : @"未装");
+// Show the next captured face in the fixed order home -> cart ->
+// search, skipping faces never dumped. One alert at a time; the
+// chain continues from the alert's dismiss handler
+// (D4AfterDismiss). Faces still missing when the sequence runs
+// out are left to the single fallback in D4TimerTick.
+static void D4ShowSequence(void) {
+    if (gD4Showing) return;
+    while (gD4SeqIdx < 3) {
+        int idx = gD4SeqIdx++;
+        if (idx == 0 && gD4DumpedHome)   { D4PresentText(@"诊断4·首页", D4PageText(@"首页"), 0); return; }
+        if (idx == 1 && gD4DumpedCart)   { D4PresentText(@"诊断4·购物车", D4PageText(@"购物车"), 0); return; }
+        if (idx == 2 && gD4DumpedSearch) { D4PresentText(@"诊断4·搜索", D4PageText(@"搜索"), 0); return; }
+    }
+    gD4SeqDone = YES;
+}
+
+static void D4AfterDismiss(void) {
+    if (gD4SeqStarted && !gD4SeqDone) D4ShowSequence();
+}
+
+static void D4TimerTick(void) {
+    @try {
+        double now = D4Now();
+        if (!gD4SeqStarted) {
+            // --- inside the 30s: classify + silent dumps only ---
+            id rootVC = nil;
+            id visibleVC = D4TopVC(&rootVC);
+            int kind = D4Classify(rootVC, visibleVC);
+            BOOL dumpedAlready = (kind == D4K_HOME && gD4DumpedHome) ||
+                                 (kind == D4K_CART && gD4DumpedCart) ||
+                                 (kind == D4K_SEARCH && gD4DumpedSearch);
+            if (kind != D4K_NONE && (!dumpedAlready || kind != gD4LastKind)) {
+                D4DumpFace(kind); // first sighting, or re-entry after another page
+            }
+            // T-2s: refresh whatever face is current, once, so a
+            // slow-loading page is not kept as an empty shell.
+            if (!gD4Refreshed && now >= 28.0 && kind != D4K_NONE && kind == gD4LastKind) {
+                gD4Refreshed = YES;
+                D4DumpFace(kind);
+            }
+            gD4LastKind = kind; // NONE included: a leave-and-return counts as a re-entry
+            if (now >= 30.0) {
+                gD4SeqStarted = YES;
+                D4Event(@"30秒到,依次弹窗(已拍:首页%@/购物车%@/搜索%@)",
+                        gD4DumpedHome ? @"Y" : @"-",
+                        gD4DumpedCart ? @"Y" : @"-",
+                        gD4DumpedSearch ? @"Y" : @"-");
+                D4ShowSequence();
+            }
+        } else if (!gD4SeqDone) {
+            // The sequence stalled (a present attempt's alert-top
+            // retries ran out): retry it on this tick.
+            D4ShowSequence();
+        } else {
+            // --- the single fallback: a face first entered after
+            // T=30s pops alone, immediately, once. ---
+            id rootVC = nil;
+            id visibleVC = D4TopVC(&rootVC);
+            int kind = D4Classify(rootVC, visibleVC);
+            BOOL missing = (kind == D4K_HOME && !gD4DumpedHome) ||
+                           (kind == D4K_CART && !gD4DumpedCart) ||
+                           (kind == D4K_SEARCH && !gD4DumpedSearch);
+            if (missing) {
+                D4DumpFace(kind);
+                if (!gD4Showing) {
+                    if (kind == D4K_HOME) D4PresentText(@"诊断4·首页", D4PageText(@"首页"), 0);
+                    else if (kind == D4K_CART) D4PresentText(@"诊断4·购物车", D4PageText(@"购物车"), 0);
+                    else if (kind == D4K_SEARCH) D4PresentText(@"诊断4·搜索", D4PageText(@"搜索"), 0);
+                }
+            }
+        }
+    } @catch (NSException *e) { }
+}
+
+static void D4StartTimer(void) {
+    if (gD4Timer != NULL) return;
+    dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    if (t == NULL) return;
+    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+        (uint64_t)(1.0 * NSEC_PER_SEC), (uint64_t)(0.1 * NSEC_PER_SEC));
+    dispatch_source_set_event_handler(t, ^{ D4TimerTick(); });
+    gD4Timer = t;
+    dispatch_resume(t);
+    D4Event(@"30秒定时器已启动");
 }
 
 // The host's true topmost VC for presentation: key window root
@@ -2046,48 +2118,12 @@ static void D4PresentText(NSString *title, NSString *text, int attempt) {
             title, text, 1L);
         id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
             NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L,
-            ^(id action) { gD4Showing = NO; });
+            ^(id action) { gD4Showing = NO; D4AfterDismiss(); });
         ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
         gD4Showing = YES;
-        gD4ShowAt = D4Now();
         ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
             NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
     } @catch (NSException *e) { gD4Showing = NO; }
-}
-
-static void D4OnShake(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        @try {
-            double now = D4Now();
-            if (now - gD4LastShakeAt < 1.0) return; // dual-path debounce
-            gD4LastShakeAt = now;
-            if (gD4Showing && now - gD4ShowAt < 30.0) return; // our alert is up
-            gD4Showing = NO; // stale-flag recovery (a present that never landed)
-            id rootVC = nil;
-            id visibleVC = D4TopVC(&rootVC);
-            int kind = D4Classify(rootVC, visibleVC);
-            if (kind == D4K_HOME && rootVC != nil) {
-                gD4DumpedHome = YES;
-                D4StoreDump(@"首页", D4DumpHome(rootVC));
-                D4PresentText(@"诊断4·首页", D4PageText(@"首页"), 0);
-            } else if (kind == D4K_CART && rootVC != nil) {
-                gD4DumpedCart = YES;
-                D4StoreDump(@"购物车", D4DumpCart(rootVC, visibleVC));
-                D4PresentText(@"诊断4·购物车", D4PageText(@"购物车"), 0);
-            } else if (kind == D4K_SEARCH && visibleVC != nil) {
-                gD4DumpedSearch = YES;
-                D4StoreDump(@"搜索", D4DumpSearch(visibleVC));
-                D4PresentText(@"诊断4·搜索", D4PageText(@"搜索"), 0);
-            } else {
-                id who = visibleVC ?: rootVC;
-                NSString *cls = who ? NSStringFromClass([who class]) : @"(未知)";
-                D4Event(@"摇一摇:范围外 VC=%@", cls);
-                D4WriteFile();
-                D4PresentText(@"诊断4",
-                    [NSString stringWithFormat:@"当前页不在诊断范围\n当前VC: %@\n(首页/购物车/搜索落地页才有数据,到那页再摇)", cls], 0);
-            }
-        } @catch (NSException *e) { }
-    });
 }
 
 static void TD4Start(void) {
@@ -2096,12 +2132,11 @@ static void TD4Start(void) {
         gD4Lock = [[NSObject alloc] init];
         gD4Events = [NSMutableArray array];
         gD4FileParts = [NSMutableArray array];
-        // 4.2: NOTHING is automatic — no overview seeding, no
-        // watcher, no present queue, no timers. The only trigger
-        // is the user's shake; the overview text lives only as the
-        // header of Documents/TBDiag4.txt (written by D4WriteFile).
-        D4Event(@"TBDiag4.2 启动(基线正式版7, 只读视图探针; 摇一摇触发)");
-        D4InstallShake();
+        // 4.3: the 30s timer starts ticking at process start.
+        // Nothing pops during the 30s; the overview text lives
+        // only as the header of Documents/TBDiag4.txt.
+        D4Event(@"TBDiag4.3 启动(基线正式版7, 只读视图探针; 30秒定时版)");
+        D4StartTimer();
         D4WriteFile();
     }
 }
