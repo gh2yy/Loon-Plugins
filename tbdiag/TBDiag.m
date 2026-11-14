@@ -874,14 +874,14 @@ __attribute__((constructor)) static void TCEntry(void) {
 }
 
 // ============================================================ TBDiag4 ======
-// TBDiag4.1 — READ-ONLY view-layer probe overlay on the formal7 base
+// TBDiag4.2 — READ-ONLY view-layer probe overlay on the formal7 base
 // (TBClean 1.6, filters byte-for-byte identical, main binary P1+P3+P4
 // untouched). Why: the four remaining surfaces (cart recommend flow,
 // cart top activity banner ⑦, search-door sections, home floating bar)
 // all survived data-side filtering because their in-process data shapes
 // were never directly observed (diag3 / formal6 findings). Formal8
-// switches to a VIEW-layer approach, so this build photographs, once
-// per page visit, the view/component identity of each surface:
+// switches to a VIEW-layer approach, so this build photographs the
+// view/component identity of each surface:
 // V1 home float bar: text-clue leaf ("超级88"/"领635元") -> ancestor
 // chain to the home root view, top-level container identity,
 // close-button presence, TBHomeViewController root children list.
@@ -896,31 +896,34 @@ __attribute__((constructor)) static void TCEntry(void) {
 // removal target): FULL section enumeration of every scroll
 // container on the door VC — per section: index, header view
 // class, header text, first-cell class, row count — each section
-// classified /, and sections
+// classified 【历史·保留】/【非历史·去除目标】, and sections
 // that are neither history nor the two known targets additionally
-// flagged. (The search box and the scan/voice/image
+// flagged 【未知段】. (The search box and the scan/voice/image
 // tool row are functional UI, not sections, and are excluded.)
-// Presentation (4.1 trigger rework — the 4.0 build popped an overview
-// at cold start and re-armed per visit, which fought the user's
-// delete-reinstall login flow): NO overview popup; alert pages titled
-// 「诊断4」 (one page per face, key identity lines first) are QUEUED
-// and shown one at a time, only while no alert/modal is currently
-// presented; every dump is written to Documents/TBDiag4.txt BEFORE
-// its page is queued, so a late popup never loses data (the overview
-// text survives only as that file's header).
+// Presentation (4.2 — user call 2026-11-14 18:06: shake trigger.
+// The 4.0/4.1 auto-presentation machinery — cold-start overview,
+// 120s startup grace, 8s dwell, once-per-face arming, modal-busy
+// present queue — is DELETED in full; on device the 4.1 build
+// popped nothing at all because its queue gate never opened): the
+// ONLY trigger is the user's shake. Shake detection swizzles
+// -motionEnded:withEvent: on UIWindow and UIViewController (1s
+// debounce against the dual responder path, original IMPs always
+// called through); the handler classifies the CURRENT page on the
+// spot, runs that face's dump immediately, writes
+// Documents/TBDiag4.txt (that face's page text is overwritten with
+// the fresh dump), and presents the face's 「诊断4」 page from the
+// host's topmost VC at once. Off-scope pages get a short hint
+// naming the current VC class. Shakes are repeatable without
+// limit: walk to a page, shake, screenshot; when the page state
+// changes, shake again to re-dump.
 //
-// Safety: the overlay installs NO hooks and mutates NOTHING. Trigger
-// discipline (4.1): a 120s startup grace period (probe fully
-// disarmed — no classification, no dumps, no popups — so a fresh
-// install's login/guide flow is never disturbed); after that, a 1s
-// main-queue watcher classifies the visible page and a face must
-// stay CONTINUOUSLY frontmost for >=8s before its dump runs; each
-// face dumps AT MOST ONCE per process (no re-arm). Dumps are bounded
-// (node budgets, depth caps, @try everywhere, typed getters only —
+// Safety: the overlay mutates NOTHING and hooks nothing except the
+// two motionEnded: swizzles above. Dumps are bounded (node
+// budgets, depth caps, @try everywhere, typed getters only —
 // the formal1 isSucceed lesson applies to every primitive read
 // here too).
 
-__attribute__((used)) static const char kTD4Version[] = "TBDiag4.1/1.0";
+__attribute__((used)) static const char kTD4Version[] = "TBDiag4.2/1.0";
 
 // ------------------------------------------------------------- state -----
 static NSDate *gD4Start = nil;
@@ -930,14 +933,13 @@ static NSMutableArray *gD4FileParts = nil; // full dump records
 static NSString *gD4PageHome = nil; // popup page texts
 static NSString *gD4PageCart = nil;
 static NSString *gD4PageSearch = nil;
-static NSMutableArray *gD4PendingPages = nil; // page keys awaiting show
-static int gD4Shows = 0;
-static double gD4LastShowAt = -1000;
-// watcher state
-static int gD4CurKind = 0; // 0 none 1 home 2 cart 3 search
-static double gD4KindSince = 0;
 static BOOL gD4DumpedHome = NO, gD4DumpedCart = NO, gD4DumpedSearch = NO;
-static int gD4AbsentTicks = 0;
+// shake state (4.2): whether one of our alerts is on screen, when it
+// went up (stale-flag recovery), and the last accepted shake time
+// (1s debounce — one shake can arrive via both swizzled classes).
+static BOOL gD4Showing = NO;
+static double gD4ShowAt = -1000;
+static double gD4LastShakeAt = -1000;
 
 static double D4Now(void) { return [[NSDate date] timeIntervalSinceDate:gD4Start];}
 
@@ -1854,11 +1856,11 @@ return s;
 static NSString *D4Overview(void) {
     NSMutableString *s = [NSMutableString string];
     @synchronized (gD4Lock) {
-        [s appendFormat:@"TBDiag4.1 · 运行%.0fs · 基线=正式版7过滤(只读视图探针)\n", D4Now()];
-        [s appendFormat:@"[首页横条] %@\n", gD4DumpedHome ? @"已dump" : @"待触发(停在首页)"] ;
-        [s appendFormat:@"[购物车] %@\n", gD4DumpedCart ? @"已dump" : @"待触发(停在购物车)"] ;
-        [s appendFormat:@"[搜索] %@\n", gD4DumpedSearch ? @"已dump" : @"待触发(停在搜索落地页,不输词)"] ;
-        [s appendString:@"每面dump后自动补弹该面页,逐页截图即可。\n"];
+        [s appendFormat:@"TBDiag4.2 · 运行%.0fs · 基线=正式版7过滤(只读视图探针,摇一摇触发)\n", D4Now()];
+        [s appendFormat:@"[首页横条] %@\n", gD4DumpedHome ? @"已dump" : @"待触发(在此页摇一摇)"] ;
+        [s appendFormat:@"[购物车] %@\n", gD4DumpedCart ? @"已dump" : @"待触发(在此页摇一摇)"] ;
+        [s appendFormat:@"[搜索] %@\n", gD4DumpedSearch ? @"已dump" : @"待触发(在此页摇一摇)"] ;
+        [s appendString:@"操作:停在哪页摇一下,就弹哪页,可重复摇;弹出来截图即可。\n"];
         NSUInteger from = [gD4Events count] > 5 ? [gD4Events count] - 5 : 0;
         for (NSUInteger i = from; i < [gD4Events count]; i++) {
             [s appendFormat:@"%@\n", gD4Events[i]];
@@ -1890,8 +1892,6 @@ static void D4StoreDump(NSString *pageKey, NSString *text) {
         else if ([pageKey isEqualToString:@"搜索"]) gD4PageSearch = [text copy];
         [gD4FileParts addObject:[NSString stringWithFormat:@"[+%.0fs] %@\n%@", D4Now(), pageKey, text]];
         while ([gD4FileParts count] > 8) [gD4FileParts removeObjectAtIndex:0];
-        [gD4PendingPages removeObject:pageKey];
-        [gD4PendingPages addObject:pageKey];
     }
     D4Event(@"dump完成:%@", pageKey);
     D4WriteFile();
@@ -1910,86 +1910,8 @@ static NSString *D4PageText(NSString *key) {
     return t;
 }
 
-// 4.1: is the screen already occupied by a presentation? YES when
-// anything is presented above the visible page's own lineage (an
-// alert, a sheet, or our own previous diag alert — which is what
-// keeps the three face pages strictly serial, one at a time), or
-// when an Alert-class VC is presented in ANY window (system prompts
-// live in their own window). The lineage itself is exempt: a page
-// that was presented modally (e.g. a presented search door) does not
-// count as occupied merely for being presented.
-static BOOL D4ModalBusy(id top) {
-    @try {
-        id child = nil;
-        id node = top;
-        for (int g = 0; g < 12 && node != nil; g++) {
-            id p = TBM(node, "presentedViewController");
-            if (p != nil && p != child) return YES;
-            child = node;
-            node = TBM(node, "parentViewController");
-        }
-        Class appCls = objc_getClass("UIApplication");
-        if (appCls != Nil) {
-            id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
-            NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
-            for (id w in windows) {
-                id cur = TBM(w, "rootViewController");
-                for (int g = 0; g < 12 && cur != nil; g++) {
-                    if ([NSStringFromClass([cur class]) containsString:@"Alert"]) return YES;
-                    cur = TBM(cur, "presentedViewController");
-                }
-            }
-        }
-    } @catch (NSException *e) { }
-    return NO;
-}
 
-static BOOL D4TryShow(void) {
-    NSString *key = nil;
-    @synchronized (gD4Lock) {
-        if ([gD4PendingPages count] == 0) return NO;
-        if (D4Now() < 120.0) return NO; // 4.1 startup grace: never pop
-        if (gD4Shows > 0 && (D4Now() - gD4LastShowAt) < 25.0) return NO;
-        if (gD4Shows >= 16) return NO;
-        key = [gD4PendingPages firstObject];
-    }
-    id top = D4TopVC(NULL);
-    if (top == nil) return NO;
-    if ([NSStringFromClass([top class]) containsString:@"Alert"]) return NO;
-    if (D4ModalBusy(top)) return NO; // 4.1: queue behind any live modal
-    id view = TBM(top, "view");
-    id win = view ? TBM(view, "window") : nil;
-    if (win == nil) return NO;
-    Class acCls = objc_getClass("UIAlertController");
-    Class aaCls = objc_getClass("UIAlertAction");
-    if (acCls == Nil || aaCls == Nil) return NO;
-    NSString *title = [key isEqualToString:@"总览"] ? @"诊断4"
-        : [NSString stringWithFormat:@"诊断4·%@", key];
-    id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
-        NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
-        title, D4PageText(key), 1L);
-    id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
-        NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L, nil);
-    ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
-    ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
-        NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
-    @synchronized (gD4Lock) {
-        [gD4PendingPages removeObject:key];
-        gD4Shows++;
-    }
-    gD4LastShowAt = D4Now();
-    return YES;
-}
-
-static void D4PresentTick(int tick) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(), ^{
-        if (!D4TryShow()) D4WriteFile();
-        if (tick < 260) D4PresentTick(tick + 1);
-    });
-}
-
-// ------------------------------------------------------------- watcher -----
+// ------------------------------------------------------------- classification -----
 static const int D4K_NONE = 0, D4K_HOME = 1, D4K_CART = 2, D4K_SEARCH = 3;
 static id gD4LastRoot = nil;
 static int gD4CachedKind = 0;
@@ -2025,44 +1947,146 @@ static int D4Classify(id rootVC, id visibleVC) {
     return kind;
 }
 
-static void D4WatchTick(int tick) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(), ^{
+// ------------------------------------------------------- shake trigger -----
+// 4.2: the ONLY trigger. -motionEnded:withEvent: is swizzled on both
+// UIWindow and UIViewController (a shake can enter through either
+// responder path, hence the 1s debounce in D4OnShake); the original
+// IMP is always invoked afterwards. UIEventSubtypeMotionShake == 3,
+// kept as a literal so this file needs no UIKit import (the overlay's
+// established style).
+static const long D4ShakeSubtype = 3;
+typedef void (*D4MotionIMP)(id, SEL, long, id);
+static D4MotionIMP gD4OrigMotionWindow = NULL;
+static D4MotionIMP gD4OrigMotionVC = NULL;
+
+static void D4OnShake(void);
+
+static void D4MotionWindow(id self, SEL _cmd, long subtype, id event) {
+    if (subtype == D4ShakeSubtype) D4OnShake();
+    if (gD4OrigMotionWindow) gD4OrigMotionWindow(self, _cmd, subtype, event);
+}
+static void D4MotionVC(id self, SEL _cmd, long subtype, id event) {
+    if (subtype == D4ShakeSubtype) D4OnShake();
+    if (gD4OrigMotionVC) gD4OrigMotionVC(self, _cmd, subtype, event);
+}
+
+static void D4InstallShakeOne(const char *clsName, D4MotionIMP repl, D4MotionIMP *outOrig) {
+    @try {
+        Class cls = objc_getClass(clsName);
+        if (cls == Nil) return;
+        SEL sel = NSSelectorFromString(@"motionEnded:withEvent:");
+        Method m = class_getInstanceMethod(cls, sel);
+        if (m == NULL) return;
+        IMP orig = method_getImplementation(m);
+        // class_replaceMethod adds an override on cls when the method
+        // is only inherited (the usual case — UIResponder defines
+        // it), and replaces cls's own IMP otherwise.
+        class_replaceMethod(cls, sel, (IMP)repl, method_getTypeEncoding(m));
+        *outOrig = (D4MotionIMP)orig;
+    } @catch (NSException *e) { }
+}
+
+static void D4InstallShake(void) {
+    D4InstallShakeOne("UIWindow", D4MotionWindow, &gD4OrigMotionWindow);
+    D4InstallShakeOne("UIViewController", D4MotionVC, &gD4OrigMotionVC);
+    D4Event(@"摇一摇触发已装(UIWindow=%@,UIViewController=%@)",
+            gD4OrigMotionWindow ? @"OK" : @"未装",
+            gD4OrigMotionVC ? @"OK" : @"未装");
+}
+
+// The host's true topmost VC for presentation: key window root
+// followed down the presented chain (alerts INCLUDED — D4TopVC
+// skips them, but here an alert on top is exactly what the retry
+// rule below keys on).
+static id D4PresenterVC(void) {
+    @try {
+        Class appCls = objc_getClass("UIApplication");
+        if (appCls == Nil) return nil;
+        id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
+        NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
+        id key = nil;
+        for (id w in windows) {
+            BOOL k = NO;
+            if (D4GetBool(w, "isKeyWindow", &k) && k) { key = w; break; }
+        }
+        if (key == nil) key = [windows firstObject];
+        id cur = key ? TBM(key, "rootViewController") : nil;
+        for (int guard = 0; guard < 16 && cur != nil; guard++) {
+            id p = TBM(cur, "presentedViewController");
+            if (p == nil || p == cur) break;
+            cur = p;
+        }
+        return cur;
+    } @catch (NSException *e) { return nil; }
+}
+
+// Present text from the topmost VC immediately. If the topmost VC
+// is an alert, wait 0.5s and retry, at most 3 attempts, then give
+// up silently (the dump is already in Documents/TBDiag4.txt).
+static void D4PresentText(NSString *title, NSString *text, int attempt) {
+    @try {
+        if (gD4Showing) return;
+        id top = D4PresenterVC();
+        if (top == nil) return;
+        if ([NSStringFromClass([top class]) containsString:@"Alert"]) {
+            if (attempt < 3) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                    dispatch_get_main_queue(), ^{ D4PresentText(title, text, attempt + 1); });
+            }
+            return;
+        }
+        id view = TBM(top, "view");
+        id win = view ? TBM(view, "window") : nil;
+        Class acCls = objc_getClass("UIAlertController");
+        Class aaCls = objc_getClass("UIAlertAction");
+        if (win == nil || acCls == Nil || aaCls == Nil) return;
+        if ([text length] > 1900) text = [text substringToIndex:1900];
+        id ac = ((id (*)(id, SEL, id, id, long))objc_msgSend)(acCls,
+            NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:"),
+            title, text, 1L);
+        id ok = ((id (*)(id, SEL, id, long, id))objc_msgSend)(aaCls,
+            NSSelectorFromString(@"actionWithTitle:style:handler:"), @"知道了", 0L,
+            ^(id action) { gD4Showing = NO; });
+        ((void (*)(id, SEL, id))objc_msgSend)(ac, NSSelectorFromString(@"addAction:"), ok);
+        gD4Showing = YES;
+        gD4ShowAt = D4Now();
+        ((void (*)(id, SEL, id, char, id))objc_msgSend)(top,
+            NSSelectorFromString(@"presentViewController:animated:completion:"), ac, 1, nil);
+    } @catch (NSException *e) { gD4Showing = NO; }
+}
+
+static void D4OnShake(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
         @try {
-            if (D4Now() < 120.0) {
-                // 4.1 startup grace: probe fully disarmed for the
-                // first 120s — no classification, no dumps, no
-                // popups (fresh-install login/guide flow runs first).
-            } else {
+            double now = D4Now();
+            if (now - gD4LastShakeAt < 1.0) return; // dual-path debounce
+            gD4LastShakeAt = now;
+            if (gD4Showing && now - gD4ShowAt < 30.0) return; // our alert is up
+            gD4Showing = NO; // stale-flag recovery (a present that never landed)
             id rootVC = nil;
             id visibleVC = D4TopVC(&rootVC);
             int kind = D4Classify(rootVC, visibleVC);
-            double now = D4Now();
-            if (kind != gD4CurKind) {
-                gD4CurKind = kind;
-                gD4KindSince = now;
-                gD4AbsentTicks = 0;
-            } else if (kind == D4K_NONE) {
-                gD4AbsentTicks++;
-            }
-            // 4.1: NO re-arm — each face dumps at most once per
-            // process; leaving a page never resets a completed dump.
-            // The dwell is CONTINUOUS: any kind change above resets
-            // gD4KindSince, so an interrupted stay restarts at zero.
-            double stayed = now - gD4KindSince;
-            if (kind == D4K_HOME && !gD4DumpedHome && stayed >= 8.0 && rootVC != nil) {
+            if (kind == D4K_HOME && rootVC != nil) {
                 gD4DumpedHome = YES;
                 D4StoreDump(@"首页", D4DumpHome(rootVC));
-            } else if (kind == D4K_CART && !gD4DumpedCart && stayed >= 8.0 && rootVC != nil) {
+                D4PresentText(@"诊断4·首页", D4PageText(@"首页"), 0);
+            } else if (kind == D4K_CART && rootVC != nil) {
                 gD4DumpedCart = YES;
                 D4StoreDump(@"购物车", D4DumpCart(rootVC, visibleVC));
-            } else if (kind == D4K_SEARCH && !gD4DumpedSearch && stayed >= 8.0 && visibleVC != nil) {
+                D4PresentText(@"诊断4·购物车", D4PageText(@"购物车"), 0);
+            } else if (kind == D4K_SEARCH && visibleVC != nil) {
                 gD4DumpedSearch = YES;
                 D4StoreDump(@"搜索", D4DumpSearch(visibleVC));
-            }
+                D4PresentText(@"诊断4·搜索", D4PageText(@"搜索"), 0);
+            } else {
+                id who = visibleVC ?: rootVC;
+                NSString *cls = who ? NSStringFromClass([who class]) : @"(未知)";
+                D4Event(@"摇一摇:范围外 VC=%@", cls);
+                D4WriteFile();
+                D4PresentText(@"诊断4",
+                    [NSString stringWithFormat:@"当前页不在诊断范围\n当前VC: %@\n(首页/购物车/搜索落地页才有数据,到那页再摇)", cls], 0);
             }
         } @catch (NSException *e) { }
-        if (tick < 1500) D4WatchTick(tick + 1);
     });
 }
 
@@ -2072,12 +2096,12 @@ static void TD4Start(void) {
         gD4Lock = [[NSObject alloc] init];
         gD4Events = [NSMutableArray array];
         gD4FileParts = [NSMutableArray array];
-        gD4PendingPages = [NSMutableArray array];
-        // 4.1: NO overview page is seeded — nothing pops at cold
-        // start; the overview text lives only as the header of
-        // Documents/TBDiag4.txt (written by D4WriteFile).
-        D4Event(@"TBDiag4.1 启动(基线正式版7, 只读视图探针; 宽限120s/驻留8s/每面一次)");
-        D4WatchTick(0);
-        D4PresentTick(0);
+        // 4.2: NOTHING is automatic — no overview seeding, no
+        // watcher, no present queue, no timers. The only trigger
+        // is the user's shake; the overview text lives only as the
+        // header of Documents/TBDiag4.txt (written by D4WriteFile).
+        D4Event(@"TBDiag4.2 启动(基线正式版7, 只读视图探针; 摇一摇触发)");
+        D4InstallShake();
+        D4WriteFile();
     }
 }
