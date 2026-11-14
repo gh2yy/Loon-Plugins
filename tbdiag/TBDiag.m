@@ -874,7 +874,7 @@ __attribute__((constructor)) static void TCEntry(void) {
 }
 
 // ============================================================ TBDiag4 ======
-// TBDiag4/1.0 — READ-ONLY view-layer probe overlay on the formal7 base
+// TBDiag4.1 — READ-ONLY view-layer probe overlay on the formal7 base
 // (TBClean 1.6, filters byte-for-byte identical, main binary P1+P3+P4
 // untouched). Why: the four remaining surfaces (cart recommend flow,
 // cart top activity banner ⑦, search-door sections, home floating bar)
@@ -900,18 +900,27 @@ __attribute__((constructor)) static void TCEntry(void) {
 // that are neither history nor the two known targets additionally
 // flagged. (The search box and the scan/voice/image
 // tool row are functional UI, not sections, and are excluded.)
-// Presentation reuses the TBDiag-proven pattern: alert pages titled
-// 「诊断4」 (one page per face, key identity lines first), anti-loss
-// retry, re-show on new dumps; the full dump text is also written to
-// Documents/TBDiag4.txt on every change (backup only).
+// Presentation (4.1 trigger rework — the 4.0 build popped an overview
+// at cold start and re-armed per visit, which fought the user's
+// delete-reinstall login flow): NO overview popup; alert pages titled
+// 「诊断4」 (one page per face, key identity lines first) are QUEUED
+// and shown one at a time, only while no alert/modal is currently
+// presented; every dump is written to Documents/TBDiag4.txt BEFORE
+// its page is queued, so a late popup never loses data (the overview
+// text survives only as that file's header).
 //
-// Safety: the overlay installs NO hooks and mutates NOTHING. A 1s
-// main-queue watcher classifies the visible page; after a face has
-// been frontmost for >=2.5s it runs ONE bounded dump (node budgets,
-// depth caps, @try everywhere, typed getters only — the formal1
-// isSucceed lesson applies to every primitive read here too).
+// Safety: the overlay installs NO hooks and mutates NOTHING. Trigger
+// discipline (4.1): a 120s startup grace period (probe fully
+// disarmed — no classification, no dumps, no popups — so a fresh
+// install's login/guide flow is never disturbed); after that, a 1s
+// main-queue watcher classifies the visible page and a face must
+// stay CONTINUOUSLY frontmost for >=8s before its dump runs; each
+// face dumps AT MOST ONCE per process (no re-arm). Dumps are bounded
+// (node budgets, depth caps, @try everywhere, typed getters only —
+// the formal1 isSucceed lesson applies to every primitive read
+// here too).
 
-__attribute__((used)) static const char kTD4Version[] = "TBDiag4/1.0";
+__attribute__((used)) static const char kTD4Version[] = "TBDiag4.1/1.0";
 
 // ------------------------------------------------------------- state -----
 static NSDate *gD4Start = nil;
@@ -1845,7 +1854,7 @@ return s;
 static NSString *D4Overview(void) {
     NSMutableString *s = [NSMutableString string];
     @synchronized (gD4Lock) {
-        [s appendFormat:@"TBDiag4/1.0 · 运行%.0fs · 基线=正式版7过滤(只读视图探针)\n", D4Now()];
+        [s appendFormat:@"TBDiag4.1 · 运行%.0fs · 基线=正式版7过滤(只读视图探针)\n", D4Now()];
         [s appendFormat:@"[首页横条] %@\n", gD4DumpedHome ? @"已dump" : @"待触发(停在首页)"] ;
         [s appendFormat:@"[购物车] %@\n", gD4DumpedCart ? @"已dump" : @"待触发(停在购物车)"] ;
         [s appendFormat:@"[搜索] %@\n", gD4DumpedSearch ? @"已dump" : @"待触发(停在搜索落地页,不输词)"] ;
@@ -1901,10 +1910,45 @@ static NSString *D4PageText(NSString *key) {
     return t;
 }
 
+// 4.1: is the screen already occupied by a presentation? YES when
+// anything is presented above the visible page's own lineage (an
+// alert, a sheet, or our own previous diag alert — which is what
+// keeps the three face pages strictly serial, one at a time), or
+// when an Alert-class VC is presented in ANY window (system prompts
+// live in their own window). The lineage itself is exempt: a page
+// that was presented modally (e.g. a presented search door) does not
+// count as occupied merely for being presented.
+static BOOL D4ModalBusy(id top) {
+    @try {
+        id child = nil;
+        id node = top;
+        for (int g = 0; g < 12 && node != nil; g++) {
+            id p = TBM(node, "presentedViewController");
+            if (p != nil && p != child) return YES;
+            child = node;
+            node = TBM(node, "parentViewController");
+        }
+        Class appCls = objc_getClass("UIApplication");
+        if (appCls != Nil) {
+            id app = ((id (*)(id, SEL))objc_msgSend)(appCls, NSSelectorFromString(@"sharedApplication"));
+            NSArray *windows = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"windows"));
+            for (id w in windows) {
+                id cur = TBM(w, "rootViewController");
+                for (int g = 0; g < 12 && cur != nil; g++) {
+                    if ([NSStringFromClass([cur class]) containsString:@"Alert"]) return YES;
+                    cur = TBM(cur, "presentedViewController");
+                }
+            }
+        }
+    } @catch (NSException *e) { }
+    return NO;
+}
+
 static BOOL D4TryShow(void) {
     NSString *key = nil;
     @synchronized (gD4Lock) {
         if ([gD4PendingPages count] == 0) return NO;
+        if (D4Now() < 120.0) return NO; // 4.1 startup grace: never pop
         if (gD4Shows > 0 && (D4Now() - gD4LastShowAt) < 25.0) return NO;
         if (gD4Shows >= 16) return NO;
         key = [gD4PendingPages firstObject];
@@ -1912,6 +1956,7 @@ static BOOL D4TryShow(void) {
     id top = D4TopVC(NULL);
     if (top == nil) return NO;
     if ([NSStringFromClass([top class]) containsString:@"Alert"]) return NO;
+    if (D4ModalBusy(top)) return NO; // 4.1: queue behind any live modal
     id view = TBM(top, "view");
     id win = view ? TBM(view, "window") : nil;
     if (win == nil) return NO;
@@ -1984,6 +2029,11 @@ static void D4WatchTick(int tick) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{
         @try {
+            if (D4Now() < 120.0) {
+                // 4.1 startup grace: probe fully disarmed for the
+                // first 120s — no classification, no dumps, no
+                // popups (fresh-install login/guide flow runs first).
+            } else {
             id rootVC = nil;
             id visibleVC = D4TopVC(&rootVC);
             int kind = D4Classify(rootVC, visibleVC);
@@ -1995,20 +2045,21 @@ static void D4WatchTick(int tick) {
             } else if (kind == D4K_NONE) {
                 gD4AbsentTicks++;
             }
-            // Re-arm a face after >=3s spent on another kind.
-            if (kind != D4K_HOME && (now - gD4KindSince) >= 3.0) gD4DumpedHome = NO;
-            if (kind != D4K_CART && (now - gD4KindSince) >= 3.0) gD4DumpedCart = NO;
-            if (kind != D4K_SEARCH && (now - gD4KindSince) >= 3.0) gD4DumpedSearch = NO;
+            // 4.1: NO re-arm — each face dumps at most once per
+            // process; leaving a page never resets a completed dump.
+            // The dwell is CONTINUOUS: any kind change above resets
+            // gD4KindSince, so an interrupted stay restarts at zero.
             double stayed = now - gD4KindSince;
-            if (kind == D4K_HOME && !gD4DumpedHome && stayed >= 2.5 && rootVC != nil) {
+            if (kind == D4K_HOME && !gD4DumpedHome && stayed >= 8.0 && rootVC != nil) {
                 gD4DumpedHome = YES;
                 D4StoreDump(@"首页", D4DumpHome(rootVC));
-            } else if (kind == D4K_CART && !gD4DumpedCart && stayed >= 2.5 && rootVC != nil) {
+            } else if (kind == D4K_CART && !gD4DumpedCart && stayed >= 8.0 && rootVC != nil) {
                 gD4DumpedCart = YES;
                 D4StoreDump(@"购物车", D4DumpCart(rootVC, visibleVC));
-            } else if (kind == D4K_SEARCH && !gD4DumpedSearch && stayed >= 2.5 && visibleVC != nil) {
+            } else if (kind == D4K_SEARCH && !gD4DumpedSearch && stayed >= 8.0 && visibleVC != nil) {
                 gD4DumpedSearch = YES;
                 D4StoreDump(@"搜索", D4DumpSearch(visibleVC));
+            }
             }
         } @catch (NSException *e) { }
         if (tick < 1500) D4WatchTick(tick + 1);
@@ -2022,8 +2073,10 @@ static void TD4Start(void) {
         gD4Events = [NSMutableArray array];
         gD4FileParts = [NSMutableArray array];
         gD4PendingPages = [NSMutableArray array];
-        @synchronized (gD4Lock) { [gD4PendingPages addObject:@"总览"]; }
-        D4Event(@"TBDiag4 启动(基线正式版7, 只读视图探针)");
+        // 4.1: NO overview page is seeded — nothing pops at cold
+        // start; the overview text lives only as the header of
+        // Documents/TBDiag4.txt (written by D4WriteFile).
+        D4Event(@"TBDiag4.1 启动(基线正式版7, 只读视图探针; 宽限120s/驻留8s/每面一次)");
         D4WatchTick(0);
         D4PresentTick(0);
     }
