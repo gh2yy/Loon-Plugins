@@ -282,6 +282,9 @@ function editJsonPayload(root, dp, mode) {
         if (keptL.length !== obj.list.length) { obj.list = keptL; changed = true; }
       }
       if (obj.noteList && obj.noteList.length) { obj.noteList = []; changed = true; }
+      // 笔记模块总开关：UserCenter 包内 mg() 以 hitCheckInRefactorExp===true 判定笔记实验命中，
+      // 命中才渲染达人中心节与「发布第一篇笔记」引导；置 false 后整模块不渲染（2026-11-14 据 usermain 包源码定案）
+      if (obj.hitCheckInRefactorExp) { obj.hitCheckInRefactorExp = false; changed = true; }
     }
     if (changed) { f.value.repl = utf8Encode(JSON.stringify(obj)); return 1; }
     return 0;
