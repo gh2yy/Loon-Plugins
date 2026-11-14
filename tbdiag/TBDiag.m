@@ -85,7 +85,23 @@
 //      with tag used only as a bounds gate (2,3 < 4 still passes).
 //      Fail-open on any other shape (old/i18n branches).
 //
-// Marker: TBClean/1.3 (formal4)
+// Marker: TBClean/1.4 (formal5)
+// formal5 vs formal4 (1.3): NO filter logic change. The formal4 test
+// session's Loon capture (428, 199 records, full inventory in
+// work/CAP428_ANALYSIS.md) contains NONE of the four failing surfaces'
+// MTOP responses — home container / cart / MyTaobao / search traffic
+// rides the xnet/SPDY private channel and never traverses the proxy,
+// so the capture cannot supply response shapes and no discrimination
+// string was re-guessed. Two candidate miss causes were refuted with
+// hard evidence (wlm version drift: every formal4 anchor is byte-
+// identical in the cart wlm 1.255.0 the phone actually downloaded in
+// that session vs the bundled 1.243.0; response.request readout:
+// instruction-level proof that the async path stores the
+// MtopExtRequest there and that the api/params getters exist only on
+// that class). The remaining unknowns are exactly the ones the
+// in-process probe designed in V4_A_CART.md §6 settles; see
+// FORMAL_NOTES.md "formal5" section. This build only bumps the
+// version marker so the artifact is distinguishable.
 // formal4 changes vs formal3 (1.2): module 2 discrimination rewritten
 // (API set + containerId, surgical keyed emptying); module 3 added
 // (cart top banner); module 4 moved to the TppParser exit with type-key
@@ -97,6 +113,9 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dispatch/dispatch.h>
+
+// Build identity, verifiable in the compiled artifact (strings).
+__attribute__((used)) static const char kTCVersion[] = "TBClean/1.4";
 
 // ------------------------------------------------------------ utilities ----
 // WARNING: TBM is ONLY for selectors whose return type is an object (id).
