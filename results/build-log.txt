@@ -1,0 +1,6 @@
+total 320
+drwxr-xr-x   4 runner  staff     128 Nov 14 10:46 .
+drwxr-xr-x  26 runner  staff     832 Nov 14 10:46 ..
+-rw-r--r--   1 runner  staff       0 Nov 14 10:46 build-log.txt
+-rwxr-xr-x   1 runner  staff  161416 Nov 14 10:46 TBDiag.dylib
+out/TBDiag.dylib: Mach-O 64-bit dynamically linked shared library arm64
