@@ -7,6 +7,8 @@
 // 响应 → 改 JSON → 回加密：
 // - hotsuggest.bin：hotRankList（热榜/点评热点）、suggestEntryList（推荐词条）置空，
 //   portalList / rankListSuggests 若有内容一并置空；其余字段（displayType、queryId 等）不动。
+//   v3 补：searchFeature.itemList（「搜索发现」词条组，capture10 样本实证 32 条个性化词）
+//   一并置空——v2 漏此键致搜索发现复现（用户 2026-11-15 实测：历史已秒出、发现又出现）。
 // - searchdirectsuggest.bin：directJumpConfig（直达位）置空，其余不动。
 // 解析失败时兜底回 v1 的空数组构造体（保内容不显示）；解析成功但无可清字段时原样放行。
 // 验证：2026-11-15 以 capture10 两份真实响应离线全链路验证（清零后可重解析、其余逐项不变）。
@@ -258,6 +260,7 @@ function editSearchPayload(root, dp, url) {
         var key = SEARCH_LIST_KEYS[k];
         if (obj[key] && obj[key].length) { obj[key] = []; changed = true; }
       }
+      if (obj.searchFeature && obj.searchFeature.itemList && obj.searchFeature.itemList.length) { obj.searchFeature.itemList = []; changed = true; }
     }
     if (changed) { f.value.repl = utf8Encode(JSON.stringify(obj)); return 1; }
     return 0;
