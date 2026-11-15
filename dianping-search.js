@@ -1,13 +1,15 @@
-// 大众点评 - 搜索落地页空响应（替代 xingjiu 两条 reject 的优化）
-// 背景：searchdirectsuggest.bin / hotsuggest.bin 原为 reject(404)，App 原生网络层对 404
-// 会重试（2026-11-15 抓包实证：hotsuggest 首个 404 后约 1 秒重发），落地页要等失败
-// 落定才渲染，本地的历史搜索被连带堵住数秒（用户录屏实证）。
-// 改法：请求照常发出、走成功路径，本脚本把响应体整体换成「空数组」dpobject——与服务
-// 器对 loadsplashconfig 的无数据应答同形（根空数组），经同一套 stored-gzip + AES 回送。
-// 页面模型（搜索联想页包内 Bl.from）对缺失字段全部有默认值：hotRankList /
-// suggestEntryList / directJumpConfig 均落为空，点评热点与推荐词条不显示；addToDirectMap
-// 对无 url 的响应直接跳过。任一步异常时原样放行（退回服务器真实响应）。
-// 证据链：2026-11-15 读 pexus-search-suggest 现行包源码 + capture9 重试时序；待用户真机实测。
+// 大众点评 - 搜索落地页去点评热点/推荐词条/直达位（真实响应字段清零版）
+// 背景：xingjiu 两条 reject(404) 会让 App 原生层失败重试（capture9 实证 hotsuggest
+// 404 后约 1 秒重发），落地页等失败落定才渲染、本地历史被拖慢。v1 曾回根空数组的
+// 构造空响应，用户实测仍慢——capture10 拿到真实响应后确认其根为对象（schema 0x0ab8、
+// 字段 0xef84 内嵌 JSON，与「我的」页同一信封），空数组根与真实结构不符、疑致原生
+// 转换异常后走缓存等待超时。故 v2 改为与 dianping-home.js 相同的定版打法：解密真实
+// 响应 → 改 JSON → 回加密：
+// - hotsuggest.bin：hotRankList（热榜/点评热点）、suggestEntryList（推荐词条）置空，
+//   portalList / rankListSuggests 若有内容一并置空；其余字段（displayType、queryId 等）不动。
+// - searchdirectsuggest.bin：directJumpConfig（直达位）置空，其余不动。
+// 解析失败时兜底回 v1 的空数组构造体（保内容不显示）；解析成功但无可清字段时原样放行。
+// 验证：2026-11-15 以 capture10 两份真实响应离线全链路验证（清零后可重解析、其余逐项不变）。
 var DP_KEY = [0x44,0x37,0x43,0x36,0x46,0x37,0x31,0x41,0x31,0x32,0x31,0x35,0x33,0x45,0x45,0x35];
 var DP_IV  = [0x35,0x35,0x43,0x39,0x33,0x30,0x44,0x38,0x32,0x37,0x42,0x44,0x41,0x42,0x46,0x44];
 
@@ -168,6 +170,58 @@ function gzipStored(data) {
   return out;
 }
 
+// dpobject: A=u16计数数组 B=u32长度字节串 D=8B I=u32 J=u64 F/T/N=无载荷 O=u16 schema对象 Q=u32 schema对象; 字段=0x4D+u16哈希+value; 对象以0x5A结束
+function parseValue(buf, st) {
+  var start = st.p, type = buf[st.p++], node = { type: type, start: start };
+  function u16() { var v = (buf[st.p] << 8) | buf[st.p + 1]; st.p += 2; return v; }
+  function u32() { var v = ((buf[st.p] << 24) | (buf[st.p + 1] << 16) | (buf[st.p + 2] << 8) | buf[st.p + 3]) >>> 0; st.p += 4; return v; }
+  if (type === 0x41) { node.count = u16(); node.children = []; for (var i = 0; i < node.count; i++) node.children.push(parseValue(buf, st)); }
+  else if (type === 0x42) { var len = u32(); node.dataStart = st.p; node.dataLen = len; st.p += len; }
+  else if (type === 0x44) { st.p += 8; }
+  else if (type === 0x49) { st.p += 4; }
+  else if (type === 0x4a) { st.p += 8; }
+  else if (type === 0x46 || type === 0x54 || type === 0x4e) { }
+  else if (type === 0x4f || type === 0x51) {
+    node.schema = (type === 0x4f) ? u16() : u32(); node.fields = [];
+    while (buf[st.p] !== 0x5a) {
+      if (buf[st.p] !== 0x4d) throw new Error('dpobject: field marker expected');
+      st.p++; var hash = u16(); var val = parseValue(buf, st);
+      node.fields.push({ hash: hash, value: val });
+    }
+    st.p++;
+  } else throw new Error('dpobject: unknown type 0x' + type.toString(16));
+  node.end = st.p; node.raw = buf.slice(node.start, node.end);
+  return node;
+}
+function utf8Decode(bytes) {
+  var s = '', i = 0;
+  while (i < bytes.length) {
+    var b = bytes[i];
+    if (b < 0x80) { s += String.fromCharCode(b); i++; }
+    else if (b < 0xe0) { s += String.fromCharCode(((b & 0x1f) << 6) | (bytes[i + 1] & 0x3f)); i += 2; }
+    else if (b < 0xf0) { s += String.fromCharCode(((b & 0x0f) << 12) | ((bytes[i + 1] & 0x3f) << 6) | (bytes[i + 2] & 0x3f)); i += 3; }
+    else {
+      var cp = ((b & 0x07) << 18) | ((bytes[i + 1] & 0x3f) << 12) | ((bytes[i + 2] & 0x3f) << 6) | (bytes[i + 3] & 0x3f);
+      cp -= 0x10000;
+      s += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+      i += 4;
+    }
+  }
+  return s;
+}
+function utf8Encode(str) {
+  var out = [];
+  for (var i = 0; i < str.length; i++) {
+    var c = str.charCodeAt(i);
+    if (c < 0x80) out.push(c);
+    else if (c < 0x800) { out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f)); }
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+      var cp = 0x10000 + ((c - 0xd800) << 10) + (str.charCodeAt(++i) - 0xdc00);
+      out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    } else { out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f)); }
+  }
+  return out;
+}
 function serialize(node) {
   if (node.type === 0x42 && node.repl) {
     var d = node.repl;
@@ -189,14 +243,55 @@ function serialize(node) {
   return node.raw;
 }
 
+var SEARCH_LIST_KEYS = ['hotRankList', 'suggestEntryList', 'portalList', 'rankListSuggests'];
+function editSearchPayload(root, dp, url) {
+  for (var i = 0; i < root.fields.length; i++) {
+    var f = root.fields[i];
+    if (f.hash !== 0xef84 || f.value.type !== 0x42) continue;
+    var bytes = dp.slice(f.value.dataStart, f.value.dataStart + f.value.dataLen);
+    var obj = JSON.parse(utf8Decode(bytes));
+    var changed = false;
+    if (url.indexOf('searchdirectsuggest') !== -1) {
+      if (obj.directJumpConfig && obj.directJumpConfig.length) { obj.directJumpConfig = []; changed = true; }
+    } else {
+      for (var k = 0; k < SEARCH_LIST_KEYS.length; k++) {
+        var key = SEARCH_LIST_KEYS[k];
+        if (obj[key] && obj[key].length) { obj[key] = []; changed = true; }
+      }
+    }
+    if (changed) { f.value.repl = utf8Encode(JSON.stringify(obj)); return 1; }
+    return 0;
+  }
+  return -1;
+}
+
+function cannedEmpty() {
+  var empty = serialize({ type: 0x41, children: [] });
+  var gz = gzipStored(empty);
+  while (gz.length % 16 !== 0) gz.push(0);
+  return new Uint8Array(aesCbc(gz, DP_KEY, DP_IV, false));
+}
+
 (function main() {
+  var url = ($request && $request.url) || '';
   try {
-    var empty = serialize({ type: 0x41, children: [] });
-    var gz = gzipStored(empty);
+    var body = $response.body;
+    if (!body || body.length === 0 || body.length % 16 !== 0) { $done({ body: cannedEmpty() }); return; }
+    var cipher = []; for (var i = 0; i < body.length; i++) cipher.push(body[i]);
+    var plain = aesCbc(cipher, DP_KEY, DP_IV, true);
+    var dp = gunzip(plain);
+    var st = { p: 0 };
+    var root = parseValue(dp, st);
+    if (!root.fields) { $done({ body: cannedEmpty() }); return; }
+    var r = editSearchPayload(root, dp, url);
+    if (r === 0) { $done({}); return; }
+    if (r < 0) { $done({ body: cannedEmpty() }); return; }
+    var newDp = serialize(root);
+    var gz = gzipStored(newDp);
     while (gz.length % 16 !== 0) gz.push(0);
     var enc = aesCbc(gz, DP_KEY, DP_IV, false);
     $done({ body: new Uint8Array(enc) });
   } catch (e) {
-    $done({});
+    try { $done({ body: cannedEmpty() }); } catch (e2) { $done({}); }
   }
 })();
