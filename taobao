@@ -1,0 +1,37 @@
+#!name = 淘宝（精简版）
+#!desc = 基于可莉版精简：已移除 amdc 拦截（避免搜索变卡），仅保留开屏/弹窗脚本、开屏素材图拦截与广告域名拦截，脚本自托管
+#!openUrl = https://apps.apple.com/app/id387682726
+#!author = RuCu6[https://github.com/RuCu6], ishowshu[https://github.com/ishowshu], 可莉🅥[https://github.com/luestr/ProxyResource/blob/main/README.md], Muse 整理
+#!tag = 去广告
+#!loon_version = 3.5.3(1014)
+#!homepage = https://loonlab.103516.xyz/Plugin/
+#!icon = https://raw.githubusercontent.com/sooyaaabo/IconLibrary/main/App/TaoBao.png
+#!date = 2026-11-15
+
+# 精简说明（相对可莉原版 TaoBao.lpx 的改动）
+# - 删除 amdc mobileDispatch 的 REJECT 规则：该拦截已知会让淘宝搜索变卡。
+# - 删除 ut.taobao.com 的 REJECT：纯统计域名，无去广告收益。
+# - 删除原版中全部被注释掉的失效 rewrite 草稿，未带入本版。
+# - [Script] 两条响应脚本钩子保留，脚本改为自托管 Taobao-loon.js（可莉 Taobao_remove_ads.js 原样收录），不再引用 kelee.one。
+# - [MitM] 按保留项收敛为 4 个域名。
+
+[Rule]
+DOMAIN, adashx.m.taobao.com, REJECT
+DOMAIN, ossgw.alicdn.com, REJECT
+DOMAIN, ems.youku.com, REJECT
+DOMAIN, hudong.alicdn.com, REJECT
+DOMAIN, h-adashx.ut.taobao.com, REJECT
+
+[Rewrite]
+request if ${url} ~= /^https:\/\/heic\.alicdn\.com\/imgextra\/i\d\/[A-Za-z0-9_!]+-\d+-tps-\d+-\d+\.png_\d+x\d*q\d+\.jpg_\.heic$/i then reject_dict(200)
+request if ${url} ~= /^https:\/\/heic\.alicdn\.com\/imgextra\/i\d\/[A-Za-z0-9_!]+-\d+-tps-\d+-\d+\.jpg_\d+x\d*q\d+\.jpg_\.heic$/i then reject_dict(200)
+request if ${url} ~= /^https:\/\/heic\.alicdn\.com\/imgextra\/i\d\/\d*\/?[\w!]+-\d-(?:octopus|tps)-(?:1080|1125)-\d{4}\.(?:jpg|png)_(?:1\d{3}|9\d{2})x(?:\d|1\d{3}|9\d{2})q[59]0/i then reject_dict(200)
+request if ${url} ~= /^https?:\/\/gw\.alicdn\.com\/imgextra\/i\d+\/[^\/]+_!!\d+-\d+-tps-(720-1280|1080-1920|1125-1602|1242-2208)\.(jpg|png|jpeg)_[^\/]+\.webp/i then reject_dict(200)
+
+[Script]
+response if ${url} ~= /^https:\/\/guide-acs\.m\.taobao\.com\/gw\/mtop\.taobao\.(?:cloudvideo\.video\.query|wireless\.home\.splash\.awesome\.get)/i then script("https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Taobao-loon.js?v=1") with tag="[淘宝]移除开屏广告", requires_body=true
+
+response if ${url} ~= /^https:\/\/poplayer\.template\.alibaba\.com\/\w+\.json/i then script("https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Taobao-loon.js?v=1") with tag="[淘宝]移除弹窗", requires_body=true
+
+[MitM]
+hostname = guide-acs.m.taobao.com, poplayer.template.alibaba.com, heic.alicdn.com, gw.alicdn.com
