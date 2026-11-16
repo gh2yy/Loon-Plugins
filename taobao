@@ -1,12 +1,12 @@
 #!name = 淘宝（精简版）
 #!desc = 基于可莉版精简：已移除 amdc 拦截（避免搜索变卡），仅保留开屏/弹窗脚本、开屏素材图拦截与广告域名拦截，脚本自托管
 #!openUrl = https://apps.apple.com/app/id387682726
-#!author = RuCu6, ishowshu, 可莉, Muse 整理
+#!author = RuCu6[https://github.com/RuCu6], ishowshu[https://github.com/ishowshu], 可莉🅥[https://github.com/luestr/ProxyResource/blob/main/README.md], Muse 整理
 #!tag = 去广告
 #!loon_version = 3.5.3(1014)
-#!homepage = https://github.com/gh2yy/Loon-Plugins
-#!icon = https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/icon/taobao.png
-#!date = 2026-11-16
+#!homepage = https://loonlab.103516.xyz/Plugin/
+#!icon = https://raw.githubusercontent.com/sooyaaabo/IconLibrary/main/App/TaoBao.png
+#!date = 2026-11-15
 
 # 精简说明（相对可莉原版 TaoBao.lpx 的改动）
 # - 删除 amdc mobileDispatch 的 REJECT 规则：该拦截已知会让淘宝搜索变卡。
@@ -14,7 +14,6 @@
 # - 删除原版中全部被注释掉的失效 rewrite 草稿，未带入本版。
 # - [Script] 两条响应脚本钩子保留，脚本改为自托管 Taobao-loon.js（可莉 Taobao_remove_ads.js 原样收录），不再引用 kelee.one。
 # - [MitM] 按保留项收敛为 4 个域名。
-# - 2026-11-16 头部收敛：#!icon 改指自有仓库 icon/taobao.png（用户经典版图标）、#!homepage 改指仓库、#!author 去超链接只留署名；功能区段未动。
 
 [Rule]
 DOMAIN, adashx.m.taobao.com, REJECT
