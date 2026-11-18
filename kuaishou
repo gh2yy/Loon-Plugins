@@ -1,18 +1,18 @@
 #!name = 快手去红包挂件与信息流广告
 #!desc = 去掉视频页左侧红包挂件（清空 unionTask/startup 的 widgetList），并过滤信息流里带 ad 字段的广告条目（瓜子二手车、途虎养车那类）。任务中心本身不受影响。
 #!author = gh2yy
-#!date = 2026-11-06
+#!date = 2026-11-18
 #!tag = 快手,去广告
 
 # 修改日志：
-# - 2026-11-18 Muse：用户报信息流偶尔仍刷到广告，静态复查 v3 代码无误、漏点在覆盖外，本版补三处。①沉浸式滑动 feed（/rest/app/customer/video/c/slide/feeds、refresh）不在 /rest/n/feed/ 前缀内、原未覆盖，脚本与 jq 的命中范围同步扩入同一过滤（脚本结构不符自动放行）。②diverse/ad 独立广告下发通道：二进制字符串实证其回调带 feedCount、由客户端本地把广告插进 feed，feed 响应过滤够不着；客户端对该接口空结果/请求失败有明确处理分支，故对 /rest/e/(enc/v1|v1|v2|tube)/diverse/ad 与 /rest/e/ad/tvc 直接 REJECT，并把广告域 api.e.kuaishou.com、*.adkwai.com 加入 Mitm（此前不在名单内、插件看不见）。③脚本日志增强：KS-Feed 带接口路径、新增 KS-Suspect 可疑条目侦测（带广告味字段但无 ad 字段的条目只记日志不删），偶现广告事后凭 Loon 日志即可对位定案、无需抓包。④同日再补视频页「相关搜索」条：该条（KSCommentTopBarGuessSearchElement）数据为 KSFeed 顶层字段 commentGuessSearch（displayPrefix/searchWord），随 feed 下发，脚本对每个条目删该字段、单对象响应兜底一并删，jq 同步 del；同级 captionSearchInfo（文案内可点搜索词）非此条、不动。脚本链接 ?v=3 破缓存。挂件与 feed 的 ad 过滤逻辑本身未动。
+# - 2026-11-18 Muse：用户报信息流偶尔仍刷到广告，静态复查 v3 代码无误、漏点在覆盖外，本版补三处。①沉浸式滑动 feed（/rest/app/customer/video/c/slide/feeds、refresh）不在 /rest/n/feed/ 前缀内、原未覆盖，脚本与 jq 的命中范围同步扩入同一过滤（脚本结构不符自动放行）。②diverse/ad 独立广告下发通道：二进制字符串实证其回调带 feedCount、由客户端本地把广告插进 feed，feed 响应过滤够不着；客户端对该接口空结果/请求失败有明确处理分支，故对 /rest/e/(enc/v1|v1|v2|tube)/diverse/ad 与 /rest/e/ad/tvc 直接 REJECT，并把广告域 api.e.kuaishou.com、*.adkwai.com 加入 Mitm（此前不在名单内、插件看不见）。③脚本日志增强：KS-Feed 带接口路径、新增 KS-Suspect 可疑条目侦测（带广告味字段但无 ad 字段的条目只记日志不删），偶现广告事后凭 Loon 日志即可对位定案、无需抓包。④同日再补视频页「相关搜索」条：该条（KSCommentTopBarGuessSearchElement）数据为 KSFeed 顶层字段 commentGuessSearch（displayPrefix/searchWord），随 feed 下发，脚本对每个条目删该字段、单对象响应兜底一并删，jq 同步 del；同级 captionSearchInfo（文案内可点搜索词）非此条、不动。脚本链接 ?v=3 破缓存。⑤同日 v6：功能逻辑与 v5 完全一致，仅把 #!date 更新为 2026-11-18 并把脚本链接升 ?v=6——此前各版 date 一直停在首版日期、详情页看不出实际版本，导致真机两次更新后仍无法确认送达的是哪一版；本版起以详情页「版本日期」为送达判据。挂件与 feed 的 ad 过滤逻辑本身未动。
 # - 2026-11-06 Muse：首版及同日两次修订，合并记一条。挂件定位（抓包 354）：红包挂件由冷启动接口 POST /rest/n/encourage/unionTask/startup 的 data.widgetInfo.widgetList 唯一一条 WATCH_PHOTO 挂件下发（样式 RP、左侧 y=133、跳转任务中心 source=pendant）。广告定位（抓包 355）：feed 接口（selection/profile/position、scroll、selectionFast、myfollow、profile2）为明文 JSON、顶层 feeds 数组，广告条目带顶层 ad 对象、正常条目无此字段；样本 position 16 条含 1 条瓜子、scroll 12 条含 2 条、myfollow 7 条含 1 条。处理：脚本 Kuaishou-loon.js 对挂件清空 widgetList、对 feed 整项丢弃 ad 非空条目（游标不动），另各配一条 jq 改写做同一件事双保险（均已用抓包原响应验证：条数 16→15、12→10、7→6，其余逐项等价）。host 覆盖 *.ksapisrv.com 与 *.gifshow.com 全部 API 分片；脚本每次命中打日志 KS-Pendant / KS-Feed 到 Loon 日志。实测史：v1（仅 az1+脚本）与 IPA 内 KSLite 的红包开关均无效（KSLite hook 的是旧原生挂件类、与本代 KSUnionWidget* 不沾边）；v2 加固后用户一度报挂件消失、随后报复现，355 抓包（v2 后冷启动）里该响应 widgetList 仍为满值、归因未定（Loon 抓包所示为改写前原文与否未证）。本版把信息流广告并入同一插件一次复测两项，以日志有无 KS 字样先定脚本是否运行。
 #
 # 实测要点：在 Loon 里更新本插件、确认启用，杀快手冷启动后刷精选信息流多翻几屏：①左侧红包挂件是否还在；②瓜子/途虎/消消乐类广告条目是否还出现。若两项都没变化，去 Loon 日志搜 KS-Pendant / KS-Feed：有日志=脚本在跑、问题在改写送达后客户端一侧；无日志=插件没进处理链。把结果（最好带新抓包）发回即可分岔到改包路线。
 
 [Script]
-http-response ^https:\/\/[^\/]+\.(?:ksapisrv\.com|gifshow\.com)\/rest\/n\/encourage\/unionTask\/startup(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Kuaishou-loon.js?v=3, requires-body=true, timeout=10, tag=快手-去红包挂件
-http-response ^https:\/\/[^\/]+\.(?:ksapisrv\.com|gifshow\.com)\/(?:rest\/n\/feed\/.*|rest\/app\/customer\/video\/c\/slide\/.*) script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Kuaishou-loon.js?v=3, requires-body=true, timeout=10, tag=快手-去信息流广告
+http-response ^https:\/\/[^\/]+\.(?:ksapisrv\.com|gifshow\.com)\/rest\/n\/encourage\/unionTask\/startup(?:\?.*)?$ script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Kuaishou-loon.js?v=6, requires-body=true, timeout=10, tag=快手-去红包挂件
+http-response ^https:\/\/[^\/]+\.(?:ksapisrv\.com|gifshow\.com)\/(?:rest\/n\/feed\/.*|rest\/app\/customer\/video\/c\/slide\/.*) script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Kuaishou-loon.js?v=6, requires-body=true, timeout=10, tag=快手-去信息流广告
 
 [Rewrite]
 ^https:\/\/[^\/]+\.(?:ksapisrv\.com|gifshow\.com)\/rest\/n\/encourage\/unionTask\/startup(?:\?.*)?$ response-body-json-jq 'if .data.widgetInfo then .data.widgetInfo.widgetList = [] else . end'
