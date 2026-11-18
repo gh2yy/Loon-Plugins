@@ -24,6 +24,12 @@
 //    adInfo/adData/adExt/commercialInfo/advertisement/adPhoto 等
 //    广告味字段，打 KS-Suspect 日志（路径+序号+字段名）。若日后仍
 //    刷到广告，凭日志即可定案是不是无 ad 字段的变体条目。
+// 4) 视频页评论框上方「相关搜索」条（KSCommentTopBarGuessSearchElement）：
+//    数据是 KSFeed 顶层字段 commentGuessSearch（displayPrefix=相关搜索、
+//    searchWord=推荐词），随 feed 响应下发。本版对每个条目删除该字段，
+//    条无数据源即不渲染；单对象响应（photo/info 类）顶层或 data 层
+//    带该字段时一并删。命中打 KS-GuessSearch 日志（删了几条）。
+//    同级 captionSearchInfo 是文案内可点搜索词，非此条，不动。
 // 另：diverse/ad 独立广告下发通道（客户端本地插入 feed，feed 过滤
 // 够不着）由插件 [Rewrite] 直接 REJECT，不在本脚本内。
 //
@@ -49,37 +55,60 @@
       url.indexOf("/rest/n/feed/") !== -1 ||
       url.indexOf("/customer/video/c/slide/") !== -1;
     if (isFeed) {
-      if (!obj || !Array.isArray(obj.feeds)) return $done({});
+      if (!obj || typeof obj !== "object") return $done({});
       var path = url.split("?")[0].replace(/^https?:\/\/[^/]+/, "");
-      var before = obj.feeds.length;
-      var suspects = [];
-      var SUSPECT_KEYS = [
-        "adInfo",
-        "adData",
-        "adExt",
-        "commercialInfo",
-        "advertisement",
-        "adPhoto"
-      ];
-      obj.feeds = obj.feeds.filter(function (f, idx) {
-        if (f && typeof f === "object") {
-          if (f.ad != null) return false;
-          for (var k = 0; k < SUSPECT_KEYS.length; k++) {
-            if (f[SUSPECT_KEYS[k]] != null) {
-              suspects.push(idx + ":" + SUSPECT_KEYS[k]);
-              break;
+      var changed = false;
+      var guessStripped = 0;
+      var stripGuess = function (o) {
+        if (o && typeof o === "object" && o.commentGuessSearch != null) {
+          delete o.commentGuessSearch;
+          guessStripped++;
+          changed = true;
+        }
+      };
+      if (Array.isArray(obj.feeds)) {
+        var before = obj.feeds.length;
+        var suspects = [];
+        var SUSPECT_KEYS = [
+          "adInfo",
+          "adData",
+          "adExt",
+          "commercialInfo",
+          "advertisement",
+          "adPhoto"
+        ];
+        obj.feeds = obj.feeds.filter(function (f, idx) {
+          if (f && typeof f === "object") {
+            if (f.ad != null) {
+              changed = true;
+              return false;
+            }
+            stripGuess(f);
+            for (var k = 0; k < SUSPECT_KEYS.length; k++) {
+              if (f[SUSPECT_KEYS[k]] != null) {
+                suspects.push(idx + ":" + SUSPECT_KEYS[k]);
+                break;
+              }
             }
           }
+          return true;
+        });
+        console.log(
+          "KS-Feed " + path + ": feeds " + before + " -> " + obj.feeds.length
+        );
+        if (suspects.length) {
+          console.log("KS-Suspect " + path + ": " + suspects.join(","));
         }
-        return true;
-      });
-      console.log(
-        "KS-Feed " + path + ": feeds " + before + " -> " + obj.feeds.length
-      );
-      if (suspects.length) {
-        console.log("KS-Suspect " + path + ": " + suspects.join(","));
       }
-      if (obj.feeds.length === before) return $done({});
+      // 单对象响应兜底（photo/info 类）：顶层或 data 层直接挂字段时删掉
+      stripGuess(obj);
+      stripGuess(obj.data);
+      if (guessStripped > 0) {
+        console.log(
+          "KS-GuessSearch " + path + ": stripped " + guessStripped
+        );
+      }
+      if (!changed) return $done({});
       return $done({ body: JSON.stringify(obj) });
     }
 
