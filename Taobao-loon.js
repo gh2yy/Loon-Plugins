@@ -3,6 +3,7 @@
  * 本体为可莉的 Taobao_remove_ads.js，原样收录、未改逻辑；原文件头注明其引用自 RuCu6 的 myBlockAds.js。
  * 原始出处：https://kelee.one/Resource/JavaScript/Taobao/Taobao_remove_ads.js
  * 精简版说明：仅供「淘宝（精简版）」插件的开屏/弹窗两条响应脚本钩子使用，改为自托管，不再引用 kelee.one。
+ * 2026-11-18 补 acs.m.taobao.com 网关覆盖（开屏配置走主网关时原钩子不触发）。
  */
 
 /*
@@ -16,7 +17,7 @@ let body = $response.body;
 
 switch (isResp) {
   // 淘宝-开屏视频广告
-  case /^https:\/\/guide-acs\.m\.taobao\.com\/gw\/mtop\.taobao\.cloudvideo\.video\.query/.test(url):
+  case /^https:\/\/(?:guide-acs|acs)\.m\.taobao\.com\/gw\/mtop\.taobao\.cloudvideo\.video\.query/.test(url):
     try {
       let obj = JSON.parse(body);
       if (obj?.data?.duration) {
@@ -37,7 +38,7 @@ switch (isResp) {
     }
     break;
   // 淘宝-开屏图片广告
-  case /^https:\/\/guide-acs\.m\.taobao\.com\/gw\/mtop\.taobao\.wireless\.home\.splash\.awesome\.get/.test(url):
+  case /^https:\/\/(?:guide-acs|acs)\.m\.taobao\.com\/gw\/mtop\.taobao\.wireless\.home\.splash\.awesome\.get/.test(url):
     try {
       let obj = JSON.parse(body);
       if (obj?.data?.containers?.splash_home_base) {
