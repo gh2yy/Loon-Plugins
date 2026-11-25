@@ -6,7 +6,7 @@
 #!loon_version = 3.5.3(1014)
 #!homepage = https://loonlab.103516.xyz/Plugin/
 #!icon = https://raw.githubusercontent.com/sooyaaabo/IconLibrary/main/App/TaoBao.png
-#!date = 2026-11-18
+#!date = 2026-11-25
 
 # 精简说明（相对可莉原版 TaoBao.lpx 的改动）
 # - 删除 amdc mobileDispatch 的 REJECT 规则：该拦截已知会让淘宝搜索变卡。
@@ -15,6 +15,7 @@
 # - [Script] 两条响应脚本钩子保留，脚本改为自托管 Taobao-loon.js（可莉 Taobao_remove_ads.js 原样收录），不再引用 kelee.one。
 # - [MitM] 按保留项收敛为 4 个域名。
 # - 2026-11-18 补 acs.m.taobao.com 网关覆盖：开屏钩子与脚本正则扩到主网关、[MitM] 同步加入，脚本升 ?v=2。
+# - 2026-11-25 脚本防御性加固：开屏分支遍历全部 containers/bizData 键中和（兜容器/键名变更），脚本升 ?v=3。
 
 [Rule]
 DOMAIN, adashx.m.taobao.com, REJECT
@@ -30,9 +31,9 @@ request if ${url} ~= /^https:\/\/heic\.alicdn\.com\/imgextra\/i\d\/\d*\/?[\w!]+-
 request if ${url} ~= /^https?:\/\/gw\.alicdn\.com\/imgextra\/i\d+\/[^\/]+_!!\d+-\d+-tps-(720-1280|1080-1920|1125-1602|1242-2208)\.(jpg|png|jpeg)_[^\/]+\.webp/i then reject_dict(200)
 
 [Script]
-response if ${url} ~= /^https:\/\/(?:guide-acs|acs)\.m\.taobao\.com\/gw\/mtop\.taobao\.(?:cloudvideo\.video\.query|wireless\.home\.splash\.awesome\.get)/i then script("https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Taobao-loon.js?v=2") with tag="[淘宝]移除开屏广告", requires_body=true
+response if ${url} ~= /^https:\/\/(?:guide-acs|acs)\.m\.taobao\.com\/gw\/mtop\.taobao\.(?:cloudvideo\.video\.query|wireless\.home\.splash\.awesome\.get)/i then script("https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Taobao-loon.js?v=3") with tag="[淘宝]移除开屏广告", requires_body=true
 
-response if ${url} ~= /^https:\/\/poplayer\.template\.alibaba\.com\/\w+\.json/i then script("https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Taobao-loon.js?v=2") with tag="[淘宝]移除弹窗", requires_body=true
+response if ${url} ~= /^https:\/\/poplayer\.template\.alibaba\.com\/\w+\.json/i then script("https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/Taobao-loon.js?v=3") with tag="[淘宝]移除弹窗", requires_body=true
 
 [MitM]
 hostname = guide-acs.m.taobao.com, acs.m.taobao.com, poplayer.template.alibaba.com, heic.alicdn.com, gw.alicdn.com

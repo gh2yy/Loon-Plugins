@@ -4,6 +4,7 @@
  * 原始出处：https://kelee.one/Resource/JavaScript/Taobao/Taobao_remove_ads.js
  * 精简版说明：仅供「淘宝（精简版）」插件的开屏/弹窗两条响应脚本钩子使用，改为自托管，不再引用 kelee.one。
  * 2026-11-18 补 acs.m.taobao.com 网关覆盖（开屏配置走主网关时原钩子不触发）。
+ * 2026-11-25 防御性加固（开屏分支遍历全部 containers/bizData 键中和）。
  */
 
 /*
@@ -68,6 +69,52 @@ switch (isResp) {
                   if (item?.videoUrl) {
                     item.videoUrl = "";
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+      // 防御性加固（2026-11-25）：遍历全部 containers / bizData 键，
+      // 凡带 hotStart 或 coldStart 的项按同样方式中和，兜住容器/键名变更；
+      // 结构缺层或异形时安全跳过，不带这两属性的项一律不碰。
+      {
+        const hardenSplashItem = (hItem) => {
+          if (!hItem || typeof hItem !== "object") return;
+          if (!("hotStart" in hItem) && !("coldStart" in hItem)) return;
+          hItem.waitTime = "0";
+          hItem.times = "0";
+          hItem.hotStart = "false";
+          hItem.haveVoice = "false";
+          hItem.hideTBLogo = "false";
+          hItem.enable4G = "false";
+          hItem.coldStart = "false";
+          hItem.startTime = "3818332800000";
+          hItem.endTime = "3818419199000";
+          hItem.gmtStart = "2090-12-31 00:00:00";
+          hItem.gmtEnd = "2090-12-31 23:59:59";
+          hItem.gmtStartMs = "3818332800000";
+          hItem.gmtEndMs = "3818419199000";
+          if (hItem?.imgUrl) {
+            hItem.imgUrl = "";
+          }
+          if (hItem?.videoUrl) {
+            hItem.videoUrl = "";
+          }
+        };
+        const allContainers = obj?.data?.containers;
+        if (allContainers && typeof allContainers === "object") {
+          for (const hContainer of Object.values(allContainers)) {
+            const hSections = hContainer?.base?.sections;
+            if (!Array.isArray(hSections)) continue;
+            for (const hSection of hSections) {
+              const hBizData = hSection?.bizData;
+              if (!hBizData || typeof hBizData !== "object") continue;
+              for (const hValue of Object.values(hBizData)) {
+                if (Array.isArray(hValue)) {
+                  for (const hItem of hValue) hardenSplashItem(hItem);
+                } else if (Array.isArray(hValue?.data)) {
+                  for (const hItem of hValue.data) hardenSplashItem(hItem);
                 }
               }
             }
