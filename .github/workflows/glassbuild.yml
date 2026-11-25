@@ -10,15 +10,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Build HPGlassBar dylib
+      - name: Build HPGlassBar dylib from repo source
         run: |
           set +e
           mkdir -p results
           sw_vers > results/toolchain.txt 2>&1
           xcodebuild -version >> results/toolchain.txt 2>&1
-          curl -L -o HPGlassBar.m "https://muse.ai/files/1315728914962231/2084496522253074/mtmebdci0y0w812qk4zw5r36/HPGlassBar.m" > results/curl.log 2>&1
-          ls -la HPGlassBar.m >> results/curl.log 2>&1
-          md5 -q HPGlassBar.m >> results/curl.log 2>&1
+          ls -la HPGlassBar.m > results/src.log 2>&1
+          md5 -q HPGlassBar.m >> results/src.log 2>&1
           echo "== clang dylib build" > results/clang.log
           xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 -dynamiclib -install_name @executable_path/HPGlassBar.dylib -framework UIKit -framework Foundation -framework CoreGraphics -framework QuartzCore -o HPGlassBar.dylib HPGlassBar.m >> results/clang.log 2>&1
           echo "clang exit: $?" >> results/clang.log
@@ -26,10 +25,9 @@ jobs:
           otool -L HPGlassBar.dylib >> results/clang.log 2>&1
           echo "mod_init sections:" >> results/clang.log 2>&1
           otool -l HPGlassBar.dylib | grep -A1 "__mod_init_func" >> results/clang.log 2>&1
-          nm HPGlassBar.dylib | grep -iE "UIGlassEffect|glass" >> results/clang.log 2>&1
           ls -la HPGlassBar.dylib >> results/clang.log 2>&1
           base64 -i HPGlassBar.dylib > results/HPGlassBar.dylib.b64.txt 2>&1
-          cat results/toolchain.txt results/curl.log results/clang.log > results/summary.txt
+          cat results/toolchain.txt results/src.log results/clang.log > results/summary.txt
           cat results/summary.txt
       - name: Commit results
         if: always()
