@@ -1,4 +1,4 @@
-#!name = 淘宝（精简版）
+#!name = 淘宝（精简版）v3
 #!desc = 基于可莉版精简：已移除 amdc 拦截（避免搜索变卡），仅保留开屏/弹窗脚本、开屏素材图拦截与广告域名拦截，脚本自托管
 #!openUrl = https://apps.apple.com/app/id387682726
 #!author = RuCu6[https://github.com/RuCu6], ishowshu[https://github.com/ishowshu], 可莉🅥[https://github.com/luestr/ProxyResource/blob/main/README.md], Muse 整理
