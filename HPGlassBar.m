@@ -1,13 +1,14 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v1 (2026-11-25)
-// 目标类：HPTabBar（自绘底栏）+ HPTabBarButton + HPBaseTabBarController（主题切换）
-// 做法：不动 App 自己的布局契约，只在 HPTabBar layoutSubviews 之后：
-//   1) 藏原背景（backgroundView + 全宽顶线），底栏自身背景透明
-//   2) 在按钮下垫一层悬浮胶囊：容器(投影) + UIVisualEffectView(UIGlassEffect，无则 UIBlurEffect 兜底)
-//   3) 按钮按原左右顺序等分重排进胶囊内（递归找按钮，坐标换算回各自父视图）
-//   4) 选中项背后加一颗高亮胶囊（白天黑 9% / 夜间白 18%），切换时 0.25s 滑动
-//   5) 日/夜跟随虎扑自己的 transferToNight:/transferToDay:（虎扑是 App 内主题、不等于系统外观）；
-//      首次布局前用原背景色明度猜初始主题
-// 纯运行时 swizzle，无 substrate 依赖；UIGlassEffect 全部走 NSClassFromString 动态解析（编译 SDK 无此符号）。
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v2 (2026-11-25)
+// v1 教训：8.1.9 真底栏不是 ObjC 的 HPTabBar（旧系统），而是 Swift 类 _TtC4HPUI10HPUITabBar（模块 HPUI），
+// v1 挂错类、真机零反应。本版改挂真底栏，并以 dylib 单文件交付（用户自行注入，不再出整包）。
+// 挂点（均为 ObjC 可见方法）：
+//   HPUITabBar layoutSubviews                      —— orig 后重排
+//   HPUITabBar updateButtonWithButton:selected:  —— 选中变化时滑动高亮胶囊
+//   HPTabBar（ObjC 旧底栏）layoutSubviews 等       —— 保留 v1 挂点，次级场景兼容
+// 做法：藏原背景（全尺寸非按钮子视图 + backgroundColor），按钮层下垫悬浮胶囊
+//   （容器投影 + UIVisualEffectView，UIGlassEffectStyleClear 清透款），按钮按原序等分重排进胶囊，
+//   选中项后加高亮胶囊（白天黑 9% / 夜间白 18%）。日/夜在每次布局时按底栏原背景色明度推断（虎扑 App 内主题）。
+// 纯运行时 swizzle + +load 安装，无 substrate 依赖；UIGlassEffect 走 NSClassFromString 动态解析。
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -19,13 +20,14 @@ static BOOL gNight = NO;
 static char kGlassBoxKey;
 static char kGlassFxKey;
 static char kPillKey;
+static char kSelBtnKey;
 
-#pragma mark - 小工具
+#pragma mark - 工具
 
 static UIVisualEffect *HPMakeGlassEffect(void) {
     Class glassCls = NSClassFromString(@"UIGlassEffect");
     if (glassCls && [glassCls respondsToSelector:@selector(effectWithStyle:)]) {
-        // UIGlassEffectStyleClear = 1（清透款，对齐小红书插件截图的通透感；Regular=0 更雾）
+        // UIGlassEffectStyleClear = 1（清透款；Regular = 0 更雾）
         UIVisualEffect *fx = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassCls, @selector(effectWithStyle:), 1);
         if (fx) {
             if ([fx respondsToSelector:@selector(setInteractive:)])
@@ -36,17 +38,34 @@ static UIVisualEffect *HPMakeGlassEffect(void) {
     return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial];
 }
 
-// 递归收集 HPTabBarButton（可能不在底栏的直接子层），按在底栏坐标系里的中心 x 排序
-static void HPCollectButtons(UIView *root, UIView *bar, NSMutableArray *out) {
-    Class btnCls = NSClassFromString(@"HPTabBarButton");
+static Class HPFindClass(NSString *exact, NSString *contains, NSArray<NSString *> *excludes) {
+    Class c = NSClassFromString(exact);
+    if (c) return c;
+    int n = objc_getClassList(NULL, 0);
+    if (n <= 0) return nil;
+    Class *list = (__unsafe_unretained Class *)malloc(sizeof(Class) * n);
+    objc_getClassList(list, n);
+    Class found = nil;
+    for (int i = 0; i < n; i++) {
+        NSString *name = NSStringFromClass(list[i]);
+        if (![name containsString:contains]) continue;
+        BOOL bad = NO;
+        for (NSString *ex in excludes) if ([name containsString:ex]) { bad = YES; break; }
+        if (!bad) { found = list[i]; break; }
+    }
+    free(list);
+    return found;
+}
+
+static void HPCollectButtons(UIView *root, Class btnCls, NSMutableArray *out) {
     for (UIView *v in root.subviews) {
         if (btnCls && [v isKindOfClass:btnCls]) [out addObject:v];
-        else HPCollectButtons(v, bar, out);
+        else HPCollectButtons(v, btnCls, out);
     }
 }
-static NSArray *HPBarButtons(UIView *bar) {
+static NSArray *HPBarButtons(UIView *bar, Class btnCls) {
     NSMutableArray *out = [NSMutableArray array];
-    HPCollectButtons(bar, bar, out);
+    HPCollectButtons(bar, btnCls, out);
     [out sortUsingComparator:^NSComparisonResult(UIView *a, UIView *b) {
         CGFloat ax = CGRectGetMidX([bar convertRect:a.bounds fromView:a]);
         CGFloat bx = CGRectGetMidX([bar convertRect:b.bounds fromView:b]);
@@ -55,21 +74,20 @@ static NSArray *HPBarButtons(UIView *bar) {
     return out;
 }
 
-static void HPGuessInitialTheme(UIView *bar) {
-    if (gNightKnown) return;
-    if ([bar respondsToSelector:@selector(backgroundView)]) {
-        UIView *bg = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(backgroundView));
-        UIColor *c = bg.backgroundColor;
-        if (c) {
-            CGFloat w = 0, a = 0;
-            if ([c getWhite:&w alpha:&a] && a > 0.3) { gNight = w < 0.35; gNightKnown = YES; return; }
-        }
+// 每次布局先读底栏当前背景色明度推断日/夜（App 会在切主题时重设背景色），再动手清掉
+static void HPInferTheme(UIView *bar) {
+    UIColor *c = bar.backgroundColor;
+    if (c) {
+        CGFloat w = 0, a = 0;
+        if ([c getWhite:&w alpha:&a] && a > 0.3) { gNight = w < 0.35; gNightKnown = YES; return; }
     }
-    gNight = (bar.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
-    gNightKnown = YES;
+    if (!gNightKnown) {
+        gNight = (bar.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+        gNightKnown = YES;
+    }
 }
 
-#pragma mark - 样式
+#pragma mark - 样式与布局
 
 static void HPApplyTheme(UIView *bar) {
     UIView *box = objc_getAssociatedObject(bar, &kGlassBoxKey);
@@ -89,7 +107,6 @@ static void HPApplyTheme(UIView *bar) {
 }
 
 static void HPEnsureViews(UIView *bar) {
-    HPGuessInitialTheme(bar);
     UIView *box = objc_getAssociatedObject(bar, &kGlassBoxKey);
     if (!box) {
         box = [[UIView alloc] initWithFrame:CGRectZero];
@@ -114,25 +131,30 @@ static void HPEnsureViews(UIView *bar) {
     HPApplyTheme(bar);
 }
 
-static void HPLayoutBar(UIView *bar) {
+static void HPLayoutBar(UIView *bar, Class btnCls) {
     CGRect bounds = bar.bounds;
     if (bounds.size.width < 50 || bounds.size.height < 30) return;
+    HPInferTheme(bar);
     HPEnsureViews(bar);
 
+    UIView *box = objc_getAssociatedObject(bar, &kGlassBoxKey);
+    UIView *pill = objc_getAssociatedObject(bar, &kPillKey);
+
+    // 藏原背景：ObjC 旧栏的 backgroundView + 两代通用的「全尺寸非按钮子视图」+ 全宽顶线
     if ([bar respondsToSelector:@selector(backgroundView)]) {
         UIView *bg = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(backgroundView));
         if (bg) bg.hidden = YES;
     }
-    bar.backgroundColor = [UIColor clearColor];
-    UIView *box = objc_getAssociatedObject(bar, &kGlassBoxKey);
-    UIView *pill = objc_getAssociatedObject(bar, &kPillKey);
-    Class btnCls = NSClassFromString(@"HPTabBarButton");
+    NSArray *btns = HPBarButtons(bar, btnCls);
     for (UIView *v in bar.subviews) {
         if (v == box || v == pill) continue;
         if (btnCls && [v isKindOfClass:btnCls]) continue;
         CGRect f = v.frame;
-        if (f.size.height <= 1.0 && f.size.width >= bounds.size.width * 0.9) v.hidden = YES; // 全宽顶线
+        BOOL fullBg = f.size.width >= bounds.size.width * 0.9 && f.size.height >= bounds.size.height * 0.9;
+        BOOL topLine = f.size.height <= 1.0 && f.size.width >= bounds.size.width * 0.9;
+        if (fullBg || topLine) v.hidden = YES;
     }
+    bar.backgroundColor = [UIColor clearColor];
 
     CGFloat h = bounds.size.height;
     CGFloat capH = MIN(58.0, h - 6);
@@ -145,13 +167,12 @@ static void HPLayoutBar(UIView *bar) {
     fx.layer.cornerRadius = capH / 2;
     fx.clipsToBounds = YES;
 
-    NSArray *btns = HPBarButtons(bar);
     if (btns.count == 0) { pill.hidden = YES; return; }
     CGFloat slot = capsule.size.width / btns.count;
     NSMutableArray *barFrames = [NSMutableArray array];
     for (NSUInteger i = 0; i < btns.count; i++) {
         UIView *b = btns[i];
-        CGRect cur = [bar convertRect:b.bounds fromView:b]; // 底栏坐标系
+        CGRect cur = [bar convertRect:b.bounds fromView:b];
         CGSize s = cur.size;
         if (s.width <= 0 || s.width > slot) s.width = MIN(slot, 76);
         if (s.height <= 0 || s.height > capH - 6) s.height = capH - 10;
@@ -162,10 +183,15 @@ static void HPLayoutBar(UIView *bar) {
         if (b.superview) b.frame = [b.superview convertRect:nf fromView:bar];
     }
 
-    NSInteger sel = 0;
-    if ([bar respondsToSelector:@selector(selectedIndex)])
-        sel = ((NSInteger (*)(id, SEL))objc_msgSend)(bar, @selector(selectedIndex));
-    if (sel < 0 || sel >= (NSInteger)btns.count) sel = 0;
+    UIView *selBtn = objc_getAssociatedObject(bar, &kSelBtnKey);
+    NSUInteger sel = selBtn ? [btns indexOfObject:selBtn] : NSNotFound;
+    if (sel == NSNotFound) {
+        sel = 0;
+        if ([bar respondsToSelector:@selector(selectedIndex)]) {
+            NSInteger si = ((NSInteger (*)(id, SEL))objc_msgSend)(bar, @selector(selectedIndex));
+            if (si >= 0 && si < (NSInteger)btns.count) sel = (NSUInteger)si;
+        }
+    }
     CGRect sbf = [barFrames[sel] CGRectValue];
     CGFloat pillH = capH - 18;
     pill.frame = CGRectMake(CGRectGetMidX(sbf) - (sbf.size.width + 14) / 2,
@@ -177,64 +203,82 @@ static void HPLayoutBar(UIView *bar) {
     for (UIView *b in btns) if (b.superview == bar) [bar bringSubviewToFront:b];
 }
 
-static void HPRestyleBarsInView(UIView *root) {
-    if ([root isKindOfClass:NSClassFromString(@"HPTabBar")]) { HPApplyTheme(root); HPLayoutBar(root); }
-    for (UIView *v in root.subviews) HPRestyleBarsInView(v);
+#pragma mark - Hook
+
+static IMP gOrigSwiftLayout, gOrigSwiftUpdateBtn;
+static IMP gOrigObjcLayout, gOrigObjcSetSel, gOrigObjcSetupSel, gOrigObjcReload;
+static Class gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gObjcBtnCls;
+
+static void HP_SwiftBar_layoutSubviews(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigSwiftLayout)(self, _cmd);
+    HPLayoutBar(self, gSwiftBtnCls);
 }
-
-#pragma mark - Hook 安装
-
-static IMP gOrigLayoutSubviews, gOrigSetSelected, gOrigSetupSelected, gOrigReload, gOrigTrait;
-static IMP gOrigToNight, gOrigToDay;
-
-static void HP_HPTabBar_layoutSubviews(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigLayoutSubviews)(self, _cmd);
-    HPLayoutBar(self);
+static void HP_SwiftBar_updateButton(UIView *self, SEL _cmd, UIView *btn, BOOL selected) {
+    ((void (*)(id, SEL, id, BOOL))gOrigSwiftUpdateBtn)(self, _cmd, btn, selected);
+    if (selected && btn) {
+        objc_setAssociatedObject(self, &kSelBtnKey, btn, OBJC_ASSOCIATION_ASSIGN);
+        [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+            HPLayoutBar(self, gSwiftBtnCls);
+        } completion:nil];
+    }
 }
-static void HP_HPTabBar_setSelectedIndex(UIView *self, SEL _cmd, NSInteger idx) {
-    ((void (*)(id, SEL, NSInteger))gOrigSetSelected)(self, _cmd, idx);
+static void HP_ObjcBar_layoutSubviews(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigObjcLayout)(self, _cmd);
+    HPLayoutBar(self, gObjcBtnCls);
+}
+static void HP_ObjcBar_setSelectedIndex(UIView *self, SEL _cmd, NSInteger idx) {
+    ((void (*)(id, SEL, NSInteger))gOrigObjcSetSel)(self, _cmd, idx);
     [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
-        HPLayoutBar(self);
+        HPLayoutBar(self, gObjcBtnCls);
     } completion:nil];
 }
-static void HP_HPTabBar_setupSelectedIndex(UIView *self, SEL _cmd, NSInteger idx) {
-    ((void (*)(id, SEL, NSInteger))gOrigSetupSelected)(self, _cmd, idx);
-    HPLayoutBar(self);
+static void HP_ObjcBar_setupSelectedIndex(UIView *self, SEL _cmd, NSInteger idx) {
+    ((void (*)(id, SEL, NSInteger))gOrigObjcSetupSel)(self, _cmd, idx);
+    HPLayoutBar(self, gObjcBtnCls);
 }
-static void HP_HPTabBar_reload(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigReload)(self, _cmd);
-    HPLayoutBar(self);
-}
-static void HP_HPTabBar_trait(UIView *self, SEL _cmd, UITraitCollection *prev) {
-    ((void (*)(id, SEL, UITraitCollection *))gOrigTrait)(self, _cmd, prev);
-    HPApplyTheme(self);
-}
-static void HP_TabCtrl_transfer(UIViewController *self, SEL _cmd, id arg) {
-    BOOL toNight = (_cmd == @selector(transferToNight:));
-    IMP orig = toNight ? gOrigToNight : gOrigToDay;
-    if (orig) ((void (*)(id, SEL, id))orig)(self, _cmd, arg);
-    gNight = toNight; gNightKnown = YES;
-    if (self.view) HPRestyleBarsInView(self.view);
+static void HP_ObjcBar_reload(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigObjcReload)(self, _cmd);
+    HPLayoutBar(self, gObjcBtnCls);
 }
 
 static IMP HPSwap(Class cls, SEL sel, IMP newImp) {
     if (!cls) return NULL;
     Method m = class_getInstanceMethod(cls, sel);
-    if (!m) { NSLog(@"[HPGlass] missing method %@ on %@", NSStringFromSelector(sel), NSStringFromClass(cls)); return NULL; }
+    if (!m) { NSLog(@"[HPGlass] missing %@ on %@", NSStringFromSelector(sel), NSStringFromClass(cls)); return NULL; }
     return method_setImplementation(m, newImp);
 }
 
-__attribute__((constructor)) static void HPGlassBarInit(void) {
-    @autoreleasepool {
-        Class barCls = NSClassFromString(@"HPTabBar");
-        Class ctrlCls = NSClassFromString(@"HPBaseTabBarController");
-        gOrigLayoutSubviews = HPSwap(barCls, @selector(layoutSubviews), (IMP)HP_HPTabBar_layoutSubviews);
-        gOrigSetSelected = HPSwap(barCls, @selector(setSelectedIndex:), (IMP)HP_HPTabBar_setSelectedIndex);
-        gOrigSetupSelected = HPSwap(barCls, @selector(setupSelectedIndex:), (IMP)HP_HPTabBar_setupSelectedIndex);
-        gOrigReload = HPSwap(barCls, @selector(reloadImageAndTitles), (IMP)HP_HPTabBar_reload);
-        gOrigTrait = HPSwap(barCls, @selector(traitCollectionDidChange:), (IMP)HP_HPTabBar_trait);
-        gOrigToNight = HPSwap(ctrlCls, @selector(transferToNight:), (IMP)HP_TabCtrl_transfer);
-        gOrigToDay = HPSwap(ctrlCls, @selector(transferToDay:), (IMP)HP_TabCtrl_transfer);
-        NSLog(@"[HPGlass] v1 hooks installed (bar=%@ ctrl=%@)", barCls, ctrlCls);
+static BOOL gInstalled = NO;
+static void HPInstall(void) {
+    if (gInstalled) return;
+    gSwiftBarCls = HPFindClass(@"_TtC4HPUI10HPUITabBar", @"HPUITabBar", @[@"Button", @"Config"]);
+    gSwiftBtnCls = HPFindClass(@"_TtC4HPUI16HPUITabBarButton", @"HPUITabBarButton", @[]);
+    gObjcBarCls = NSClassFromString(@"HPTabBar");
+    gObjcBtnCls = NSClassFromString(@"HPTabBarButton");
+    BOOL any = NO;
+    if (gSwiftBarCls) {
+        gOrigSwiftLayout = HPSwap(gSwiftBarCls, @selector(layoutSubviews), (IMP)HP_SwiftBar_layoutSubviews);
+        gOrigSwiftUpdateBtn = HPSwap(gSwiftBarCls, @selector(updateButtonWithButton:selected:), (IMP)HP_SwiftBar_updateButton);
+        any = (gOrigSwiftLayout != NULL);
     }
+    if (gObjcBarCls) {
+        gOrigObjcLayout = HPSwap(gObjcBarCls, @selector(layoutSubviews), (IMP)HP_ObjcBar_layoutSubviews);
+        gOrigObjcSetSel = HPSwap(gObjcBarCls, @selector(setSelectedIndex:), (IMP)HP_ObjcBar_setSelectedIndex);
+        gOrigObjcSetupSel = HPSwap(gObjcBarCls, @selector(setupSelectedIndex:), (IMP)HP_ObjcBar_setupSelectedIndex);
+        gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
+    }
+    gInstalled = any;
+    NSLog(@"[HPGlass] v2 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+          gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
+
+@interface HPGlassLoader : NSObject
+@end
+@implementation HPGlassLoader
++ (void)load {
+    HPInstall();
+    dispatch_async(dispatch_get_main_queue(), ^{ HPInstall(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ HPInstall(); });
+}
+@end
