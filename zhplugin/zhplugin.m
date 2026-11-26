@@ -106,6 +106,9 @@
 //     y 46→41，即 v3.4 排布），底边距 8→15（整栏上抬 7）；总宽
 //     192、槽宽 86 不变，自建栏 frame y = 956−15−62 = 879。
 //     其余逐字未动。
+//   v3.7（真机反馈单修）：底边距 15→23（整栏再往上抬 8）。栏高
+//     62、透镜 74×50、按钮排布全不变，自建栏 frame y =
+//     956−23−62 = 871。其余逐字未动。
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
 //   录（保留探针时代的取证字段）。
@@ -1013,7 +1016,7 @@ static void ZHLayoutGlassNav(UIView *bar) {
     if (host.superview != win) [win addSubview:host]; // 只挂一次、不重排
     CGFloat W = kNavSlotW * 2 + kNavPadX * 2;
     CGRect hf = CGRectMake((win.bounds.size.width - W) / 2,
-                           win.bounds.size.height - 15 - kNavBarH,
+                           win.bounds.size.height - 23 - kNavBarH,
                            W, kNavBarH);
     if (!CGRectEqualToRect(host.frame, hf)) host.frame = hf;
     if (host.hidden) host.hidden = NO;
