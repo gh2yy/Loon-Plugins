@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v4.7 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v4.8 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.7"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.8"); });
     return l;
 }
 
@@ -272,8 +272,12 @@ static void WCApplyStrong(UIView *root, UIView *bar, UIColor *dyn, int depth) {
 }
 
 // WCApplyStrong 的逆操作：按存档把子视图的 effect 与背景逐一还原（浅色恢复用）
+// gWCRestoreDepth：还原进行中计数——setter hook 见它 >0 时不许再替换，
+// 免得还原写入的原色又被当场换黑（v4.8 占位视图 set 时替换引入的配套守卫）。
+static int gWCRestoreDepth = 0;
 static void WCRestoreStrong(UIView *root, int depth) {
     if (depth < 0 || !root) return;
+    gWCRestoreDepth++;
     for (UIView *v in root.subviews) {
         if ([v isKindOfClass:[UIVisualEffectView class]]) {
             UIVisualEffectView *ev = (UIVisualEffectView *)v;
@@ -295,6 +299,7 @@ static void WCRestoreStrong(UIView *root, int depth) {
         }
         WCRestoreStrong(v, depth - 1);
     }
+    gWCRestoreDepth--;
 }
 
 static void WCRestoreBar(UIView *bar) {
@@ -711,6 +716,24 @@ static IMP gOrigSetBG, gOrigNavBarTint, gOrigTabBarTint;
 static IMP gOrigMMTabLayout, gOrigMMTabWindow, gOrigNavLayout, gOrigInputLayout;
 
 static void WC_View_setBackgroundColor(UIView *self, SEL _cmd, UIColor *color) {
+    // v4.8：键盘占位视图在「被赋值的那一刻」就换黑，不再等强刷。占位视图是
+    // MMInputToolView 的直属子视图（440×348、#1E1E1E），不在色值替换表里（0x1E 全局
+    // 通用、不能按色值全局换），此前靠 WCForceBar 每 0.4 秒补刷——键盘弹起时微信会
+    // 重设它的背景，补刷落地前那一拍就是用户看到的「四周先灰、然后消失」。
+    // 条件收窄到直属子视图 + 深色 + chatbar 开启 + 不透明深灰，还原中（计数>0）不拦。
+    if (color && gWCRestoreDepth == 0 && ![self isKindOfClass:[UIVisualEffectView class]]) {
+        static Class mmInputCls = nil;
+        if (!mmInputCls) mmInputCls = NSClassFromString(@"MMInputToolView");
+        if (mmInputCls && [self.superview isKindOfClass:mmInputCls] &&
+            self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark &&
+            WCConfigColor(@"chatbar") && WCIsOpaqueDarkNeutral(color)) {
+            if (!objc_getAssociatedObject(self, &kWCOrigBGKey))
+                objc_setAssociatedObject(self, &kWCOrigBGKey, color, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            UIColor *dyn = WCDynamicColor(@"chatbar", [color resolvedColorWithTraitCollection:WCLightTrait()]);
+            ((void (*)(id, SEL, id))gOrigSetBG)(self, _cmd, dyn);
+            return;
+        }
+    }
     UIColor *sub = WCSubstituteForColor(color);
     ((void (*)(id, SEL, id))gOrigSetBG)(self, _cmd, sub ?: color);
 }
@@ -1025,7 +1048,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"4.7", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"4.8", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1033,7 +1056,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v4.7 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v4.8 registered in plugin list");
             break;
         }
     }
@@ -1094,8 +1117,14 @@ static void WCInstall(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCScanAllWindows(); });
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
+        static id kbdObserver; // 同上，MRC 必须 retain
+        kbdObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:UIKeyboardWillShowNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+            // v4.8：键盘将显先补刷一次输入栏——占位视图在动画开始前就是黑的，
+            // 不给灰色留出场机会（set 时替换是主防线，这里是兜底）
+            for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"chatbar", 4);
+        }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v4.7 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v4.8 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1107,7 +1136,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v4.7 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v4.8 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     WCEnsureRegistered();
