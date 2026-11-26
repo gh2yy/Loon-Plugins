@@ -1,4 +1,7 @@
-// WCBlack.m — 微信深色模式纯黑背景 v3.2 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v3.3 (2026-11-26)
+// v3.3：并入 v3.2 全部内容，另修浅色模式顶部黑带（用户 09:07 截图）：动态色的浅色回退取自
+//   深色下被赋值的静态深灰，切浅色后解析成 #17 左右的暗色。修：WCSanitizeLightFallback——
+//   回退色在浅色下仍暗（亮度<0.5）一律换白；导航恢复时一并还原 barTintColor。
 // v3.2：v3.1 真机导航（列表页）已黑、闪退已修；剩底部 tab、聊天底栏、聊天顶栏未变。
 //   查玻璃插件字符串定案其有自有底栏类 WCGNativeTabBar/WCTabBarView，可见底栏可能不是 MMTabBar——
 //   新增按类族+几何的兜底扫描强刷（UITabBar appearance 路径）；聊天顶栏补挂 MMMsgContentNavBar/
@@ -113,8 +116,22 @@ static NSString *WCModuleForColor(UIColor *color) {
     return nil;
 }
 
+// 浅色回退净化：微信有些颜色是「只在深色下被赋值的静态深灰」（如导航 #0F0F0F），
+// 直接拿它当浅色回退，切到浅色后动态色会解析成深灰——v3.1 真机实测浅色模式顶部一条黑带就是这个坑。
+// 规则：回退色在浅色下若仍是暗色（亮度<0.5 且不透明），一律换成白色（五模块的浅色本色都是浅面）。
+static UIColor *WCSanitizeLightFallback(UIColor *fb) {
+    if (!fb) return [UIColor clearColor];
+    UIColor *l = [fb resolvedColorWithTraitCollection:WCLightTrait()];
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if ([l getRed:&r green:&g blue:&b alpha:&a] && a > 0.9) {
+        CGFloat lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        if (lum < 0.5) return [UIColor whiteColor];
+    }
+    return fb;
+}
+
 static UIColor *WCDynamicColor(NSString *module, UIColor *lightFallback) {
-    UIColor *fb = lightFallback ?: [UIColor clearColor];
+    UIColor *fb = WCSanitizeLightFallback(lightFallback);
     return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
         if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
             UIColor *c = WCConfigColor(module);
@@ -134,7 +151,7 @@ static UIColor *WCSubstituteForColor(UIColor *color) {
 
 #pragma mark - 靶向栏强制（注册表 + 定时强刷）
 
-static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey;
+static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey;
 
 static NSHashTable<UIView *> *gBarsTab, *gBarsNav, *gBarsInput;
 static void WCRegisterBar(NSHashTable<UIView *> *table, UIView *bar) {
@@ -211,6 +228,8 @@ static void WCRestoreBar(UIView *bar) {
     if ([bar isKindOfClass:[UINavigationBar class]]) {
         UIImage *orig = objc_getAssociatedObject(bar, &kWCOrigNavImageKey);
         [(UINavigationBar *)bar setBackgroundImage:orig forBarMetrics:UIBarMetricsDefault];
+        UIColor *tint = objc_getAssociatedObject(bar, &kWCOrigTintKey);
+        [(UINavigationBar *)bar setBarTintColor:tint];
     }
     objc_setAssociatedObject(bar, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -231,6 +250,8 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
         if ([bar isKindOfClass:[UINavigationBar class]]) {
             UIImage *orig = [(UINavigationBar *)bar backgroundImageForBarMetrics:UIBarMetricsDefault];
             if (orig) objc_setAssociatedObject(bar, &kWCOrigNavImageKey, orig, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            UIColor *tint = [(UINavigationBar *)bar barTintColor];
+            if (tint) objc_setAssociatedObject(bar, &kWCOrigTintKey, tint, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         objc_setAssociatedObject(bar, &kWCForcedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -672,7 +693,7 @@ static void WCInstall(void) {
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v3.2 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v3.3 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     if (!gRegistered) {
         Class mgr = NSClassFromString(@"WCPluginsMgr");
@@ -683,8 +704,8 @@ static void WCInstall(void) {
             for (id p in existing) { if ([[p valueForKey:@"title"] containsString:@"WCBlack"]) { dup = YES; break; } }
             if (!dup && [inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
                 ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-                    @"WCBlack 纯黑背景", @"3.2", @"WCBlackSettingsViewController");
-                os_log(WCLog(), "[WCBlack] v3.2 registered in plugin list");
+                    @"WCBlack 纯黑背景", @"3.3", @"WCBlackSettingsViewController");
+                os_log(WCLog(), "[WCBlack] v3.3 registered in plugin list");
             }
             gRegistered = YES;
         }
