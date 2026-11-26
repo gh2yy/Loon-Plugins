@@ -24,8 +24,11 @@
 //       重申；玻璃关 → 还原 hidden=NO 并把自建栏移出窗口。
 //     ②自建栏：透明 host 容器挂当前 keyWindow，底部居中悬浮（安
 //       全区上方 12pt），尺寸由两槽决定：槽宽 86、栏高 64、两侧
-//       内边距 10 → 192×64。host 子视图序：玻璃面（index 0）→
-//       选中透镜 → 两按钮。玻璃面/透镜均为 ZPGlassView（SJJ 序
+//       内边距 10 → 192×64。host 子视图序：玻璃容器（index 0）
+//       → 两按钮；容器 = UIVisualEffectView + UIGlassContainer-
+//       Effect（spacing 2.0，v3.1 起），其 contentView 内依次是
+//       玻璃面 → 选中透镜（容器类取不到时回落玻璃面/透镜直挂
+//       host 的旧形态）。玻璃面/透镜均为 ZPGlassView（SJJ 序
 //       列：空身入树、先钉 overrideUserInterfaceStyle 跟知乎夜间
 //       模式、Regular、无 tint、zpUpdateMaterial: 装入）。
 //     ③按钮数据：从原栏可见 item 视图抄——首页取 iconImageView
@@ -39,8 +42,20 @@
 //       （登录拦截、delegate 切换、model selected 更新全在原链内）。
 //     ⑤选中与透镜：选中态读 item 的 themeSelected；既有 select/
 //       unselect/setItems/主题/layout 钩子触发下一拍维护，透镜
-//       0.25s 滑到选中槽，按钮选中态同步。维护幂等：hidden 同步
+//       滑到选中槽，按钮选中态同步。维护幂等：hidden 同步
 //       / frame 变更才写 / 已在位不重排 / effect 为 nil 才装。
+//   v3.1（真机反馈两修）：①冷启直达——建成前 apply 若发现 item
+//     未就绪，不再干等事件：以 0.1s 一拍、最长约 3s 快重试（外加
+//     安装后一只启动清扫链在窗口树里找栏），item 视图一就绪立即
+//     建栏、按原栏当前选中态无动画落位透镜、隐藏原栏；按钮内容
+//     （头像等异步资源）仍每轮同步补齐、不作建栏前置。点选钩子
+//     只负责建成后的切换。②动效弹性——玻璃面与透镜同入一只
+//     UIGlassContainerEffect（spacing 2.0）聚合，透镜移动时与底
+//     盘之间有系统玻璃形变；透镜位移改弹簧（0.5s / damping 0.75）
+//     + 按距离横向拉伸（≤1.2，到位回弹归位），以「目标槽位」记
+//     忆防维护轮次反复重启弹簧；两 effect 保持 interactive=YES；
+//     按钮按压时图标缩 0.9、松开弹簧回弹，用户点选驱动的选中切
+//     换时图标做一次 1.15 弹簧弹跳（冷启首落位不弹）。
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
 //   录（保留探针时代的取证字段）。
@@ -108,6 +123,10 @@ static char kNavBtnHomeKey; // 首页按钮（ZPNavButton）
 static char kNavBtnMineKey; // 我的按钮（ZPNavButton）
 static char kNavSelKey;    // 最近一次选中槽位（NSNumber，透镜落位兜底）
 static char kNavPlacedKey; // 透镜已落位过（首次落位不做滑动动画）
+static char kNavContainerKey; // 玻璃容器（UIVisualEffectView + UIGlassContainerEffect，聚合玻璃面+透镜）
+static char kNavLensSlotKey;  // 透镜当前/正在滑向的槽位（NSNumber，防维护轮次反复重启弹簧）
+static char kNavRetryKey;     // 冷启直达重试计数（NSNumber，0.1s 一拍、上限 30 ≈ 3s）
+static char kNavRetryPendKey; // 冷启直达重试在途标记（防并行重试链）
 static char kSchedKey;     // 已排队布局标记
 static char kLayoutLockKey; // layoutSubviews 重入锁（per-instance）
 static char kGestureKey;   // 长按兜底手势（RETAIN）
@@ -161,6 +180,8 @@ static void ZHRegisterBar(UIView *bar) {
 
 static void ZHApplyBar(UIView *bar); // 前置声明，定义在布局节
 static void ZHRequestApply(UIView *bar); // 前置声明，定义在布局节
+static BOOL ZHNavIsBuilt(UIView *bar); // 前置声明，定义在布局节（安装段启动清扫用）
+static void ZHNavKickRetry(UIView *bar); // 前置声明，定义在布局节（安装段启动清扫用）
 static UIWindow *ZPKeyWindow(void); // 前置声明，定义在布局节（导航落位用）
 static NSString *ZPBuildDiagnostics(void); // 前置声明，定义在设置页节（诊断行）
 static NSString *ZPColorDesc(UIColor *c); // 前置声明，定义在诊断行节（bg 侦测记录先用）
@@ -397,6 +418,11 @@ static ZPGlassView *ZHMakeNavGlassView(CGRect frame) {
     return v; // +1，调用方转交 associated 持有后 release
 }
 
+// 点选弹跳门控（v3.1）：用户经自建按钮点选过至少一次才为 YES——
+// 选中图标的 1.15 弹跳只跟用户点选驱动的切换，冷启首落位与程序
+// 化切换保持安静。由 handler 的 zhPluginNavTapped: 在回链前置位。
+static BOOL gNavUserTapped = NO;
+
 #pragma mark - 自建导航按钮（数据从原栏 item 抄，几何自定）
 
 // ZPNavButton：自建导航的单只按钮（UIControl）。内容只有图标在
@@ -464,12 +490,37 @@ static ZPGlassView *ZHMakeNavGlassView(CGRect frame) {
     if (font && _titleLabel.font != font) _titleLabel.font = font;
     if (color && _titleLabel.textColor != color) _titleLabel.textColor = color;
 }
-- (void)zpSetNavSelected:(BOOL)sel { _navSelected = sel; }
+- (void)zpSetNavSelected:(BOOL)sel {
+    BOOL was = _navSelected;
+    _navSelected = sel;
+    // 选中弹跳（v3.1）：NO→YES 且由用户点选驱动（gNavUserTapped）
+    // 时，图标先撑到 1.15 再以低阻尼弹簧回弹归位（过冲即弹跳感）；
+    // 冷启首落位/程序化切换不弹。
+    if (sel && !was && gNavUserTapped) {
+        _iconView.transform = CGAffineTransformMakeScale(1.15, 1.15);
+        [UIView animateWithDuration:0.5 delay:0 usingSpringWithDamping:0.45
+             initialSpringVelocity:0
+                            options:UIViewAnimationOptionBeginFromCurrentState
+                         animations:^{ _iconView.transform = CGAffineTransformIdentity; }
+                         completion:nil];
+    }
+}
 - (void)setHighlighted:(BOOL)highlighted {
     [super setHighlighted:highlighted];
     CGFloat a = highlighted ? 0.55 : 1.0;
     _iconView.alpha = a;
     _titleLabel.alpha = a;
+    // 按压反馈（v3.1）：按下图标缩到 0.9（快、硬），松开弹簧回弹
+    // （慢、软）；与选中弹跳共用 _iconView.transform，均以
+    // BeginFromCurrentState 衔接，前后动画不打架。
+    [UIView animateWithDuration:(highlighted ? 0.18 : 0.45) delay:0
+         usingSpringWithDamping:(highlighted ? 0.85 : 0.5)
+          initialSpringVelocity:0
+                        options:UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+        _iconView.transform = highlighted ? CGAffineTransformMakeScale(0.9, 0.9)
+                                          : CGAffineTransformIdentity;
+    } completion:nil];
 }
 @end
 
@@ -654,6 +705,7 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
     UIView *bar = [btn zpBar];
     id model = [btn zpModel];
     if (!bar || !model) return;
+    gNavUserTapped = YES; // 本次切换由用户点选驱动：选中图标可弹跳（v3.1）
     if ([bar respondsToSelector:@selector(didClickTabBarItem:)])
         ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(didClickTabBarItem:), model);
     ZHRequestApply(bar); // 点选后排一轮维护，透镜/选中态即时跟上
@@ -751,26 +803,84 @@ static void ZPSyncNavButton(ZPNavButton *btn, UIView *bar, UIView *item) {
         [btn zpSyncTitle:lab.text font:lab.font color:lab.textColor];
 }
 
+// 玻璃容器工厂（v3.1）：UIVisualEffectView + UIGlassContainerEffect
+// （spacing 2.0）——玻璃面与透镜同入其 contentView 聚合，透镜移动
+// 时与底盘玻璃产生系统形变（系统 UITabBar 选中指示器的同款机制；
+// spacing 2.0 与 SJJ 样本多元素组合的实测常量一致）。容器永不吃
+// 点击。类取不到（<iOS 26）返回 nil，布局节回落玻璃面/透镜直挂
+// host 的旧形态。
+static UIVisualEffectView *ZHNavContainerForBar(UIView *bar, UIView *host) {
+    UIVisualEffectView *cv = objc_getAssociatedObject(bar, &kNavContainerKey);
+    if (cv) return cv;
+    Class ccCls = NSClassFromString(@"UIGlassContainerEffect");
+    if (!ccCls) return nil;
+    id cfx = [[ccCls alloc] init];
+    if (!cfx) return nil;
+    if ([cfx respondsToSelector:@selector(setSpacing:)])
+        ((void (*)(id, SEL, double))objc_msgSend)(cfx, @selector(setSpacing:), 2.0);
+    cv = [[UIVisualEffectView alloc] initWithEffect:cfx];
+    [cfx release];
+    cv.userInteractionEnabled = NO;
+    cv.frame = host.bounds;
+    objc_setAssociatedObject(bar, &kNavContainerKey, cv, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [cv release];
+    return cv;
+}
+
+// 冷启直达（v3.1）：建成判定 + 快重试链。真机定责——冷启后 apply
+// 若在 item 就绪前跑完便无人再触发，导航要等用户点一次原栏才出
+// 现。本链：建成前每 0.1s 一拍重排 apply（ZHRequestApply 异步下一
+// 拍施工），建成即停并清计数；计数上限 30（≈3s），超限回归既有
+// hook 触发兜底。在途标记保证全程只有一条链（布局早退与 apply
+// 尾部的重复呼叫都被它合并）。
+static BOOL ZHNavIsBuilt(UIView *bar) {
+    UIView *host = objc_getAssociatedObject(bar, &kNavHostKey);
+    return host && host.superview && objc_getAssociatedObject(bar, &kNavGlassKey) && bar.hidden;
+}
+static void ZHNavKickRetry(UIView *bar) {
+    if (!bar || !ZHGlassEnabled()) return;
+    if (ZHNavIsBuilt(bar)) { // 建成：清计数收工
+        objc_setAssociatedObject(bar, &kNavRetryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    if (objc_getAssociatedObject(bar, &kNavRetryPendKey)) return; // 已有在途一拍
+    NSInteger cnt = [objc_getAssociatedObject(bar, &kNavRetryKey) integerValue];
+    if (cnt >= 30) return; // ≈3s 上限
+    objc_setAssociatedObject(bar, &kNavRetryKey, @(cnt + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kNavRetryPendKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        objc_setAssociatedObject(bar, &kNavRetryPendKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!ZHGlassEnabled()) return;
+        ZHRequestApply(bar); // 下一拍施工（建成与否由施工结果决定）
+        ZHNavKickRetry(bar); // 未建成则续排下一拍（在途标记防叠链）
+    });
+}
+
 // 玻璃开落位（每轮 apply 走一遍，全程幂等；次序照 SJJ：建槽入树
 // → 钉风格 → 装 effect）：
 //   槽位识别——可见 item 中 identifier 0 = 首页、5 = 我的（取不
 //   到回落可见序首/尾）；两槽未就绪（item 不足/同体）本轮不施
-//   工、更不隐藏原栏，等下一轮触发。
+//   工、更不隐藏原栏；未就绪时另排冷启快重试链（ZHNavKickRetry，
+//   v3.1），不等下一轮事件。
 //   host——不在当前 keyWindow 才重挂；frame 变更才写；hidden 同步。
-//   玻璃面——不在 host 内才以 insertSubview:atIndex:0 垫入；frame
-//   与 host bounds 不同才写。透镜/按钮随后入树（依次叠在玻璃面之
-//   上），已在位不重排。
+//   玻璃面/透镜——同入玻璃容器（UIGlassContainerEffect，v3.1）的
+//   contentView（玻璃面 index 0 垫底、透镜其上），容器不在 host
+//   内才以 index 0 垫入；容器不可用时回落直挂 host。按钮随后入
+//   host（叠在容器之上），已在位不重排。玻璃面 frame 与 host
+//   bounds 不同才写（容器坐标与 host 坐标一致）。
 //   风格——玻璃面与透镜每轮 ZHGlassApplyTheme 钉知乎主题（内含比
 //   对、变更才写），排在装 effect 之前。
 //   effect——为 nil 才建 fx 经 zpUpdateMaterial: 装入，已装永不重赋。
 //   选中——读两 item 的 themeSelected（都读不到回落上轮槽位）；
-//   透镜目标 frame = 选中槽内缩（6,7,74,50），与现 frame 不同才
-//   动：已落位过走 0.25s 滑动、首次直接置位。按钮选中态同步。
+//   透镜目标 = 选中槽内缩（6,7,74,50）：首次直接置位，后续仅当
+//   目标槽位变化时走弹簧（0.5s/damping 0.75 + 按距离横向拉伸，
+//   v3.1）。按钮选中态同步。
 //   原栏——导航完整建成后才置 hidden=YES（每轮重申）。
 static void ZHLayoutGlassNav(UIView *bar) {
     ZHRegisterBar(bar);
     NSArray *vis = ZHVisibleItems(bar);
-    if (!vis || vis.count < 2) return; // item 未就绪：不施工、不隐藏原栏
+    if (!vis || vis.count < 2) { ZHNavKickRetry(bar); return; } // item 未就绪：不施工、不隐藏原栏，排快重试等它就绪（v3.1）
     UIView *homeItem = nil, *mineItem = nil;
     for (UIView *it in vis) {
         NSInteger ident = ZHItemIdentifier(it);
@@ -779,9 +889,9 @@ static void ZHLayoutGlassNav(UIView *bar) {
     }
     if (!homeItem) homeItem = vis.firstObject;
     if (!mineItem) mineItem = vis.lastObject;
-    if (!homeItem || !mineItem || homeItem == mineItem) return;
+    if (!homeItem || !mineItem || homeItem == mineItem) { ZHNavKickRetry(bar); return; }
     UIWindow *win = ZPKeyWindow();
-    if (!win || win.bounds.size.width < 100) return;
+    if (!win || win.bounds.size.width < 100) { ZHNavKickRetry(bar); return; }
 
     UIView *host = ZHNavHostForBar(bar);
     if (host.superview != win) [win addSubview:host]; // 只挂一次、不重排
@@ -800,10 +910,21 @@ static void ZHLayoutGlassNav(UIView *bar) {
     ZPGlassView *lens = ZHNavLensForBar(bar);
     ZPNavButton *btnHome = ZHNavButtonForBar(bar, &kNavBtnHomeKey);
     ZPNavButton *btnMine = ZHNavButtonForBar(bar, &kNavBtnMineKey);
-    if (glass.superview != host) [host insertSubview:glass atIndex:0]; // 玻璃面恒 index 0
+    // 玻璃容器（v3.1）：玻璃面+透镜同入容器 contentView 聚合（透镜
+    // 移动时与底盘形变）；容器恒 host index 0、frame 同 host bounds。
+    // 容器类取不到时回落旧形态：玻璃面/透镜直挂 host。
+    UIVisualEffectView *container = ZHNavContainerForBar(bar, host);
+    UIView *glassParent = host;
+    if (container) {
+        if (container.superview != host) [host insertSubview:container atIndex:0];
+        if (!CGRectEqualToRect(container.frame, host.bounds)) container.frame = host.bounds;
+        if (container.hidden) container.hidden = NO;
+        glassParent = container.contentView;
+    }
+    if (glass.superview != glassParent) [glassParent insertSubview:glass atIndex:0]; // 玻璃面恒垫底
     if (!CGRectEqualToRect(glass.frame, host.bounds)) glass.frame = host.bounds;
     if (glass.hidden) glass.hidden = NO;
-    if (lens && lens.superview != host) [host addSubview:lens];
+    if (lens && lens.superview != glassParent) [glassParent addSubview:lens];
     if (btnHome.superview != host) [host addSubview:btnHome];
     if (btnMine.superview != host) [host addSubview:btnMine];
     CGRect homeF = CGRectMake(kNavPadX, 0, kNavSlotW, kNavBarH);
@@ -813,6 +934,7 @@ static void ZHLayoutGlassNav(UIView *bar) {
 
     ZHGlassApplyTheme(glass);
     if (lens) ZHGlassApplyTheme(lens);
+    if (container) ZHGlassApplyTheme(container);
     if (!glass.effect) {
         id fx = ZHMakeGlassEffect(YES);
         if (fx) [glass zpUpdateMaterial:fx];
@@ -838,11 +960,34 @@ static void ZHLayoutGlassNav(UIView *bar) {
         CGRect target = CGRectInset(slot, 6, 7);
         BOOL placed = (objc_getAssociatedObject(bar, &kNavPlacedKey) != nil);
         if (!placed) {
+            // 首次落位：直接置位不动画（冷启直达口径），记下目标槽位
             lens.frame = target;
+            lens.transform = CGAffineTransformIdentity;
             lens.hidden = NO;
             objc_setAssociatedObject(bar, &kNavPlacedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        } else if (!CGRectEqualToRect(lens.frame, target)) {
-            [UIView animateWithDuration:0.25 animations:^{ lens.frame = target; }];
+            objc_setAssociatedObject(bar, &kNavLensSlotKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else {
+            // 后续切换：仅当目标槽位真变时才起弹簧（v3.1）——维护每
+            // 轮都跑，靠槽位记忆防弹簧被反复重启。弹簧 0.5s /
+            // damping 0.75；起步先按位移距离横向拉伸（满槽距 →
+            // 1.2），到位随弹簧回弹归位。走 center 而非 frame：拉
+            // 伸 transform 在身时 frame 语义未定，center 才是稳定量。
+            NSNumber *lensSlot = objc_getAssociatedObject(bar, &kNavLensSlotKey);
+            if (!lensSlot || lensSlot.integerValue != sel) {
+                objc_setAssociatedObject(bar, &kNavLensSlotKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                CGPoint tc = CGPointMake(CGRectGetMidX(target), CGRectGetMidY(target));
+                CGFloat ratio = fabs(tc.x - lens.center.x) / kNavSlotW;
+                if (ratio > 1) ratio = 1;
+                lens.transform = CGAffineTransformMakeScale(1.0 + 0.2 * ratio, 1.0);
+                [UIView animateWithDuration:0.5 delay:0 usingSpringWithDamping:0.75
+                     initialSpringVelocity:0
+                                    options:UIViewAnimationOptionBeginFromCurrentState |
+                                            UIViewAnimationOptionAllowUserInteraction
+                                 animations:^{
+                    lens.center = tc;
+                    lens.transform = CGAffineTransformIdentity;
+                } completion:nil];
+            }
         }
         if (lens.hidden) lens.hidden = NO;
     }
@@ -872,7 +1017,10 @@ static void ZHApplyBar(UIView *bar) {
         objc_setAssociatedObject(bar, &kGestureKey, lp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [lp release];
     }
-    if (ZHGlassEnabled()) ZHLayoutGlassNav(bar);
+    if (ZHGlassEnabled()) {
+        ZHLayoutGlassNav(bar);
+        ZHNavKickRetry(bar); // 冷启直达（v3.1）：未建成则续排快重试，建成自动停
+    }
     else ZHRestoreOriginalBar(bar);
 }
 
@@ -1060,8 +1208,8 @@ static NSString *ZPSuperviewChain(UIView *v) {
 
 // 玻璃导航的诊断块：自建栏 host 本值 frame + 窗口 frame 实测
 // （convertRect:toView:nil）、superview 类名链、window 是否非空；
-// 玻璃面 frame（host 内坐标）+ 在 host 子视图中的位次、effect 对
-// 象类名；透镜 frame/hidden/effect 类名；当前选中项（槽位序号 +
+// 容器 effect 类名 + 玻璃面 frame（host 内坐标）+ 在其父视图中的
+// 位次、effect 对象类名；透镜 frame/hidden/effect 类名；当前选中项（槽位序号 +
 // 首页/我的）；两按钮 frame；effect 通道计数（setEffect: 外部调
 // 用次数 + 最近传入类名 / zpUpdateMaterial: 安装次数）、bg 写入
 // 记录（总次数 + 前 4 次详细：值 ← 调用方镜像+偏移，只记不
@@ -1073,7 +1221,7 @@ static void ZPAppendNavDiag(NSMutableString *s, UIView *bar) {
     ZPGlassView *lens = objc_getAssociatedObject(bar, &kNavLensKey);
     ZPNavButton *btnHome = objc_getAssociatedObject(bar, &kNavBtnHomeKey);
     ZPNavButton *btnMine = objc_getAssociatedObject(bar, &kNavBtnMineKey);
-    [s appendString:@"玻璃导航（自建栏·玻璃面 index 0·透镜·两按钮）:\n"];
+    [s appendString:@"玻璃导航（自建栏·容器聚合玻璃面+透镜·两按钮）:\n"];
     if (!host || !glass) {
         [s appendString:@"  自建栏: 未创建（玻璃类不可用或 item 尚未就绪）\n"];
         return;
@@ -1082,9 +1230,13 @@ static void ZPAppendNavDiag(NSMutableString *s, UIView *bar) {
          NSStringFromCGRect(host.frame),
          NSStringFromCGRect([host convertRect:host.bounds toView:nil]),
          (int)host.hidden, ZPSuperviewChain(host), host.window ? @"非空" : @"nil"];
-    [s appendFormat:@"  玻璃面 frame(host内)=%@ hidden=%d 子视图位=%ld effect类名=%@\n",
+    UIVisualEffectView *container = objc_getAssociatedObject(bar, &kNavContainerKey);
+    [s appendFormat:@"  容器 effect类名=%@ host内子视图位=%ld\n",
+         container ? ZPEffectClassName(container) : @"(无容器，回落直挂)",
+         container ? (long)[host.subviews indexOfObjectIdenticalTo:container] : -1L];
+    [s appendFormat:@"  玻璃面 frame(host内)=%@ hidden=%d 父视图内子视图位=%ld effect类名=%@\n",
          NSStringFromCGRect(glass.frame), (int)glass.hidden,
-         (long)[host.subviews indexOfObjectIdenticalTo:glass],
+         (long)[glass.superview.subviews indexOfObjectIdenticalTo:glass],
          ZPEffectClassName(glass)];
     [s appendFormat:@"  透镜 frame(host内)=%@ hidden=%d effect类名=%@\n",
          lens ? NSStringFromCGRect(lens.frame) : @"-",
@@ -1443,6 +1595,45 @@ static void ZPInstallSettingsHooks(void) {
           gOrigSetLoadData, gOrigSetDidAppear, gSettingsHookInstalled);
 }
 
+// 启动清扫（v3.1，冷启直达的另一半）：若底栏在钩子装好前就已建
+// 成、此后再无事件（冷启静态栏），gLiveBars 可能为空、任何 apply
+// 都不会被触发——本链在安装后以 0.1s 一拍（上限 30 拍 ≈ 3s）在当
+// 前 keyWindow 的视图树里找 ZHTabBarNew 实例，找到即登记并排
+// apply + 快重试；导航建成或拍数耗尽即停。玻璃关时整链不起。
+static UIView *ZHFindBarInView(UIView *v) {
+    if (!v) return nil;
+    if (gBarClass && [v isKindOfClass:gBarClass]) return v;
+    for (UIView *s in v.subviews) {
+        UIView *hit = ZHFindBarInView(s);
+        if (hit) return hit;
+    }
+    return nil;
+}
+static NSInteger gLaunchSweepLeft = 0;
+static void ZHLaunchSweepTick(void) {
+    if (gLaunchSweepLeft <= 0) return;
+    gLaunchSweepLeft--;
+    if (!ZHGlassEnabled()) { gLaunchSweepLeft = 0; return; }
+    UIView *bar = [gLiveBars allObjects].firstObject;
+    if (!bar) {
+        bar = ZHFindBarInView(ZPKeyWindow());
+        if (bar) ZHRegisterBar(bar);
+    }
+    if (bar) {
+        if (ZHNavIsBuilt(bar)) { gLaunchSweepLeft = 0; return; }
+        ZHRequestApply(bar);
+        ZHNavKickRetry(bar);
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ ZHLaunchSweepTick(); });
+}
+static void ZHLaunchSweepStart(void) {
+    if (!ZHGlassEnabled() || gLaunchSweepLeft > 0) return;
+    gLaunchSweepLeft = 30;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ ZHLaunchSweepTick(); });
+}
+
 // 三段独立安装：一段抛异常不许拖累其它段（WCBlack v4.7 教训）。
 // 主题段通常已在 +load 装好，这里的调用是未装成时的补装/无操作（函数内有已装守卫）。
 static void ZPInstall(void) {
@@ -1464,6 +1655,7 @@ static void ZPInstall(void) {
     } @catch (NSException *e) {
         NSLog(@"[zhplugin] install segment settings: FAILED: %@", e);
     }
+    ZHLaunchSweepStart(); // 冷启直达清扫（v3.1）：找栏 + 排 apply/重试，玻璃关时自跳过
 }
 
 @interface ZHPluginLoader : NSObject
