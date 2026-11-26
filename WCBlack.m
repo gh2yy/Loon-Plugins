@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.8 还原版 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v8.9 还原版 (2026-11-26)
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -26,7 +26,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.8"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.9"); });
     return l;
 }
 
@@ -575,45 +575,6 @@ static void WCInstallSepGate(void) {
     gOrigSetDataSource = WCSwapOwn([UITableView class], @selector(setDataSource:), (IMP)WC_TV_setDataSource);
 }
 
-// v8.8：二进制类转储定案（46,673 个类全量解析）——首页会话 cell
-// NewMainFrameCell / FakeMainFrameCell 各自带一个 _separatorLine 视图，在
-// cell 自己的 layoutSubviews 里摆出来。之前的防线都在表那一层：样式闸管
-// 的是表的分隔线、管不到 cell 自带的线；willDisplay 在 layout 之前触发、
-// 线还没摆出来，藏了个空；等 tick 巡查走到才消失——这就是冷启动线先闪、
-// 过一会儿才没的完整机制。源头修法：钩这两个 cell 类自己的
-// layoutSubviews，原实现跑完（线刚摆好）当场按 ivar 名藏掉，同一帧布局
-// 内完成、根本不上屏。折叠区头 MainFrameSectionFoldView 的上下分隔视
-// 图同理处理。
-static IMP gOrigNMFLayout, gOrigFMFLayout, gOrigFoldLayout;
-static void WCHideSepIvar(UIView *v, const char *ivarName) {
-    Ivar iv = class_getInstanceVariable([v class], ivarName);
-    if (!iv) return;
-    id line = object_getIvar(v, iv);
-    if ([line isKindOfClass:[UIView class]]) ((UIView *)line).hidden = YES;
-}
-static void WC_NMF_layout(id self, SEL c) {
-    ((void (*)(id, SEL))gOrigNMFLayout)(self, c);
-    if (WCHideSep()) WCHideSepIvar((UIView *)self, "_separatorLine");
-}
-static void WC_FMF_layout(id self, SEL c) {
-    ((void (*)(id, SEL))gOrigFMFLayout)(self, c);
-    if (WCHideSep()) WCHideSepIvar((UIView *)self, "_separatorLine");
-}
-static void WC_Fold_layout(id self, SEL c) {
-    ((void (*)(id, SEL))gOrigFoldLayout)(self, c);
-    if (!WCHideSep()) return;
-    WCHideSepIvar((UIView *)self, "_topSeparatorView");
-    WCHideSepIvar((UIView *)self, "_bottomSeparatorView");
-}
-static void WCInstallCellSepHooks(void) {
-    Class nmf = NSClassFromString(@"NewMainFrameCell");
-    if (nmf && !gOrigNMFLayout) gOrigNMFLayout = WCSwapOwn(nmf, @selector(layoutSubviews), (IMP)WC_NMF_layout);
-    Class fmf = NSClassFromString(@"FakeMainFrameCell");
-    if (fmf && !gOrigFMFLayout) gOrigFMFLayout = WCSwapOwn(fmf, @selector(layoutSubviews), (IMP)WC_FMF_layout);
-    Class fold = NSClassFromString(@"MainFrameSectionFoldView");
-    if (fold && !gOrigFoldLayout) gOrigFoldLayout = WCSwapOwn(fold, @selector(layoutSubviews), (IMP)WC_Fold_layout);
-}
-
 static NSString *WCHexOfColorIn(UIColor *c, UITraitCollection *tc) {
     if (!c) return @"nil";
     UIColor *d = [c resolvedColorWithTraitCollection:tc];
@@ -1073,8 +1034,11 @@ static void WCGlassResumeRefresh(void) {
     WCApplyBarsState();
 }
 static void WCOnDidBecomeActive(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCGlassResumeRefresh(); });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCGlassResumeRefresh(); });
+    // v8.9：v8.7 的 0.15s 延迟在录屏里量出约 0.2s 的可见灰闪。改成立即刷：
+    // 即将回前台（willEnterForeground）先刷一次赶在第一帧前，激活瞬间再刷
+    // 一次，0.3s 后留一次兜底。
+    WCGlassResumeRefresh();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCGlassResumeRefresh(); });
 }
 
 static void WCRefreshDarkState(BOOL fresh) {
@@ -1265,7 +1229,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.8 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.9 registered in plugin list");
             break;
         }
     }
@@ -1313,7 +1277,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.8 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.9 source hooks in");
             }
         }
     }
@@ -1329,11 +1293,12 @@ static void WCInstall(void) {
     }
     WCInstallChatbarHooks();
     WCInstallSepGate();
-    WCInstallCellSepHooks();
     WCInstallTabHooks();
     static id wcActiveToken = nil;
     if (!wcActiveToken) {
         wcActiveToken = [[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) { WCOnDidBecomeActive(); }] retain];
+        static id wcForegroundToken = nil;
+        wcForegroundToken = [[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) { WCGlassResumeRefresh(); }] retain];
     }
     WCEnsureRegistered();
     WCStartHousekeepingTimer();
