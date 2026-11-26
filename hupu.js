@@ -1,10 +1,11 @@
 // 虎扑 - 去底部发布与评分 tab、去首页热榜频道、详情页离线包换黑包、去首页游戏推广卡
 // 原作者：gh2yy
-// 修改日期：2026-11-25
+// 修改日期：2026-11-27
 // 修改日志：
 // - 2026-10-30 Muse：脚本按 URL 分发处理各接口。getBottomNav：底部清单 5 项删 post 与 score，navVersion 顺延标记防按版本跳过；第 3 位动作键逻辑写死在 App 代码内，插件层试过 type/order/顺序均无效，已由改包修复，须配合改包版使用。init：clientLevelOneNavV2 删 en 为 hotRank 的热榜项。帖子详情页是随包下发的离线 H5（frontendofflinepkg 的 bbs-detailapp-opg 包），脚本改写该接口的升级清单，把详情包的下载地址与 md5 换成本仓库的改色包（深色变量改 OLED 黑）；另有一段 bbs-m-web 主题 CSS 改写，作用于 m.hupu.com 网页版（详情页不走它）。basketballapi/news/v3/tab（tagCode=nba）：入口清单删「战术百科」与「2K手游」，保留赛程、数据、主队。
 // - 2026-11-21 Muse：新增 getRecommendList 游戏推广卡过滤（服务器文案特征法，原独立插件 hupu-gamecard 合并进来，命中弹通知报标题）。
 // - 2026-11-25 Muse：v1 真机漏检（鬼杀队卡再现、无通知）。二进制 Swift 元数据定案游戏卡模型 HCHomeRecommendGameItemModel 独有键 actionButtonTitle/actionButtonScheme/actionLabelName，v2 改以结构键为主判据（命中任一即删）、文案组为备判据。
+// - 2026-11-27 Muse：v2 真机再漏检（《凡人问道》卡，三组文案齐全仍漏、无通知）。静态核对：接口路径与二进制一致（bbsallapi/recommend/v2/getRecommendList），疑点收窄到送达（首页容器发请求的域名未必是 bbs 域名）或条目结构再变。v3 双管：插件规则加 games 域名一条、路径前缀放宽；脚本加疑似诊断——条目带 action* 键或只命中 1 组文案时不删但弹通知报该条目的键名清单，拿真实特征定案。
 (function () {
   try {
     var body = $response.body;
@@ -55,25 +56,45 @@
         return score;
       };
       var dropped = [];
+      var suspects = [];
       var cleanse = function (node) {
         if (Array.isArray(node)) {
           for (var i = node.length - 1; i >= 0; i--) {
             var el = node[i];
             // 条目是 {schema_url, data:{...}} 的薄包装（仅 2 键），不能按键数设门槛；判据只看内容特征
-            if (el && typeof el === 'object' && !Array.isArray(el) && markerScore(el) >= 2) { dropped.push(el); node.splice(i, 1); }
-            else cleanse(el);
+            if (el && typeof el === 'object' && !Array.isArray(el)) {
+              var sc = markerScore(el);
+              if (sc >= 2) { dropped.push(el); node.splice(i, 1); continue; }
+              // v3 疑似诊断：带 action* 键或只命中 1 组文案的条目先不删，收集其键名供定案
+              var es = JSON.stringify(el);
+              if (sc === 1 || es.indexOf('"action') !== -1) suspects.push(el);
+            }
+            cleanse(el);
           }
         } else if (node && typeof node === 'object') {
           Object.keys(node).forEach(function (k) { cleanse(node[k]); });
         }
       };
       cleanse(obj);
-      if (!dropped.length) { $done({}); return; }
-      var firstTitle = '';
-      var tm = JSON.stringify(dropped[dropped.length - 1]).match(/"(?:title|content|name|desc)":"([^"]{1,50})"/);
-      if (tm) firstTitle = tm[1];
-      $notification.post('虎扑游戏推广卡已过滤', '删掉 ' + dropped.length + ' 条', firstTitle);
-      $done({ body: JSON.stringify(obj) });
+      if (dropped.length) {
+        var firstTitle = '';
+        var tm = JSON.stringify(dropped[dropped.length - 1]).match(/"(?:title|content|name|desc)":"([^"]{1,50})"/);
+        if (tm) firstTitle = tm[1];
+        $notification.post('虎扑游戏推广卡已过滤', '删掉 ' + dropped.length + ' 条', firstTitle);
+        $done({ body: JSON.stringify(obj) });
+        return;
+      }
+      if (suspects.length) {
+        // 把疑似条目（含其 data 子对象）的键名摊开报出来，拿真实结构定特征
+        var keySet = {};
+        var collectKeys = function (o, depth) {
+          if (!o || typeof o !== 'object' || depth > 2) return;
+          Object.keys(o).forEach(function (k) { keySet[k] = 1; collectKeys(o[k], depth + 1); });
+        };
+        collectKeys(suspects[suspects.length - 1], 0);
+        $notification.post('虎扑游戏卡疑似漏检', '疑似 ' + suspects.length + ' 条，键名如下', Object.keys(keySet).slice(0, 40).join(','));
+      }
+      $done({});
       return;
     }
 
