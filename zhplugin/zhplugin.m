@@ -22,9 +22,10 @@
 //   HPGlassBar v5 模式：按钮数据复制 + 几何全自定 + 点击回原链）。
 //     ①原栏：玻璃开 → ZHTabBarNew 置 hidden=YES 并在每轮维护中
 //       重申；玻璃关 → 还原 hidden=NO 并把自建栏移出窗口。
-//     ②自建栏：透明 host 容器挂当前 keyWindow，底部居中悬浮（安
-//       全区上方 12pt），尺寸由两槽决定：槽宽 86、栏高 64、两侧
-//       内边距 10 → 192×64。host 子视图序：玻璃容器（index 0）
+//     ②自建栏：透明 host 容器挂当前 keyWindow，底部居中贴底（底
+//       边距屏幕底部 8pt，v3.2 起，参照微博悬浮栏），尺寸由两槽
+//       决定：槽宽 86、栏高 54、两侧内边距 10 → 192×54。host 子
+//       视图序：玻璃容器（index 0）
 //       → 两按钮；容器 = UIVisualEffectView + UIGlassContainer-
 //       Effect（spacing 2.0，v3.1 起），其 contentView 内依次是
 //       玻璃面 → 选中透镜（容器类取不到时回落玻璃面/透镜直挂
@@ -58,6 +59,23 @@
 //     0.9、松开弹簧回弹，用户点选驱动的选中切换时图标做一次
 //     1.15 弹簧弹跳（冷启首落位不弹；图标是普通 UIImageView、
 //     不进玻璃合成，与容器形变不冲突）。
+//   v3.2（真机反馈三修）：①冷启闪原栏——v3.1 是「数据就绪才隐
+//     藏原栏」，就绪前原栏先露 1–2 秒再被换掉；改原栏出生即藏：
+//     didMoveToWindow 钩子在栏入窗同一轮（首帧绘制前）就置
+//     hidden=YES（ZHNavPreHideBar，记 kNavPreHideKey 认领这次隐
+//     藏），apply 首触与启动清扫发现栏时同口径补藏；建栏流程不
+//     变（数据就绪才建）；兜底——重试窗口（约 3s）内始终没建成
+//     则在重试链到顶时恢复 hidden=NO，绝不让用户无栏可用（知乎
+//     自己藏的栏不认领、不恢复）。②弹簧动效消失——审计定案见
+//     PATCH_NOTES v3.2：透镜几何收敛为单一写者 ZHNavDriveLens
+//     （首落位/弹簧/空闲校正全经它），在途标记 kNavLensAnimKey
+//     期间维护轮次零触碰透镜几何，动画 completion 清标记并补排
+//     一轮核对；空闲轮次发现 frame 与目标偏差 >0.5pt 才直写校
+//     正（自愈）。弹簧改回写 frame（与 v3.0 已验可见的写形一
+//     致），容器 morph 保留。③栏太高太浮——栏高 64→54（透镜内
+//     缩 (6,6) → 74×42、按钮图标框 24pt、排布收紧），底边距由
+//     「安全区底+12」改贴底：胶囊底边距屏幕底部 8pt（参照微博
+//     悬浮栏：高约 52、底边几乎贴着小横条上方）。
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
 //   录（保留探针时代的取证字段）。
@@ -129,6 +147,8 @@ static char kNavContainerKey; // 玻璃容器（UIVisualEffectView + UIGlassCont
 static char kNavLensSlotKey;  // 透镜当前/正在滑向的槽位（NSNumber，防维护轮次反复重启弹簧）
 static char kNavRetryKey;     // 冷启直达重试计数（NSNumber，0.1s 一拍、上限 30 ≈ 3s）
 static char kNavRetryPendKey; // 冷启直达重试在途标记（防并行重试链）
+static char kNavPreHideKey;   // 原栏出生即藏认领标记（v3.2：本插件在建成前藏的，兜底恢复只认它）
+static char kNavLensAnimKey;  // 透镜弹簧在途标记（v3.2：单写者纪律，置位期间维护不碰透镜几何）
 static char kSchedKey;     // 已排队布局标记
 static char kLayoutLockKey; // layoutSubviews 重入锁（per-instance）
 static char kGestureKey;   // 长按兜底手势（RETAIN）
@@ -468,8 +488,8 @@ static BOOL gNavUserTapped = NO;
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat w = self.bounds.size.width;
-    _iconView.frame = CGRectMake((w - 26) / 2, 10, 26, 26);
-    _titleLabel.frame = CGRectMake(0, 39, w, 13);
+    _iconView.frame = CGRectMake((w - 24) / 2, 6, 24, 24);
+    _titleLabel.frame = CGRectMake(0, 33, w, 13);
 }
 - (void)zpSetBar:(UIView *)bar model:(id)model {
     _bar = bar;
@@ -481,7 +501,7 @@ static BOOL gNavUserTapped = NO;
     if (_iconView.image != img) _iconView.image = img;
     if (tint && _iconView.tintColor != tint) _iconView.tintColor = tint;
     // 头像圆形、图标方形：只在形态变化时写 layer（幂等）
-    CGFloat want = avatar ? 13 : 0;
+    CGFloat want = avatar ? 12 : 0;
     if (_iconView.layer.cornerRadius != want) {
         _iconView.layer.cornerRadius = want;
         _iconView.layer.masksToBounds = avatar;
@@ -734,9 +754,9 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
 
 #pragma mark - 布局（正式版：apply 幂等：开 -> 自建导航落位+隐藏原栏；关 -> 还原原栏+移除自建栏）
 
-// 导航几何（两槽定宽）：槽宽 86、栏高 64、两侧内边距 10 → 192×64；
-// 底部居中悬浮，底边距 = 安全区底 + 12。
-static const CGFloat kNavSlotW = 86, kNavBarH = 64, kNavPadX = 10;
+// 导航几何（两槽定宽）：槽宽 86、栏高 54、两侧内边距 10 → 192×54；
+// 底部居中贴底，胶囊底边距屏幕底部 8pt（v3.2，参照微博悬浮栏）。
+static const CGFloat kNavSlotW = 86, kNavBarH = 54, kNavPadX = 10;
 
 // keyWindow 选取（与 ZPAppIsNight 同口径：windows 里找 isKeyWindow，回落第一只）
 static UIWindow *ZPKeyWindow(void) {
@@ -773,7 +793,7 @@ static ZPGlassView *ZHNavGlassForBar(UIView *bar, UIView *host) {
 static ZPGlassView *ZHNavLensForBar(UIView *bar) {
     ZPGlassView *v = objc_getAssociatedObject(bar, &kNavLensKey);
     if (v) return v;
-    v = ZHMakeNavGlassView(CGRectMake(0, 0, kNavSlotW - 12, kNavBarH - 14));
+    v = ZHMakeNavGlassView(CGRectMake(0, 0, kNavSlotW - 12, kNavBarH - 12));
     if (!v) return nil;
     v.hidden = YES; // 首次落位前不显形，落位当轮直接置 frame 不滑动
     objc_setAssociatedObject(bar, &kNavLensKey, v, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -847,7 +867,13 @@ static void ZHNavKickRetry(UIView *bar) {
     }
     if (objc_getAssociatedObject(bar, &kNavRetryPendKey)) return; // 已有在途一拍
     NSInteger cnt = [objc_getAssociatedObject(bar, &kNavRetryKey) integerValue];
-    if (cnt >= 30) return; // ≈3s 上限
+    if (cnt >= 30) { // ≈3s 上限：兜底恢复（v3.2）——出生即藏认领过、又始终没建成时把原栏还回去，绝不让用户无栏可用
+        if (objc_getAssociatedObject(bar, &kNavPreHideKey)) {
+            objc_setAssociatedObject(bar, &kNavPreHideKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (bar.hidden) bar.hidden = NO;
+        }
+        return;
+    }
     objc_setAssociatedObject(bar, &kNavRetryKey, @(cnt + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(bar, &kNavRetryPendKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
@@ -857,6 +883,53 @@ static void ZHNavKickRetry(UIView *bar) {
         ZHRequestApply(bar); // 下一拍施工（建成与否由施工结果决定）
         ZHNavKickRetry(bar); // 未建成则续排下一拍（在途标记防叠链）
     });
+}
+
+// 原栏出生即藏（v3.2 修 1）：玻璃开时，栏一入窗（didMoveToWindow
+// 钩子在同一轮、首帧绘制前调用）或被 apply/启动清扫首触时，先把
+// 原栏藏掉并认领（kNavPreHideKey）——自建栏照旧等数据就绪才建，
+// 建成后 hidden 由布局节接管并清认领；重试到顶仍没建成时由
+// ZHNavKickRetry 的到顶分支按认领恢复。知乎自己藏的栏（本函数
+// 没碰过的）不认领、永不由本插件恢复。
+static void ZHNavPreHideBar(UIView *bar) {
+    if (!bar || !ZHGlassEnabled() || !bar.window || bar.hidden) return;
+    bar.hidden = YES;
+    objc_setAssociatedObject(bar, &kNavPreHideKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// 透镜单写者（v3.2 修 2）：全文件唯一写透镜几何（frame/transform）
+// 的函数——首落位、槽位弹簧、空闲校正三条路径全经它，布局节只
+// 做决策（落位/起弹簧/校正/在途跳过）。审计背景（详见
+// PATCH_NOTES v3.2）：v3.1 的弹簧是一次性写入——槽位记忆在起弹
+// 簧前先行提交，动画一旦没被呈现，后续维护轮次全因「槽位已达」
+// 袖手、透镜再无补救；且透镜自 v3.1 起进了玻璃容器的
+// contentView，容器按子视图 model 几何合成，只改 center 的
+// presentation 层插值在合成结果里被压成瞬时落位（v3.0 透镜直挂
+// host、同法写 frame 是可见滑动的）。本版弹簧改回写 frame（与
+// v3.0 已验写形一致），并以在途标记 + completion 后补排核对保
+// 证单写者纪律与自愈；槽位记忆只在本函数内提交。
+static BOOL ZHNavRectNear(CGRect a, CGRect b, CGFloat tol) {
+    return fabs(a.origin.x - b.origin.x) <= tol && fabs(a.origin.y - b.origin.y) <= tol &&
+           fabs(a.size.width - b.size.width) <= tol && fabs(a.size.height - b.size.height) <= tol;
+}
+static void ZHNavDriveLens(UIView *bar, ZPGlassView *lens, CGRect target, NSInteger sel, BOOL animated) {
+    objc_setAssociatedObject(bar, &kNavLensSlotKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!animated) { // 首落位/空闲校正：直接置位
+        lens.frame = target;
+        lens.transform = CGAffineTransformIdentity;
+        return;
+    }
+    objc_setAssociatedObject(bar, &kNavLensAnimKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [UIView animateWithDuration:0.5 delay:0 usingSpringWithDamping:0.75
+         initialSpringVelocity:0
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionAllowUserInteraction
+                     animations:^{ lens.frame = target; }
+                     completion:^(BOOL finished) {
+        (void)finished;
+        objc_setAssociatedObject(bar, &kNavLensAnimKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ZHRequestApply(bar); // 补一轮核对：在途期间被跳过的槽位变化/落位偏差由此收口
+    }];
 }
 
 // 玻璃开落位（每轮 apply 走一遍，全程幂等；次序照 SJJ：建槽入树
@@ -875,9 +948,10 @@ static void ZHNavKickRetry(UIView *bar) {
 //   对、变更才写），排在装 effect 之前。
 //   effect——为 nil 才建 fx 经 zpUpdateMaterial: 装入，已装永不重赋。
 //   选中——读两 item 的 themeSelected（都读不到回落上轮槽位）；
-//   透镜目标 = 选中槽内缩（6,7,74,50）：首次直接置位，后续仅当
-//   目标槽位变化时走弹簧（0.5s/damping 0.75 只驱动 center，形
-//   变归容器 morph，v3.1）。按钮选中态同步。
+//   透镜目标 = 选中槽内缩（6,6,74,42）：几何只经单写者
+//   ZHNavDriveLens（v3.2）——首次直接置位，后续槽位变化走弹簧
+//   （0.5s/damping 0.75 写 frame，形变归容器 morph），在途期间
+//   维护不碰、空闲时偏差 >0.5pt 直写校正。按钮选中态同步。
 //   原栏——导航完整建成后才置 hidden=YES（每轮重申）。
 static void ZHLayoutGlassNav(UIView *bar) {
     ZHRegisterBar(bar);
@@ -899,7 +973,7 @@ static void ZHLayoutGlassNav(UIView *bar) {
     if (host.superview != win) [win addSubview:host]; // 只挂一次、不重排
     CGFloat W = kNavSlotW * 2 + kNavPadX * 2;
     CGRect hf = CGRectMake((win.bounds.size.width - W) / 2,
-                           win.bounds.size.height - win.safeAreaInsets.bottom - 12 - kNavBarH,
+                           win.bounds.size.height - 8 - kNavBarH,
                            W, kNavBarH);
     if (!CGRectEqualToRect(host.frame, hf)) host.frame = hf;
     if (host.hidden) host.hidden = NO;
@@ -959,41 +1033,32 @@ static void ZHLayoutGlassNav(UIView *bar) {
     [btnMine zpSetNavSelected:(sel == 1)];
     if (lens) {
         CGRect slot = (sel == 0) ? homeF : mineF;
-        CGRect target = CGRectInset(slot, 6, 7);
-        BOOL placed = (objc_getAssociatedObject(bar, &kNavPlacedKey) != nil);
-        if (!placed) {
-            // 首次落位：直接置位不动画（冷启直达口径），记下目标槽位
-            lens.frame = target;
-            lens.transform = CGAffineTransformIdentity;
-            lens.hidden = NO;
-            objc_setAssociatedObject(bar, &kNavPlacedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(bar, &kNavLensSlotKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        } else {
-            // 后续切换：仅当目标槽位真变时才起弹簧（v3.1）——维护每
-            // 轮都跑，靠槽位记忆防弹簧被反复重启。弹簧（0.5s /
-            // damping 0.75）只作位移的驱动曲线：动画本体只改
-            // center，透镜在容器内移动时的拉伸/聚合形变全部由
-            // UIGlassContainerEffect 按子视图几何自行 morph——不
-            // 在玻璃视图上叠手工 transform，免得与容器合成打架
-            // （灵动来自系统能力本身的口径）。走 center 而非
-            // frame：与容器按几何采样口径一致、且不受自身动画
-            // 状态影响。
-            NSNumber *lensSlot = objc_getAssociatedObject(bar, &kNavLensSlotKey);
-            if (!lensSlot || lensSlot.integerValue != sel) {
-                objc_setAssociatedObject(bar, &kNavLensSlotKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                CGPoint tc = CGPointMake(CGRectGetMidX(target), CGRectGetMidY(target));
-                [UIView animateWithDuration:0.5 delay:0 usingSpringWithDamping:0.75
-                     initialSpringVelocity:0
-                                    options:UIViewAnimationOptionBeginFromCurrentState |
-                                            UIViewAnimationOptionAllowUserInteraction
-                                 animations:^{ lens.center = tc; }
-                                 completion:nil];
+        CGRect target = CGRectInset(slot, 6, 6);
+        // 单写者纪律（v3.2）：在途标记置位期间一律不碰透镜几何
+        // （弹簧由 ZHNavDriveLens 独占写入，其 completion 会补排
+        // 一轮核对收口）；空闲时按「未落位 → 直写落位 / 槽位变
+        // → 起弹簧 / 槽位同但 frame 与目标偏差 >0.5pt → 直写校
+        // 正」决策，几何只经 ZHNavDriveLens 写。
+        BOOL inFlight = (objc_getAssociatedObject(bar, &kNavLensAnimKey) != nil);
+        if (!inFlight) {
+            BOOL placed = (objc_getAssociatedObject(bar, &kNavPlacedKey) != nil);
+            if (!placed) {
+                ZHNavDriveLens(bar, lens, target, sel, NO); // 首次落位不动画（冷启直达口径）
+                objc_setAssociatedObject(bar, &kNavPlacedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            } else {
+                NSNumber *lensSlot = objc_getAssociatedObject(bar, &kNavLensSlotKey);
+                if (!lensSlot || lensSlot.integerValue != sel)
+                    ZHNavDriveLens(bar, lens, target, sel, YES);
+                else if (!ZHNavRectNear(lens.frame, target, 0.5))
+                    ZHNavDriveLens(bar, lens, target, sel, NO); // 空闲幂等核对：偏差超限直写校正（自愈）
             }
         }
         if (lens.hidden) lens.hidden = NO;
     }
 
     if (!bar.hidden) bar.hidden = YES; // 导航建成后才隐藏原栏，每轮重申
+    if (objc_getAssociatedObject(bar, &kNavPreHideKey)) // 建成：出生即藏的认领由导航接管，清掉免兜底误恢复
+        objc_setAssociatedObject(bar, &kNavPreHideKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 // 玻璃关：还原原栏（hidden=NO）+ 自建栏移出窗口（对象仍由
@@ -1002,6 +1067,7 @@ static void ZHLayoutGlassNav(UIView *bar) {
 static void ZHRestoreOriginalBar(UIView *bar) {
     UIView *host = objc_getAssociatedObject(bar, &kNavHostKey);
     if (host && host.superview) [host removeFromSuperview];
+    objc_setAssociatedObject(bar, &kNavPreHideKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); // 玻璃关：认领作废（本函数即恢复动作本身）
     if (bar.hidden) bar.hidden = NO;
 }
 
@@ -1019,6 +1085,7 @@ static void ZHApplyBar(UIView *bar) {
         [lp release];
     }
     if (ZHGlassEnabled()) {
+        ZHNavPreHideBar(bar); // 出生即藏补漏（v3.2）：未建成前 apply 首触先藏原栏，免它在就绪前露脸
         ZHLayoutGlassNav(bar);
         ZHNavKickRetry(bar); // 冷启直达（v3.1）：未建成则续排快重试，建成自动停
     }
@@ -1494,7 +1561,14 @@ static void ZH_Bar_didMoveToWindow(UIView *self, SEL _cmd) {
                                                   : class_getSuperclass(object_getClass(self)) };
         ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, _cmd);
     }
-    if (self.window) ZHRequestApply(self);
+    if (self.window) {
+        // 出生即藏（v3.2 修 1）：原实现跑完、入窗同一轮内同步藏栏，
+        // 赶在首帧绘制前——自建栏照旧等数据就绪才建，不再先露原栏
+        // 再换。兜底恢复在 ZHNavKickRetry 到顶分支（只认本插件藏的）。
+        ZHNavPreHideBar(self);
+        ZHRequestApply(self);
+        ZHNavKickRetry(self);
+    }
 }
 
 #pragma mark - Hook（设置页）
@@ -1622,6 +1696,7 @@ static void ZHLaunchSweepTick(void) {
     }
     if (bar) {
         if (ZHNavIsBuilt(bar)) { gLaunchSweepLeft = 0; return; }
+        ZHNavPreHideBar(bar); // 首触补藏（v3.2）：钩子装好前出生的栏，清扫一找到先藏再建
         ZHRequestApply(bar);
         ZHNavKickRetry(bar);
     }
