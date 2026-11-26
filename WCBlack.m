@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.1 还原版 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v8.2 还原版 (2026-11-26)
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -12,7 +12,8 @@
 // 用户追加保留：聊天页底栏（MMInputToolView/InputToolContainerView，仅
 // 聊天页）强涂 chatbar 色 + 输入框底色（v5.2 色板 + 话筒按类名藏，field
 // 模块）。做法回到 v5/v6.1 的存档强涂，但深浅只看栏自己的 trait——没有
-// 状态机、没有探针、没有巡逻钉制。一级页面的顶栏与底部 tab 栏明确不碰：
+// 状态机、没有探针、没有巡逻钉制。一级页面的顶栏明确不碰；底部 tab 栏按用户要求单独做纯黑（v8.2 新增，
+// 做法同聊天底栏：只对玻璃栏本体钉 trait + 强涂）：
 // v6.1–v7.6 的顶栏/底栏钉制强涂、状态机与探针、colorDic 实验、键盘处理、
 // 诊断页全部删除，恢复微信（含玻璃插件）原生表现。
 // 安全纪律：+load/WCInstall 只做 swizzle，绝不给微信的类发消息（v7.2 闪退教训）。
@@ -25,14 +26,14 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.1"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.2"); });
     return l;
 }
 
 #pragma mark - 配置
 
 static NSString *const kWCEnabledKey = @"WCBlack.enabled";
-static NSArray<NSString *> *WCModules(void) { return @[@"bg", @"cell", @"chatbar", @"field"]; }
+static NSArray<NSString *> *WCModules(void) { return @[@"bg", @"cell", @"chatbar", @"field", @"tab"]; }
 static NSString *WCModuleTitle(NSString *m) {
     if ([m isEqualToString:@"bg"]) return @"主背景（列表 / 聊天）";
     if ([m isEqualToString:@"nav"]) return @"顶部导航栏";
@@ -160,7 +161,7 @@ static char kWCSepOrigStyleKey, kWCSepOrigColorKey, kWCSepHiddenKey;
 static char kWCOrigBGKey, kWCPatchHiddenKey, kWCUnderlayKey;
 static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey;
 static int gWCRestoreDepth = 0;
-static NSHashTable<UIView *> *gBarsInput;
+static NSHashTable<UIView *> *gBarsInput, *gBarsTab;
 
 static void WCStoreOrigBG(UIView *v) {
     if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
@@ -724,6 +725,31 @@ static void WC_Dic_didMoveToWindow(UIView *self, SEL _cmd) {
 }
 
 
+
+#pragma mark - 底部 tab 栏钩子（仅玻璃栏本体，v8.2：用户要纯黑）
+// 可见底栏是包内玻璃插件 WCTabBarGlass 自己造的 UITabBar（WCGNativeTabBar），
+// 不走微信色板、只认 trait；源头 remap 够不到它。做法同聊天底栏：钩 trait 翻面
+// 与入窗，深浅只看栏自己的 trait，无状态机、无探针、无巡逻。
+
+static IMP gO_TabT, gO_TabW, gO_TabViewT, gO_TabViewW, gO_MMTabT, gO_MMTabW;
+static void WC_Tab_reg(UIView *s) { if (!gBarsTab) gBarsTab = [[NSHashTable weakObjectsHashTable] retain]; WCRegisterBar(gBarsTab, s); }
+static void WC_Tab_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_TabT)(s, c, p); if (s.window) WCForceBar(s, @"tab", 4); }
+static void WC_Tab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_TabW)(s, c); if (s.window) { WC_Tab_reg(s); WCForceBar(s, @"tab", 4); } }
+static void WC_TabView_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_TabViewT)(s, c, p); if (s.window) WCForceBar(s, @"tab", 4); }
+static void WC_TabView_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_TabViewW)(s, c); if (s.window) { WC_Tab_reg(s); WCForceBar(s, @"tab", 4); } }
+static void WC_MMTab_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_MMTabT)(s, c, p); if (s.window) WCForceBar(s, @"tab", 4); }
+static void WC_MMTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMTabW)(s, c); if (s.window) { WC_Tab_reg(s); WCForceBar(s, @"tab", 4); } }
+
+static void WCInstallTabHooks(void) {
+    Class c;
+    c = NSClassFromString(@"WCGNativeTabBar");
+    if (c && !gO_TabT) { gO_TabT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_Tab_trait); gO_TabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_Tab_window); }
+    c = NSClassFromString(@"WCTabBarView");
+    if (c && !gO_TabViewT) { gO_TabViewT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_TabView_trait); gO_TabViewW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_TabView_window); }
+    c = NSClassFromString(@"MMTabBar");
+    if (c && !gO_MMTabT) { gO_MMTabT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_MMTab_trait); gO_MMTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MMTab_window); }
+}
+
 #pragma mark - v6 底层色源（WCColorMgr 按名发色，在发色处换深色值）
 
 // 微信全 App 的深色出自包内 DesignToken 色板（weui_color*.xml，178 个色名），
@@ -1035,7 +1061,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"8.1", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"8.2", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1043,7 +1069,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.1 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.2 registered in plugin list");
             break;
         }
     }
@@ -1054,6 +1080,7 @@ static void WCEnsureRegistered(void) {
 static void WCHousekeepingTick(void) {
     WCEnsureRegistered();
     if (gBarsInput) for (UIView *b in gBarsInput.allObjects) if (b.window) WCFieldSweep(b);
+    if (gBarsTab) for (UIView *b in gBarsTab.allObjects) if (b.window) WCForceBar(b, @"tab", 4);
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
         if ([NSStringFromClass([w class]) containsString:@"TextEffects"]) continue;
         WCScanTablesInWindow(w, w, 16);
@@ -1091,7 +1118,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.1 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.2 source hooks in");
             }
         }
     }
@@ -1106,6 +1133,7 @@ static void WCInstall(void) {
         }
     }
     WCInstallChatbarHooks();
+    WCInstallTabHooks();
     WCEnsureRegistered();
     WCStartHousekeepingTimer();
     gInstalled = YES;
