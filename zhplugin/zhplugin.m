@@ -137,17 +137,22 @@ static BOOL ZPAppIsNight(void) {
 }
 
 // 画布 token 单例（身份制命中）：MapUIFrame99A 主画布、MapUIFrame10A 二级画布。
-// 懒解析 + 静态 RETAIN（MRC）。
+// 懒解析 + 静态 RETAIN（MRC）：只在取色 hook 命中路径（ZPIsCanvasModel，且纯黑已开）
+// 首次真正需要时经 dispatch_once 解析；安装路径绝不预先解析——安装期触发
+// ZHColorModel 的 +initialize/单例构造曾疑致启动闪退（2026-11-26 对照实验定性）。
+// 解析失败（类/方法不存在）则两单例保持 nil，纯黑静默不生效，不崩。
 static id gCanvasMain = nil;      // MapUIFrame99A (#FFFFFF / #191B1F)
 static id gCanvasSecondary = nil; // MapUIFrame10A (#F8F8FA / #212429)
 static void ZPResolveCanvasModels(void) {
-    if (gCanvasMain || gCanvasSecondary) return;
-    Class cmCls = NSClassFromString(@"ZHColorModel");
-    if (!cmCls) return;
-    if ([cmCls respondsToSelector:@selector(MapUIFrame99A)])
-        gCanvasMain = [((id (*)(id, SEL))objc_msgSend)(cmCls, @selector(MapUIFrame99A)) retain];
-    if ([cmCls respondsToSelector:@selector(MapUIFrame10A)])
-        gCanvasSecondary = [((id (*)(id, SEL))objc_msgSend)(cmCls, @selector(MapUIFrame10A)) retain];
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class cmCls = NSClassFromString(@"ZHColorModel");
+        if (!cmCls) return;
+        if ([cmCls respondsToSelector:@selector(MapUIFrame99A)])
+            gCanvasMain = [((id (*)(id, SEL))objc_msgSend)(cmCls, @selector(MapUIFrame99A)) retain];
+        if ([cmCls respondsToSelector:@selector(MapUIFrame10A)])
+            gCanvasSecondary = [((id (*)(id, SEL))objc_msgSend)(cmCls, @selector(MapUIFrame10A)) retain];
+    });
 }
 static BOOL ZPIsCanvasModel(id model) {
     if (!model) return NO;
@@ -765,20 +770,25 @@ static IMP ZHSwapClassMethod(Class cls, SEL sel, IMP newImp) {
 
 static BOOL gInstalled = NO;
 static BOOL gThemeHookInstalled = NO;
-static void ZPInstall(void) {
-    // 纯黑：主题发色点 hook（与底栏安装解耦，底栏类没就绪时也先装上）
-    if (!gThemeHookInstalled) {
-        Class tmCls = NSClassFromString(@"ZHThemeManage");
-        if (tmCls) {
-            gOrigColorWithModel = ZHSwapClassMethod(tmCls, @selector(colorWithModel:ignoreNight:),
-                                                    (IMP)ZP_Theme_colorWithModel);
-            gThemeHookInstalled = (gOrigColorWithModel != NULL);
-            if (gThemeHookInstalled) ZPResolveCanvasModels();
-        }
-    }
+static BOOL gSettingsHookInstalled = NO;
+
+// 段1：纯黑——主题发色点 hook（与底栏/设置两段解耦，互不拖累）
+static void ZPInstallThemeHook(void) {
+    if (gThemeHookInstalled) return;
+    Class tmCls = NSClassFromString(@"ZHThemeManage");
+    if (!tmCls) { NSLog(@"[zhplugin] install segment theme: ZHThemeManage missing, skip"); return; }
+    gOrigColorWithModel = ZHSwapClassMethod(tmCls, @selector(colorWithModel:ignoreNight:),
+                                            (IMP)ZP_Theme_colorWithModel);
+    gThemeHookInstalled = (gOrigColorWithModel != NULL);
+    // 注意：这里不再预先解析画布模型；改由取色 hook 首次命中时懒解析（见 ZPResolveCanvasModels）。
+    NSLog(@"[zhplugin] install segment theme: colorHook=%p installed=%d", gOrigColorWithModel, gThemeHookInstalled);
+}
+
+// 段2：玻璃底栏 hook（ZHTabBarNew）
+static void ZPInstallBarHooks(void) {
     if (gInstalled) return;
     Class cls = NSClassFromString(@"ZHTabBarNew");
-    if (!cls) return;
+    if (!cls) { NSLog(@"[zhplugin] install segment bar: ZHTabBarNew missing, skip"); return; }
     gOrigSetupUI = ZHSwap(cls, @selector(setupUI), (IMP)ZH_Bar_setupUI);
     gOrigLayoutItems = ZHSwap(cls, @selector(layoutItems), (IMP)ZH_Bar_layoutItems);
     gOrigSetItems = ZHSwap(cls, @selector(setItems:), (IMP)ZH_Bar_setItems);
@@ -792,26 +802,68 @@ static void ZPInstall(void) {
                                       (IMP)ZH_Bar_traitChanged, "v24@0:8@16");
     if (!addedLayout) // 类自己已有 layoutSubviews 时退回 swizzle，并保留原 IMP 由钩子转调
         gOrigLayoutSubviews = ZHSwap(cls, @selector(layoutSubviews), (IMP)ZH_Bar_layoutSubviews);
-
-    Class setCls = NSClassFromString(@"ZHCommonSettingViewController");
-    if (setCls) {
-        // loadData / viewDidAppear: 均在该类自身方法表内（静态已核），可安全 swizzle；
-        // viewWillAppear: 它没自有实现，绝不能 swizzle（会改到 UIViewController 全局）。
-        gOrigSetLoadData = ZHSwap(setCls, @selector(loadData), (IMP)ZH_Set_loadData);
-        gOrigSetDidAppear = ZHSwap(setCls, @selector(viewDidAppear:), (IMP)ZH_Set_viewDidAppear);
-    }
     gInstalled = (gOrigSetupUI != NULL && gOrigLayoutItems != NULL);
-    NSLog(@"[zhplugin] install: bar=%@ setupUI=%p layoutItems=%p select=%p theme=%p addLayout=%d addTrait=%d settings=%@ themeHook=%d installed=%d",
-          cls, gOrigSetupUI, gOrigLayoutItems, gOrigSelect, gOrigNotifyTheme, addedLayout, addedTrait, setCls, gThemeHookInstalled, gInstalled);
+    NSLog(@"[zhplugin] install segment bar: setupUI=%p layoutItems=%p select=%p theme=%p addLayout=%d addTrait=%d installed=%d",
+          gOrigSetupUI, gOrigLayoutItems, gOrigSelect, gOrigNotifyTheme, addedLayout, addedTrait, gInstalled);
+}
+
+// 段3：设置页两行开关 hook（ZHCommonSettingViewController）
+static void ZPInstallSettingsHooks(void) {
+    if (gSettingsHookInstalled) return;
+    Class setCls = NSClassFromString(@"ZHCommonSettingViewController");
+    if (!setCls) { NSLog(@"[zhplugin] install segment settings: ZHCommonSettingViewController missing, skip"); return; }
+    // loadData / viewDidAppear: 均在该类自身方法表内（静态已核），可安全 swizzle；
+    // viewWillAppear: 它没自有实现，绝不能 swizzle（会改到 UIViewController 全局）。
+    gOrigSetLoadData = ZHSwap(setCls, @selector(loadData), (IMP)ZH_Set_loadData);
+    gOrigSetDidAppear = ZHSwap(setCls, @selector(viewDidAppear:), (IMP)ZH_Set_viewDidAppear);
+    gSettingsHookInstalled = (gOrigSetLoadData != NULL && gOrigSetDidAppear != NULL);
+    NSLog(@"[zhplugin] install segment settings: loadData=%p didAppear=%p installed=%d",
+          gOrigSetLoadData, gOrigSetDidAppear, gSettingsHookInstalled);
+}
+
+// 三段独立安装：一段抛异常不许拖累其它段（WCBlack v4.7 教训）。
+static void ZPInstall(void) {
+    @try {
+        ZPInstallThemeHook();
+        NSLog(@"[zhplugin] install segment theme: OK");
+    } @catch (NSException *e) {
+        NSLog(@"[zhplugin] install segment theme: FAILED: %@", e);
+    }
+    @try {
+        ZPInstallBarHooks();
+        NSLog(@"[zhplugin] install segment bar: OK");
+    } @catch (NSException *e) {
+        NSLog(@"[zhplugin] install segment bar: FAILED: %@", e);
+    }
+    @try {
+        ZPInstallSettingsHooks();
+        NSLog(@"[zhplugin] install segment settings: OK");
+    } @catch (NSException *e) {
+        NSLog(@"[zhplugin] install segment settings: FAILED: %@", e);
+    }
 }
 
 @interface ZHPluginLoader : NSObject
 @end
 @implementation ZHPluginLoader
+// +load 只登记启动完成通知：不在 +load 期装任何钩子、不碰任何 ZH 类、不解析画布模型。
+// 教训（2026-11-26 对照实验定性）：旧版在 +load 里立即 ZPInstall 并在安装期触发
+// ZHColorModel 的 +initialize/单例构造，此时宿主自身 +load 尚未跑完、UIApplication
+// 未建，疑致启动即闪退（空插件对照版同法注入不退，已排除镜像检测与注入/签名问题）。
 + (void)load {
-    ZPInstall();
-    dispatch_async(dispatch_get_main_queue(), ^{ ZPInstall(); });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(zp_didFinishLaunching:)
+                                                 name:UIApplicationDidFinishLaunchingNotification
+                                               object:nil];
+    NSLog(@"[zhplugin] load: observer registered, install deferred to didFinishLaunching + 1s");
+}
+
++ (void)zp_didFinishLaunching:(NSNotification *)note {
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:UIApplicationDidFinishLaunchingNotification
+                                                  object:nil];
+    // 启动已完成、宿主类与 UIApplication 均就绪，再延迟约 1 秒分三段独立安装。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ ZPInstall(); });
 }
 @end
