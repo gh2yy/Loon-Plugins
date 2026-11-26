@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v4.3 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v4.4 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.3"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.4"); });
     return l;
 }
 
@@ -345,6 +345,7 @@ static void WCScanAndForceTabs(UIView *root, int depth); // 前向声明：定�
 static void WCScanRegister(UIView *root, int depth);     // 同上
 static void WCCollectDiag(NSString *scene);              // 前向声明：定义在诊断一节
 static void WCForceKeyboardWindow(UIWindow *win);        // 同上
+static void WCEnsureRegistered(void);                    // 同上
 static void WCScanAllWindows(void) {
     // v4.1：键盘窗口不在 UIApplication.windows 里（v4.0 真机诊断里始终没有 kbd 段），
     // 改为枚举全部场景的窗口合并去重，键盘窗口（独立场景）才捞得到。
@@ -396,7 +397,7 @@ static void WCEnforceRegistered(void) {
     }
     // 每约 2 秒兜底扫一次：底部 tab（玻璃插件自有类）+ 输入栏/聊天顶栏扫描注册 + 键盘窗口
     static int tick = 0;
-    if (++tick % 5 == 0) WCScanAllWindows();
+    if (++tick % 5 == 0) { WCScanAllWindows(); WCEnsureRegistered(); }
 }
 static dispatch_source_t gEnforcerTimer; // 必须静态持有，否则定时器被释放
 static void WCStartEnforcer(void) {
@@ -968,6 +969,38 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
 #pragma mark - 安装与注册
 
 static BOOL gInstalled = NO, gRegistered = NO;
+// 插件列表注册改「在列确认制」：注册后回读管理器列表，确认有 WCBlack 条目才算数；
+// 没确认就由强刷每约 2 秒重试。旧写法只在启动 4 秒内试几次、且试一次就置 gRegistered，
+// 管理器（wcplugins）初始化稍慢或列表被重建，注册就永久丢失——v4.3 真机列表里没了
+// WCBlack 就是这么来的（插件本体一直在跑，顶部照样刷黑，只是入口没了）。
+static void WCEnsureRegistered(void) {
+    if (gRegistered) return;
+    Class mgr = NSClassFromString(@"WCPluginsMgr");
+    if (!mgr || ![mgr respondsToSelector:@selector(sharedInstance)]) return;
+    id inst = ((id (*)(id, SEL))objc_msgSend)(mgr, @selector(sharedInstance));
+    if (!inst) return;
+    NSArray *existing = nil;
+    @try { existing = [inst valueForKey:@"plugins"]; } @catch (id e) { existing = nil; }
+    for (id p in existing) {
+        NSString *t = nil;
+        @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
+        if ([t containsString:@"WCBlack"]) { gRegistered = YES; return; }
+    }
+    if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
+        @"WCBlack 纯黑背景", @"4.4", @"WCBlackSettingsViewController");
+    NSArray *after = nil;
+    @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
+    for (id p in after) {
+        NSString *t = nil;
+        @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
+        if ([t containsString:@"WCBlack"]) {
+            gRegistered = YES;
+            os_log(WCLog(), "[WCBlack] v4.4 registered in plugin list");
+            break;
+        }
+    }
+}
 static void WCInstall(void) {
     if (!gInstalled) {
         gOrigSetBG = WCSwap([UIView class], @selector(setBackgroundColor:), (IMP)WC_View_setBackgroundColor);
@@ -1020,7 +1053,7 @@ static void WCInstall(void) {
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v4.3 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v4.4 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1032,24 +1065,10 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v4.3 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v4.4 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
-    if (!gRegistered) {
-        Class mgr = NSClassFromString(@"WCPluginsMgr");
-        if (mgr && [mgr respondsToSelector:@selector(sharedInstance)]) {
-            id inst = ((id (*)(id, SEL))objc_msgSend)(mgr, @selector(sharedInstance));
-            NSArray *existing = [inst valueForKey:@"plugins"];
-            BOOL dup = NO;
-            for (id p in existing) { if ([[p valueForKey:@"title"] containsString:@"WCBlack"]) { dup = YES; break; } }
-            if (!dup && [inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
-                ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-                    @"WCBlack 纯黑背景", @"4.3", @"WCBlackSettingsViewController");
-                os_log(WCLog(), "[WCBlack] v4.3 registered in plugin list");
-            }
-            gRegistered = YES;
-        }
-    }
+    WCEnsureRegistered();
 }
 
 @interface WCBlackLoader : NSObject
