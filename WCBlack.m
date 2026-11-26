@@ -183,8 +183,17 @@ static UIColor *WCDynamicColor(NSString *module, UIColor *lightFallback) {
 // setter 路径的替换：命中模块 -> 动态色（浅色回退为原色浅色解析值）
 
 // ===== v6 瘦身声明（原注册表只供诊断查看，不再参与上色）=====
-static char kWCOrigBGKey, kWCSepOrigStyleKey, kWCSepOrigColorKey, kWCSepHiddenKey, kWCPatchHiddenKey;
+static char kWCOrigBGKey, kWCSepOrigStyleKey, kWCSepOrigColorKey, kWCSepHiddenKey, kWCPatchHiddenKey, kWCUnderlayKey;
 static int gWCRestoreDepth = 0;
+static void WCStoreOrigBG(UIView *v) {
+    if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
+        objc_setAssociatedObject(v, &kWCOrigBGKey, v.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+static BOOL WCIsTabCandidate(UIView *v) {
+    if ([v isKindOfClass:[UITabBar class]]) return YES;
+    NSString *cls = NSStringFromClass([v class]);
+    return [cls isEqualToString:@"WCGNativeTabBar"] || [cls isEqualToString:@"WCTabBarView"] || [cls isEqualToString:@"MMTabBar"];
+}
 static NSHashTable<UIView *> *gBarsTab, *gBarsNav, *gBarsInput;
 
 static BOOL WCGrayInRange(UIColor *color, int lo, int hi); // 前向声明：定义在 Hooks 一节
@@ -583,13 +592,7 @@ static void WCForceKeyboardWindow(UIWindow *win) {
     // 给它涂了不透明黑背景——它是覆盖全屏、位于主窗口之上的系统窗口，键盘一弹起就整页
     // 盖黑（用户实测：开键盘页面卡住、内容消失）。而且树已证明面板是远程渲染：进程内只有
     // _UIRemoteKeyboardPlaceholderView 占位视图，没有任何本地底板可涂，涂它纯有害无益。
-    // v4.5 若已涂过，进到这里先按存档还原干净。
-    NSNumber *forced = objc_getAssociatedObject(win, &kWCForcedKey);
-    if (forced.boolValue) {
-        win.backgroundColor = objc_getAssociatedObject(win, &kWCOrigBGKey);
-        WCRestoreStrong(win, 6);
-        objc_setAssociatedObject(win, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    // v6 起本插件不再给任何窗口上色，这段只剩存树。
 }
 
 static void WCCollectDiag(NSString *scene) {
