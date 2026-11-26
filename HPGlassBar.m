@@ -127,34 +127,45 @@ static UIColor *HPLensFillColor(void) {
     }];
 }
 
-// fillKind: 0 无填充 / 1 胶囊填充（XHS 底栏配方）/ 2 透镜填充
-static UIVisualEffectView *HPMakePlate(int fillKind) {
+// 玻璃盘构造（v8 改回 v2 已在真机验证会采样背景的构造）：Clear 玻璃 + 效果视图自身 layer 圆角裁剪。
+// 教训：v4 起照 XHS 用 UICornerConfiguration + contentView 掩角，在虎扑里渲染成不透明（v7 浅色截图：
+// 压在深色照片上仍是纯白 255、无任何透过）——XHS 的盘活在它自家 App 的玻璃体系里，虎扑没有这层环境。
+// fillKind: 0 无填充 / 2 透镜填充。胶囊（kind 0）返回带投影的外壳视图（tag 1001），内嵌效果视图。
+static UIView *HPMakePlate(int fillKind) {
     UIVisualEffect *fx = nil;
     Class glassCls = NSClassFromString(@"UIGlassEffect");
     if (glassCls && [glassCls respondsToSelector:@selector(effectWithStyle:)])
-        fx = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassCls, @selector(effectWithStyle:), 0); // Regular
-    if (!fx) fx = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial];
+        fx = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassCls, @selector(effectWithStyle:), 1); // Clear
+    if (!fx) fx = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
     UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:fx];
-    Class cornerCls = NSClassFromString(@"UICornerConfiguration");
-    if (cornerCls && [cornerCls respondsToSelector:@selector(capsuleConfiguration)] &&
-        [v respondsToSelector:@selector(setCornerConfiguration:)]) {
-        id cfg = ((id (*)(id, SEL))objc_msgSend)(cornerCls, @selector(capsuleConfiguration));
-        ((void (*)(id, SEL, id))objc_msgSend)(v, @selector(setCornerConfiguration:), cfg);
-    }
     v.userInteractionEnabled = NO;
-    v.contentView.layer.masksToBounds = YES;
-    if (fillKind == 1) v.contentView.backgroundColor = HPPlateFillColor();
-    else if (fillKind == 2) v.contentView.backgroundColor = HPLensFillColor();
-    return v;
+    v.layer.masksToBounds = YES;
+    if (fillKind == 2) {
+        v.contentView.backgroundColor = HPLensFillColor();
+        return v;
+    }
+    UIView *shell = [[UIView alloc] initWithFrame:CGRectZero];
+    shell.backgroundColor = [UIColor clearColor];
+    shell.userInteractionEnabled = NO;
+    shell.tag = 1001;
+    [shell addSubview:v];
+    [v release];
+    return shell;
 }
 
-static void HPSetPlateFrame(UIVisualEffectView *plate, CGRect f) {
+static void HPSetPlateFrame(UIView *plate, CGRect f) {
     plate.frame = f;
-    plate.contentView.layer.cornerRadius = f.size.height / 2;
+    if (plate.tag == 1001) {
+        UIView *fx = plate.subviews.firstObject;
+        fx.frame = plate.bounds;
+        fx.layer.cornerRadius = f.size.height / 2;
+    } else {
+        plate.layer.cornerRadius = f.size.height / 2;
+    }
 }
 
-// 胶囊投影：白底上玻璃胶囊几乎无边可辨，靠投影把轮廓定出来（shadowPath 显式给胶囊形，不依赖内容 alpha）
-static void HPApplyCapsuleShadow(UIVisualEffectView *plate) {
+// 胶囊投影：挂在外壳层上（效果视图自身要 masksToBounds 裁剪，投影不能挂它身上）
+static void HPApplyCapsuleShadow(UIView *plate) {
     CALayer *l = plate.layer;
     l.shadowColor = [UIColor blackColor].CGColor;
     l.shadowOpacity = 0.22;
@@ -291,17 +302,17 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig, CGFl
 
 static void HPEnsurePlates(UIView *bar) {
     if (objc_getAssociatedObject(bar, &kCapsuleKey)) return;
-    UIVisualEffectView *capsule = HPMakePlate(0); // 胶囊无填充：XHS fillForBar 默认仅 noteBottom 为 50、其余（含主页栏）为 0，纯玻璃才是清透的来源（v7 复查二进制定案）
+    UIView *capsule = HPMakePlate(0); // 胶囊无填充：XHS fillForBar 默认仅 noteBottom 为 50、其余（含主页栏）为 0（v7 复查二进制定案）
     [bar insertSubview:capsule atIndex:0];
     objc_setAssociatedObject(bar, &kCapsuleKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIVisualEffectView *lens = HPMakePlate(2);
+    UIView *lens = HPMakePlate(2);
     [bar insertSubview:lens atIndex:1];
     objc_setAssociatedObject(bar, &kLensKey, lens, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void HPHideBarBackground(UIView *bar, NSArray *btns) {
-    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
     NSArray *mine = objc_getAssociatedObject(bar, &kRowKey);
     if ([bar respondsToSelector:@selector(backgroundView)]) {
         UIView *bg = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(backgroundView));
@@ -360,12 +371,12 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
         CGRect f = HPRectInBar(bar, orig);
         rowRect = CGRectIsNull(rowRect) ? f : CGRectUnion(rowRect, f);
     }
-    CGFloat slotW = MIN(MAX(maxContentW + 34, 64.0), 96.0);
+    CGFloat slotW = MIN(MAX(maxContentW + 56, 82.0), 112.0);
     CGFloat capH = 58.0;
-    CGFloat capW = slotW * (CGFloat)btns.count + 16;
+    CGFloat capW = slotW * (CGFloat)btns.count + 24;
     if (capW > bounds.size.width - 20) {
         capW = bounds.size.width - 20;
-        slotW = (capW - 16) / (CGFloat)btns.count;
+        slotW = (capW - 24) / (CGFloat)btns.count;
     }
     CGFloat capX = (bounds.size.width - capW) / 2;
     CGFloat capY = CGRectGetMidY(rowRect) - capH / 2;
@@ -377,7 +388,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     for (NSUInteger i = 0; i < btns.count; i++) {
         UIView *orig = btns[i];
         HPGlassButton *gb = row[i];
-        CGRect slot = CGRectMake(capX + 8 + (CGFloat)i * slotW, capY, slotW, capH);
+        CGRect slot = CGRectMake(capX + 12 + (CGFloat)i * slotW, capY, slotW, capH);
         gb.frame = slot;
         CGRect cr = [contents[i] CGRectValue];
         HPSyncGlassButton(gb, bar, orig,
@@ -397,12 +408,12 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     }
 
     // 胶囊 + 透镜：透镜贴合整个槽位（横向内缩 4、纵向内缩 5），不再比按钮小一圈
-    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
     HPSetPlateFrame(capsule, capRect);
     HPApplyCapsuleShadow(capsule);
     CGFloat lensH = capH - 10;
-    HPSetPlateFrame(lens, CGRectMake(capX + 8 + (CGFloat)sel * slotW + 4,
+    HPSetPlateFrame(lens, CGRectMake(capX + 12 + (CGFloat)sel * slotW + 4,
                                      capY + (capH - lensH) / 2, slotW - 8, lensH));
     lens.hidden = NO;
 
@@ -427,8 +438,8 @@ static void HPLayoutObjcBar(UIView *bar, Class btnCls) {
         [contents addObject:[NSValue valueWithCGRect:HPButtonContentRect(bar, b)]];
         rowRect = CGRectIsNull(rowRect) ? f : CGRectUnion(rowRect, f);
     }
-    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
     CGFloat capH = 58.0;
     CGFloat capX = MAX(10.0, rowRect.origin.x - 12);
     CGFloat capR = MIN(bounds.size.width - 10, CGRectGetMaxX(rowRect) + 12);
@@ -526,7 +537,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v7 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v8 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
