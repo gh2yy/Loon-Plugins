@@ -50,12 +50,14 @@
 //     建栏、按原栏当前选中态无动画落位透镜、隐藏原栏；按钮内容
 //     （头像等异步资源）仍每轮同步补齐、不作建栏前置。点选钩子
 //     只负责建成后的切换。②动效弹性——玻璃面与透镜同入一只
-//     UIGlassContainerEffect（spacing 2.0）聚合，透镜移动时与底
-//     盘之间有系统玻璃形变；透镜位移改弹簧（0.5s / damping 0.75）
-//     + 按距离横向拉伸（≤1.2，到位回弹归位），以「目标槽位」记
-//     忆防维护轮次反复重启弹簧；两 effect 保持 interactive=YES；
-//     按钮按压时图标缩 0.9、松开弹簧回弹，用户点选驱动的选中切
-//     换时图标做一次 1.15 弹簧弹跳（冷启首落位不弹）。
+//     UIGlassContainerEffect（spacing 2.0）聚合：透镜位移只由弹
+//     簧（0.5s / damping 0.75）驱动 center，移动中的形变由容器
+//     morph 承担（灵动来自系统能力本身，不在玻璃视图上叠手工
+//     拉伸 transform），以「目标槽位」记忆防维护轮次反复重启弹
+//     簧；两 effect 保持 interactive=YES；按钮按压时图标缩
+//     0.9、松开弹簧回弹，用户点选驱动的选中切换时图标做一次
+//     1.15 弹簧弹跳（冷启首落位不弹；图标是普通 UIImageView、
+//     不进玻璃合成，与容器形变不冲突）。
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
 //   录（保留探针时代的取证字段）。
@@ -874,8 +876,8 @@ static void ZHNavKickRetry(UIView *bar) {
 //   effect——为 nil 才建 fx 经 zpUpdateMaterial: 装入，已装永不重赋。
 //   选中——读两 item 的 themeSelected（都读不到回落上轮槽位）；
 //   透镜目标 = 选中槽内缩（6,7,74,50）：首次直接置位，后续仅当
-//   目标槽位变化时走弹簧（0.5s/damping 0.75 + 按距离横向拉伸，
-//   v3.1）。按钮选中态同步。
+//   目标槽位变化时走弹簧（0.5s/damping 0.75 只驱动 center，形
+//   变归容器 morph，v3.1）。按钮选中态同步。
 //   原栏——导航完整建成后才置 hidden=YES（每轮重申）。
 static void ZHLayoutGlassNav(UIView *bar) {
     ZHRegisterBar(bar);
@@ -968,25 +970,24 @@ static void ZHLayoutGlassNav(UIView *bar) {
             objc_setAssociatedObject(bar, &kNavLensSlotKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         } else {
             // 后续切换：仅当目标槽位真变时才起弹簧（v3.1）——维护每
-            // 轮都跑，靠槽位记忆防弹簧被反复重启。弹簧 0.5s /
-            // damping 0.75；起步先按位移距离横向拉伸（满槽距 →
-            // 1.2），到位随弹簧回弹归位。走 center 而非 frame：拉
-            // 伸 transform 在身时 frame 语义未定，center 才是稳定量。
+            // 轮都跑，靠槽位记忆防弹簧被反复重启。弹簧（0.5s /
+            // damping 0.75）只作位移的驱动曲线：动画本体只改
+            // center，透镜在容器内移动时的拉伸/聚合形变全部由
+            // UIGlassContainerEffect 按子视图几何自行 morph——不
+            // 在玻璃视图上叠手工 transform，免得与容器合成打架
+            // （灵动来自系统能力本身的口径）。走 center 而非
+            // frame：与容器按几何采样口径一致、且不受自身动画
+            // 状态影响。
             NSNumber *lensSlot = objc_getAssociatedObject(bar, &kNavLensSlotKey);
             if (!lensSlot || lensSlot.integerValue != sel) {
                 objc_setAssociatedObject(bar, &kNavLensSlotKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 CGPoint tc = CGPointMake(CGRectGetMidX(target), CGRectGetMidY(target));
-                CGFloat ratio = fabs(tc.x - lens.center.x) / kNavSlotW;
-                if (ratio > 1) ratio = 1;
-                lens.transform = CGAffineTransformMakeScale(1.0 + 0.2 * ratio, 1.0);
                 [UIView animateWithDuration:0.5 delay:0 usingSpringWithDamping:0.75
                      initialSpringVelocity:0
                                     options:UIViewAnimationOptionBeginFromCurrentState |
                                             UIViewAnimationOptionAllowUserInteraction
-                                 animations:^{
-                    lens.center = tc;
-                    lens.transform = CGAffineTransformIdentity;
-                } completion:nil];
+                                 animations:^{ lens.center = tc; }
+                                 completion:nil];
             }
         }
         if (lens.hidden) lens.hidden = NO;
