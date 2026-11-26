@@ -1,4 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v7.3 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v7.4 (2026-11-26)
+// v7.4：v7.3 首构建因 WCProbeColorDic 缺前向声明编译失败（调用点在定义之前），
+//   本版只补声明，逻辑与 v7.3 完全一致。
 // v7.3：修 v7.2 启动闪退——WCProbeColorDic 被放在 WCInstall 里，+load 期就给
 //   WCColorMgr 发消息（sharedInstance），触发其 +initialize 链在微信未就绪时
 //   抛异常 abort（.ips 栈实证）。改：安装时不跑，改由 getColor 钩子首次捕获到
@@ -572,6 +574,7 @@ static void WCAppendSourceStats(NSMutableString *out);
 static BOOL WCStateDark(void);
 static NSString *WCTraitLogSnapshot(void);
 static void WCOnThemeFlip(NSString *why);
+static void WCProbeColorDic(void);
 static void WCNoteColorFetch(id mgr);
 
 #pragma mark - 诊断快照（设置页展示，用户截图/复制即可，不用连电脑抓日志）
@@ -1305,7 +1308,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"7.3", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"7.4", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1863,7 +1866,7 @@ static void WCInstall(void) {
             if (!gOrigSetColorDic) gOrigSetColorDic = WCSwap(mgr, @selector(setColorDic:), (IMP)WC_WCColorMgr_setColorDic);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v7.3 source hooks in");
+                os_log(WCLog(), "[WCBlack] v7.4 source hooks in");
                 // v7.3：WCProbeColorDic 绝不能在 +load 期跑——它给 WCColorMgr 发消息会
                 // 触发其 +initialize 链，微信自身的初始化此时没就绪、会抛异常 abort
                 // （18:57 的 .ips 实证：+load→WCInstall→WCProbeColorDic→initialize→rethrow）。
