@@ -1,4 +1,8 @@
-// WCBlack.m — 微信深色模式纯黑背景 v7.5 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v7.6 (2026-11-26)
+// v7.6：修 v7.5 闪退——colorDic 字符串改写时先写字典、后在日志里读旧值 raw，
+//   写字典已把旧值释放，日志的 stringWithFormat 读到野指针（.ips 实证
+//   EXC_BAD_ACCESS 于 WCProbeColorDic 的格式化调用）。改：先日志后写字典，
+//   且循环内对 val 做 retain/autorelease 保活。其余与 v7.5 一致。
 // v7.5：修 v7.4 底栏卡白。①WCBarTraitChanged 删除「采信探针改状态」分支——
 //   trait 回调里 currentTraitCollection 就是被质疑的 trait 本身，探针被污染，
 //   造成状态横跳、底栏最后卡在浅色钉子上；状态只认取色路径的代际/系统信号，
@@ -1015,7 +1019,7 @@ static void WCProbeColorDic(void) {
         NSMutableDictionary *target = inPlace ? (NSMutableDictionary *)dict : [dict mutableCopy];
         int changed = 0;
         for (NSString *name in names) {
-            id val = dict[name];
+            id val = [[dict[name] retain] autorelease]; // 保险：整个循环内保活，防写字典释放旧值后读到野指针
             if (!val) { WCDictLog([NSString stringWithFormat:@"dict: %@ MISSING", name]); continue; }
             if ([val isKindOfClass:[NSString class]]) {
                 // v7.5：v7.4 实测字典里存的是 XML 原始字符串（"浅,深"），不是动态色
@@ -1029,8 +1033,11 @@ static void WCProbeColorDic(void) {
                 NSString *darkOrig = parts.count > 1 ? parts[1] : light;
                 NSString *alpha = (darkOrig.length == 9) ? [darkOrig substringFromIndex:7] : @"FF";
                 NSString *newStr = [NSString stringWithFormat:@"%@,%@%@", light, hex, alpha];
-                if (![newStr isEqualToString:raw]) { target[name] = newStr; changed++; }
+                // 必须先打日志再写字典：写字典会释放旧值 raw，写完再在日志里读它
+                // 就是野指针——v7.5 闪退正是死在这里（.ips：stringWithFormat 的
+                // description 撞已释放对象，EXC_BAD_ACCESS）。
                 WCDictLog([NSString stringWithFormat:@"dict: %@ str \"%@\" -> \"%@\"", name, raw, newStr]);
+                if (![newStr isEqualToString:raw]) { target[name] = newStr; changed++; }
                 continue;
             }
             if (dynCls && [val isKindOfClass:dynCls]) {
@@ -1340,7 +1347,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"7.5", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"7.6", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1920,7 +1927,7 @@ static void WCInstall(void) {
             if (!gOrigSetColorDic) gOrigSetColorDic = WCSwap(mgr, @selector(setColorDic:), (IMP)WC_WCColorMgr_setColorDic);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v7.5 source hooks in");
+                os_log(WCLog(), "[WCBlack] v7.6 source hooks in");
                 // v7.3：WCProbeColorDic 绝不能在 +load 期跑——它给 WCColorMgr 发消息会
                 // 触发其 +initialize 链，微信自身的初始化此时没就绪、会抛异常 abort
                 // （18:57 的 .ips 实证：+load→WCInstall→WCProbeColorDic→initialize→rethrow）。
