@@ -103,8 +103,8 @@
 //   v3.6（口径纠正版）：用户所指「高度」实为整栏距屏幕底部的
 //     距离、非栏高——v3.4/v3.5 两版误读只涨栏高。本版定案：栏高
 //     回到 62（透镜内缩 (6,6) → 74×50、按钮图标 y 15→10 / 标题
-//     y 46→41，即 v3.4 排布），底边距 8→18（整栏上抬 10）；总宽
-//     192、槽宽 86 不变，自建栏 frame y = 956−18−62 = 876。
+//     y 46→41，即 v3.4 排布），底边距 8→15（整栏上抬 7）；总宽
+//     192、槽宽 86 不变，自建栏 frame y = 956−15−62 = 879。
 //     其余逐字未动。
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
@@ -788,7 +788,7 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
 #pragma mark - 布局（正式版：apply 幂等：开 -> 自建导航落位+隐藏原栏；关 -> 还原原栏+移除自建栏）
 
 // 导航几何（两槽定宽）：槽宽 86、栏高 62、两侧内边距 10 → 192×62；
-// 底部居中，胶囊底边距屏幕底部 18pt（v3.6 定案：栏高 62 + 底边距 18）。
+// 底部居中，胶囊底边距屏幕底部 15pt（v3.6 定案：栏高 62 + 底边距 15）。
 static const CGFloat kNavSlotW = 86, kNavBarH = 62, kNavPadX = 10;
 
 // keyWindow 选取（与 ZPAppIsNight 同口径：windows 里找 isKeyWindow，回落第一只）
@@ -1013,7 +1013,7 @@ static void ZHLayoutGlassNav(UIView *bar) {
     if (host.superview != win) [win addSubview:host]; // 只挂一次、不重排
     CGFloat W = kNavSlotW * 2 + kNavPadX * 2;
     CGRect hf = CGRectMake((win.bounds.size.width - W) / 2,
-                           win.bounds.size.height - 18 - kNavBarH,
+                           win.bounds.size.height - 15 - kNavBarH,
                            W, kNavBarH);
     if (!CGRectEqualToRect(host.frame, hf)) host.frame = hf;
     if (host.hidden) host.hidden = NO;
