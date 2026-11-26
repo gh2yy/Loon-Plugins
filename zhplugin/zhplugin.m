@@ -96,6 +96,10 @@
 //     接推到 62）。透镜内缩 (6,6) 不变 → 74×50、按钮图标 y 8→10 /
 //     标题 y 37→41；总宽 192、槽宽 86、底边距 8 不变，自建栏
 //     frame y = 956−8−62 = 886。其余逐字未动。
+//   v3.5（真机反馈单修）：栏高 62→72（62 版仍觉不够、再往上调
+//     10）。透镜内缩 (6,6) 不变 → 74×60、按钮图标 y 10→15 /
+//     标题 y 41→46；总宽 192、槽宽 86、底边距 8 不变，自建栏
+//     frame y = 956−8−72 = 876。其余逐字未动。
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
 //   录（保留探针时代的取证字段）。
@@ -511,8 +515,8 @@ static BOOL gNavUserTapped = NO;
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat w = self.bounds.size.width;
-    _iconView.frame = CGRectMake((w - 24) / 2, 10, 24, 24);
-    _titleLabel.frame = CGRectMake(0, 41, w, 13);
+    _iconView.frame = CGRectMake((w - 24) / 2, 15, 24, 24);
+    _titleLabel.frame = CGRectMake(0, 46, w, 13);
 }
 - (void)zpSetBar:(UIView *)bar model:(id)model {
     _bar = bar;
@@ -777,9 +781,9 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
 
 #pragma mark - 布局（正式版：apply 幂等：开 -> 自建导航落位+隐藏原栏；关 -> 还原原栏+移除自建栏）
 
-// 导航几何（两槽定宽）：槽宽 86、栏高 62、两侧内边距 10 → 192×62；
+// 导航几何（两槽定宽）：槽宽 86、栏高 72、两侧内边距 10 → 192×72；
 // 底部居中贴底，胶囊底边距屏幕底部 8pt（v3.2，参照微博悬浮栏）。
-static const CGFloat kNavSlotW = 86, kNavBarH = 62, kNavPadX = 10;
+static const CGFloat kNavSlotW = 86, kNavBarH = 72, kNavPadX = 10;
 
 // keyWindow 选取（与 ZPAppIsNight 同口径：windows 里找 isKeyWindow，回落第一只）
 static UIWindow *ZPKeyWindow(void) {
