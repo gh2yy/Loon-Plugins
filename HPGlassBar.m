@@ -1,16 +1,13 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v4 (2026-11-26)
-// 沿革：v1 挂错类（ObjC 旧栏）零反应；v2 改挂 Swift 真底栏 _TtC4HPUI10HPUITabBar 生效，但玻璃是自拼的
-//   （普通视图垫底 + 纯色半透明高亮），且自算槽位与 App 实际布局差约 34pt；v3 修位置（不动按钮、按真实
-//   位置贴合）；v4 按用户要求照小红书 XHSNative-1.4 的 plateOn:key:below:frame:bar: 实现重做玻璃本体。
-// XHS 玻璃盘配方（反汇编定案，逐项照搬）：
-//   UIVisualEffectView(initWithEffect: [UIGlassEffect effectWithStyle:Regular(0)])
-//   + cornerConfiguration = [UICornerConfiguration capsuleConfiguration]（设在效果视图上，不是 layer 圆角）
-//   + contentView.layer.masksToBounds = YES、contentView.layer.cornerRadius = 高/2
-//   + contentView 填充动态色（其主页底栏默认）：浅色 = 白 α0.50；深色 = RGB(0.13,0.13,0.15) α0.50
-//   选区高亮同样是一块玻璃盘（无填充），不是纯色块。
-// 位置沿用 v3：绝不移动按钮；胶囊按按钮行真实范围贴合，高亮按选中按钮内容（label+tabImageView 并集）定位。
-// 挂点：HPUITabBar layoutSubviews / updateButtonWithButton:selected:；ObjC 旧栏 HPTabBar 挂点保留兼容。
-// 纯运行时 swizzle + +load 安装，无 substrate 依赖；玻璃类全部 NSClassFromString 动态解析。
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v5 (2026-11-26)
+// 沿革：v1 挂错类零反应；v2 挂对 Swift 真底栏但玻璃自拼、槽位自算差 34pt；v3 修位置；v4 照 XHSNative
+//   plateOn 配方重做玻璃盘并过滤隐藏 button；v5 按用户定的做法重构按钮层（同 XHSNative 的 rebuildTabs 路线）：
+//   自建按钮复制原按钮的图标/标题/颜色/内部布局，原按钮隐藏；点击不走原按钮的触摸，直接调底栏自己的
+//   didClickedWithButton:(原按钮) —— 与真实点击同一入口，其后 hp_delegate 的 shouleSelectedAt /
+//   willSelectedAt / didSelectedAt、容器 VC 切页、重选刷新全部由 App 原链路完成，插件不碰路由本身。
+// 玻璃盘 = XHS 配方：UIVisualEffectView(UIGlassEffect Regular) + UICornerConfiguration capsuleConfiguration
+//   + contentView 掩角 + 动态填充（浅 白α.50 / 深 RGB .13,.13,.15 α.50）；选区为无填充玻璃透镜。
+// 挂点：HPUITabBar layoutSubviews / updateButtonWithButton:selected:（ObjC 旧栏保留 v4 覆盖式布局兼容）。
+// 纯运行时 swizzle + +load 安装，无 substrate 依赖；玻璃类全部动态解析。本文件按 MRC 编写。
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -19,6 +16,9 @@
 static char kCapsuleKey;
 static char kLensKey;
 static char kSelBtnKey;
+static char kRowKey;
+static char kRowSigKey;
+static char kMyHiddenKey;
 
 #pragma mark - 工具
 
@@ -41,15 +41,24 @@ static Class HPFindClass(NSString *exact, NSString *contains, NSArray<NSString *
     return found;
 }
 
+static id HPGetObj(id obj, NSString *selName) {
+    SEL s = NSSelectorFromString(selName);
+    if (!obj || ![obj respondsToSelector:s]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(obj, s);
+}
+
 static void HPCollectButtons(UIView *root, Class btnCls, NSMutableArray *out) {
     for (UIView *v in root.subviews) {
         if (btnCls && [v isKindOfClass:btnCls]) [out addObject:v];
         else HPCollectButtons(v, btnCls, out);
     }
 }
-// 底栏里有隐藏 button（虎扑可配置底栏，隐藏项仍是子视图）：自身或任一中间层隐藏/全透明、
-// 尺寸为零、中心落在底栏可视范围之外的，一律不算——否则按钮行范围与选中映射被它们带偏，点击焦点错位
+// 可见性：被本插件隐藏的原按钮（kMyHiddenKey 标记）视为可见；其余按 hidden/alpha/尺寸/位置过滤
 static BOOL HPButtonVisible(UIView *bar, UIView *b) {
+    if ([objc_getAssociatedObject(b, &kMyHiddenKey) boolValue]) {
+        CGRect f0 = [bar convertRect:b.bounds fromView:b];
+        return f0.size.width >= 1 && f0.size.height >= 1;
+    }
     if (b.hidden || b.alpha < 0.01) return NO;
     UIView *p = b.superview;
     while (p && p != bar) {
@@ -74,21 +83,23 @@ static NSArray *HPBarButtons(UIView *bar, Class btnCls) {
     return out;
 }
 
-// 按钮内容（图标+文字）在底栏坐标系中的真实矩形：Swift 按钮取 label/tabImageView，ObjC 按钮取 titleLabel/imageView
+// 视图在底栏坐标系中的真实矩形
+static CGRect HPRectInBar(UIView *bar, UIView *v) {
+    return [bar convertRect:v.bounds fromView:v];
+}
+// 按钮内容（图标+文字+边框）并集
 static CGRect HPButtonContentRect(UIView *bar, UIView *btn) {
     CGRect u = CGRectNull;
-    NSArray<NSString *> *names = @[@"label", @"tabImageView", @"titleLabel", @"imageView"];
+    NSArray<NSString *> *names = @[@"label", @"tabImageView", @"tabImageBorderView", @"titleLabel", @"imageView"];
     for (NSString *name in names) {
-        SEL s = NSSelectorFromString(name);
-        if (![btn respondsToSelector:s]) continue;
-        UIView *v = ((id (*)(id, SEL))objc_msgSend)(btn, s);
+        UIView *v = HPGetObj(btn, name);
         if (v && [v isKindOfClass:[UIView class]] && [v isDescendantOfView:bar]) {
-            CGRect r = [bar convertRect:v.bounds fromView:v];
+            CGRect r = HPRectInBar(bar, v);
             if (r.size.width > 0 && r.size.height > 0)
                 u = CGRectIsNull(u) ? r : CGRectUnion(u, r);
         }
     }
-    if (CGRectIsNull(u)) u = [bar convertRect:btn.bounds fromView:btn];
+    if (CGRectIsNull(u)) u = HPRectInBar(bar, btn);
     return u;
 }
 
@@ -131,32 +142,153 @@ static void HPSetPlateFrame(UIVisualEffectView *plate, CGRect f) {
     plate.contentView.layer.cornerRadius = f.size.height / 2;
 }
 
-#pragma mark - 布局
+#pragma mark - 自建按钮
 
-static void HPLayoutBar(UIView *bar, Class btnCls) {
-    CGRect bounds = bar.bounds;
-    if (bounds.size.width < 50 || bounds.size.height < 30) return;
-    NSArray *btns = HPBarButtons(bar, btnCls);
-    if (btns.count == 0) return;
+@interface HPGlassButton : UIControl
+@property (nonatomic, retain) UIImageView *iconView;
+@property (nonatomic, retain) UIImageView *borderView;
+@property (nonatomic, retain) UILabel *textLabel;
+@property (nonatomic, retain) UIView *badgeDot;
+@property (nonatomic, assign) UIView *origButton;
+@property (nonatomic, assign) UIView *bar;
+@property (nonatomic, retain) UIImage *normalImage;
+@property (nonatomic, retain) UIImage *selectedImage;
+@property (nonatomic, retain) UIColor *normalColor;
+@property (nonatomic, retain) UIColor *selectedColor;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, assign) BOOL hpSelected;
+- (void)refreshAppearance;
+@end
 
-    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    if (!capsule) {
-        capsule = HPMakePlate(YES);
-        [bar insertSubview:capsule atIndex:0];
-        objc_setAssociatedObject(bar, &kCapsuleKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        UIVisualEffectView *lens = HPMakePlate(NO);
-        [bar insertSubview:lens atIndex:1];
-        objc_setAssociatedObject(bar, &kLensKey, lens, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+@implementation HPGlassButton
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _iconView = [[UIImageView alloc] initWithFrame:CGRectZero];
+        _iconView.contentMode = UIViewContentModeScaleAspectFit;
+        [self addSubview:_iconView];
+        _borderView = [[UIImageView alloc] initWithFrame:CGRectZero];
+        _borderView.contentMode = UIViewContentModeScaleAspectFit;
+        [self addSubview:_borderView];
+        _textLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _textLabel.textAlignment = NSTextAlignmentCenter;
+        [self addSubview:_textLabel];
+        _badgeDot = [[UIView alloc] initWithFrame:CGRectZero];
+        _badgeDot.hidden = YES;
+        _badgeDot.userInteractionEnabled = NO;
+        [self addSubview:_badgeDot];
+        [self addTarget:self action:@selector(hpTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addTarget:self action:@selector(hpDown) forControlEvents:UIControlEventTouchDown];
+        [self addTarget:self action:@selector(hpUp) forControlEvents:UIControlEventTouchUpOutside | UIControlEventTouchCancel];
     }
-    UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    return self;
+}
+- (void)dealloc {
+    [_iconView release];
+    [_borderView release];
+    [_textLabel release];
+    [_badgeDot release];
+    [_normalImage release];
+    [_selectedImage release];
+    [_normalColor release];
+    [_selectedColor release];
+    [_title release];
+    [super dealloc];
+}
+- (void)refreshAppearance {
+    UIImage *img = self.hpSelected ? (self.selectedImage ?: self.normalImage) : self.normalImage;
+    self.iconView.image = img;
+    self.textLabel.text = self.title;
+    self.textLabel.textColor = self.hpSelected ? (self.selectedColor ?: self.normalColor) : self.normalColor;
+}
+- (void)hpDown { self.iconView.alpha = 0.55; }
+- (void)hpUp { self.iconView.alpha = 1.0; }
+- (void)hpTapped {
+    self.iconView.alpha = 1.0;
+    UIView *bar = self.bar;
+    UIView *orig = self.origButton;
+    if (bar && orig && [bar respondsToSelector:@selector(didClickedWithButton:)])
+        ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(didClickedWithButton:), orig);
+}
+@end
 
-    // 藏原背景（不藏任何装着按钮的容器）
+// 从原按钮同步数据与内部布局到自建按钮（每轮布局都同步，远程图标迟到也能跟上）
+static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
+    gb.normalImage = HPGetObj(orig, @"normalImage");
+    gb.selectedImage = HPGetObj(orig, @"hightlightImage");
+    gb.normalColor = HPGetObj(orig, @"normalTitleColor");
+    gb.selectedColor = HPGetObj(orig, @"highlightTitleColor");
+    gb.title = HPGetObj(orig, @"title");
+
+    CGRect of = HPRectInBar(bar, orig);
+    gb.frame = of;
+    UIView *oIcon = HPGetObj(orig, @"tabImageView");
+    if (!oIcon) oIcon = HPGetObj(orig, @"imageView");
+    UIView *oLabel = HPGetObj(orig, @"label");
+    if (!oLabel) oLabel = HPGetObj(orig, @"titleLabel");
+    UIView *oBorder = HPGetObj(orig, @"tabImageBorderView");
+    if (oIcon && [oIcon isDescendantOfView:bar]) {
+        CGRect r = HPRectInBar(bar, oIcon);
+        gb.iconView.frame = CGRectMake(r.origin.x - of.origin.x, r.origin.y - of.origin.y, r.size.width, r.size.height);
+        gb.iconView.hidden = oIcon.hidden;
+    }
+    if (oLabel && [oLabel isDescendantOfView:bar]) {
+        CGRect r = HPRectInBar(bar, oLabel);
+        gb.textLabel.frame = CGRectMake(r.origin.x - of.origin.x, r.origin.y - of.origin.y, r.size.width, r.size.height);
+        gb.textLabel.font = [(UILabel *)oLabel font];
+        gb.textLabel.hidden = oLabel.hidden || gb.title.length == 0;
+    } else {
+        gb.textLabel.hidden = YES;
+    }
+    if (oBorder && [oBorder isDescendantOfView:bar]) {
+        CGRect r = HPRectInBar(bar, oBorder);
+        gb.borderView.frame = CGRectMake(r.origin.x - of.origin.x, r.origin.y - of.origin.y, r.size.width, r.size.height);
+        gb.borderView.image = [(UIImageView *)oBorder image];
+        gb.borderView.hidden = oBorder.hidden || gb.borderView.image == nil;
+    } else {
+        gb.borderView.hidden = YES;
+    }
+    // 红点镜像：原按钮上除图标/文字/边框外的小尺寸可见子视图
+    gb.badgeDot.hidden = YES;
+    for (UIView *sub in orig.subviews) {
+        if (sub == oIcon || sub == oLabel || sub == oBorder) continue;
+        if (sub.hidden || sub.alpha < 0.01) continue;
+        if (sub.frame.size.width > 20 || sub.frame.size.height > 20) continue;
+        if (sub.frame.size.width < 2 || sub.frame.size.height < 2) continue;
+        CGRect r = HPRectInBar(bar, sub);
+        gb.badgeDot.frame = CGRectMake(r.origin.x - of.origin.x, r.origin.y - of.origin.y, r.size.width, r.size.height);
+        gb.badgeDot.backgroundColor = sub.backgroundColor ?: [UIColor redColor];
+        gb.badgeDot.layer.cornerRadius = MIN(r.size.width, r.size.height) / 2;
+        gb.badgeDot.hidden = NO;
+        break;
+    }
+    [gb refreshAppearance];
+}
+
+#pragma mark - 布局（Swift 真底栏：重构按钮层）
+
+static void HPEnsurePlates(UIView *bar) {
+    if (objc_getAssociatedObject(bar, &kCapsuleKey)) return;
+    UIVisualEffectView *capsule = HPMakePlate(YES);
+    [bar insertSubview:capsule atIndex:0];
+    objc_setAssociatedObject(bar, &kCapsuleKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UIVisualEffectView *lens = HPMakePlate(NO);
+    [bar insertSubview:lens atIndex:1];
+    objc_setAssociatedObject(bar, &kLensKey, lens, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void HPHideBarBackground(UIView *bar, NSArray *btns) {
+    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    NSArray *mine = objc_getAssociatedObject(bar, &kRowKey);
     if ([bar respondsToSelector:@selector(backgroundView)]) {
         UIView *bg = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(backgroundView));
         if (bg && !HPIsAncestorOfAny(bg, btns)) bg.hidden = YES;
     }
+    CGRect bounds = bar.bounds;
     for (UIView *v in bar.subviews) {
         if (v == capsule || v == lens) continue;
+        if ([mine containsObject:v]) continue;
         if (HPIsAncestorOfAny(v, btns)) continue;
         CGRect f = v.frame;
         BOOL fullBg = f.size.width >= bounds.size.width * 0.9 && f.size.height >= bounds.size.height * 0.9;
@@ -164,27 +296,108 @@ static void HPLayoutBar(UIView *bar, Class btnCls) {
         if (fullBg || topLine) v.hidden = YES;
     }
     bar.backgroundColor = [UIColor clearColor];
+}
 
-    // 按钮真实矩形（底栏坐标系）——只读，绝不改
-    NSMutableArray *contents = [NSMutableArray array];
-    CGRect row = CGRectNull;
-    for (UIView *b in btns) {
-        CGRect f = [bar convertRect:b.bounds fromView:b];
-        [contents addObject:[NSValue valueWithCGRect:HPButtonContentRect(bar, b)]];
-        row = CGRectIsNull(row) ? f : CGRectUnion(row, f);
+static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
+    CGRect bounds = bar.bounds;
+    if (bounds.size.width < 50 || bounds.size.height < 30) return;
+    NSArray *btns = HPBarButtons(bar, btnCls);
+    if (btns.count == 0) return;
+    HPEnsurePlates(bar);
+    HPHideBarBackground(bar, btns);
+
+    // 按钮集合签名（指针序列）变了才重建自建行
+    NSMutableString *sig = [NSMutableString string];
+    for (UIView *b in btns) [sig appendFormat:@"%p;", (void *)b];
+    NSString *oldSig = objc_getAssociatedObject(bar, &kRowSigKey);
+    NSMutableArray *row = objc_getAssociatedObject(bar, &kRowKey);
+    if (!row || ![sig isEqualToString:oldSig]) {
+        if (row) for (HPGlassButton *gb in row) [gb removeFromSuperview];
+        row = [NSMutableArray array];
+        for (UIView *orig in btns) {
+            HPGlassButton *gb = [[HPGlassButton alloc] initWithFrame:CGRectZero];
+            gb.origButton = orig;
+            gb.bar = bar;
+            [bar addSubview:gb];
+            [row addObject:gb];
+            [gb release];
+            objc_setAssociatedObject(orig, &kMyHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        objc_setAssociatedObject(bar, &kRowKey, row, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(bar, &kRowSigKey, [sig copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    // 胶囊：贴合按钮行——横向 = 行范围左右各扩 12 并夹进 [10, W-10]；纵向高 58、中心对齐行中心、底边不超界
+    // 同步 + 隐藏原按钮
+    CGRect rowRect = CGRectNull;
+    for (NSUInteger i = 0; i < btns.count; i++) {
+        UIView *orig = btns[i];
+        HPSyncGlassButton(row[i], bar, orig);
+        orig.hidden = YES;
+        CGRect f = HPRectInBar(bar, orig);
+        rowRect = CGRectIsNull(rowRect) ? f : CGRectUnion(rowRect, f);
+    }
+
+    // 选中态：以 updateButton 钩子记录的原按钮为准
+    UIView *selBtn = objc_getAssociatedObject(bar, &kSelBtnKey);
+    NSUInteger sel = selBtn ? [btns indexOfObject:selBtn] : NSNotFound;
+    if (sel == NSNotFound) sel = 0;
+    for (NSUInteger i = 0; i < row.count; i++) {
+        HPGlassButton *gb = row[i];
+        BOOL s = (i == sel);
+        if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
+    }
+
+    // 胶囊：贴合按钮行
+    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
     CGFloat capH = 58.0;
-    CGFloat capX = MAX(10.0, row.origin.x - 12);
-    CGFloat capR = MIN(bounds.size.width - 10, CGRectGetMaxX(row) + 12);
-    CGFloat capY = CGRectGetMidY(row) - capH / 2;
+    CGFloat capX = MAX(10.0, rowRect.origin.x - 12);
+    CGFloat capR = MIN(bounds.size.width - 10, CGRectGetMaxX(rowRect) + 12);
+    CGFloat capY = CGRectGetMidY(rowRect) - capH / 2;
     if (capY < 2) capY = 2;
     if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
     CGRect capRect = CGRectMake(capX, capY, capR - capX, capH);
     HPSetPlateFrame(capsule, capRect);
 
-    // 选区透镜（玻璃）：贴选中按钮的内容中心，宽 = 内容宽 + 30（夹在 60..110）
+    // 透镜：贴选中按钮的内容中心
+    CGRect cr = HPButtonContentRect(bar, btns[sel]);
+    CGFloat lensW = MIN(MAX(cr.size.width + 30, 60.0), 110.0);
+    CGFloat lensH = capH - 16;
+    HPSetPlateFrame(lens, CGRectMake(CGRectGetMidX(cr) - lensW / 2,
+                                     capRect.origin.y + (capH - lensH) / 2, lensW, lensH));
+    lens.hidden = NO;
+
+    // 层级：胶囊 < 透镜 < 自建按钮
+    [bar bringSubviewToFront:lens];
+    for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
+}
+
+#pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
+
+static void HPLayoutObjcBar(UIView *bar, Class btnCls) {
+    CGRect bounds = bar.bounds;
+    if (bounds.size.width < 50 || bounds.size.height < 30) return;
+    NSArray *btns = HPBarButtons(bar, btnCls);
+    if (btns.count == 0) return;
+    HPEnsurePlates(bar);
+    HPHideBarBackground(bar, btns);
+    CGRect rowRect = CGRectNull;
+    NSMutableArray *contents = [NSMutableArray array];
+    for (UIView *b in btns) {
+        CGRect f = HPRectInBar(bar, b);
+        [contents addObject:[NSValue valueWithCGRect:HPButtonContentRect(bar, b)]];
+        rowRect = CGRectIsNull(rowRect) ? f : CGRectUnion(rowRect, f);
+    }
+    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    CGFloat capH = 58.0;
+    CGFloat capX = MAX(10.0, rowRect.origin.x - 12);
+    CGFloat capR = MIN(bounds.size.width - 10, CGRectGetMaxX(rowRect) + 12);
+    CGFloat capY = CGRectGetMidY(rowRect) - capH / 2;
+    if (capY < 2) capY = 2;
+    if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
+    CGRect capRect = CGRectMake(capX, capY, capR - capX, capH);
+    HPSetPlateFrame(capsule, capRect);
     UIView *selBtn = objc_getAssociatedObject(bar, &kSelBtnKey);
     NSUInteger sel = selBtn ? [btns indexOfObject:selBtn] : NSNotFound;
     if (sel == NSNotFound) {
@@ -200,8 +413,6 @@ static void HPLayoutBar(UIView *bar, Class btnCls) {
     HPSetPlateFrame(lens, CGRectMake(CGRectGetMidX(cr) - lensW / 2,
                                      capRect.origin.y + (capH - lensH) / 2, lensW, lensH));
     lens.hidden = NO;
-
-    // 层级：胶囊玻璃 < 透镜玻璃 < 按钮（按钮若在容器里，把容器整体提到透镜之上）
     [bar bringSubviewToFront:lens];
     for (UIView *b in btns) {
         UIView *top = b;
@@ -218,34 +429,34 @@ static Class gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gObjcBtnCls;
 
 static void HP_SwiftBar_layoutSubviews(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigSwiftLayout)(self, _cmd);
-    HPLayoutBar(self, gSwiftBtnCls);
+    HPLayoutSwiftBar(self, gSwiftBtnCls);
 }
 static void HP_SwiftBar_updateButton(UIView *self, SEL _cmd, UIView *btn, BOOL selected) {
     ((void (*)(id, SEL, id, BOOL))gOrigSwiftUpdateBtn)(self, _cmd, btn, selected);
     if (selected && btn) {
         objc_setAssociatedObject(self, &kSelBtnKey, btn, OBJC_ASSOCIATION_ASSIGN);
         [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
-            HPLayoutBar(self, gSwiftBtnCls);
+            HPLayoutSwiftBar(self, gSwiftBtnCls);
         } completion:nil];
     }
 }
 static void HP_ObjcBar_layoutSubviews(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigObjcLayout)(self, _cmd);
-    HPLayoutBar(self, gObjcBtnCls);
+    HPLayoutObjcBar(self, gObjcBtnCls);
 }
 static void HP_ObjcBar_setSelectedIndex(UIView *self, SEL _cmd, NSInteger idx) {
     ((void (*)(id, SEL, NSInteger))gOrigObjcSetSel)(self, _cmd, idx);
     [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
-        HPLayoutBar(self, gObjcBtnCls);
+        HPLayoutObjcBar(self, gObjcBtnCls);
     } completion:nil];
 }
 static void HP_ObjcBar_setupSelectedIndex(UIView *self, SEL _cmd, NSInteger idx) {
     ((void (*)(id, SEL, NSInteger))gOrigObjcSetupSel)(self, _cmd, idx);
-    HPLayoutBar(self, gObjcBtnCls);
+    HPLayoutObjcBar(self, gObjcBtnCls);
 }
 static void HP_ObjcBar_reload(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigObjcReload)(self, _cmd);
-    HPLayoutBar(self, gObjcBtnCls);
+    HPLayoutObjcBar(self, gObjcBtnCls);
 }
 
 static IMP HPSwap(Class cls, SEL sel, IMP newImp) {
@@ -275,7 +486,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v4 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v5 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
