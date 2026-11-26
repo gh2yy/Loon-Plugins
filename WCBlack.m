@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v4.2 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v4.3 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.2"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.3"); });
     return l;
 }
 
@@ -355,10 +355,25 @@ static void WCScanAllWindows(void) {
             for (UIWindow *w in [(UIWindowScene *)scene windows]) if (![wins containsObject:w]) [wins addObject:w];
         }
     }
+    BOOL sawKeyboard = NO;
+    NSMutableArray<NSString *> *census = [NSMutableArray array];
     for (UIWindow *w in wins) {
-        if ([NSStringFromClass([w class]) containsString:@"Keyboard"]) { WCForceKeyboardWindow(w); continue; }
+        NSString *cn = NSStringFromClass([w class]);
+        if (![census containsObject:cn]) [census addObject:cn];
+        if ([cn containsString:@"Keyboard"]) { sawKeyboard = YES; WCForceKeyboardWindow(w); continue; }
         WCScanAndForceTabs(w, 12);
         WCScanRegister(w, 16);
+    }
+    // 键盘窗口始终没找到时，把见过的窗口类名存进独立键（供定性：是枚举不到还是树被挤掉）；
+    // 已存下真树时不覆盖。
+    if (!sawKeyboard) {
+        NSString *old = [[NSUserDefaults standardUserDefaults] stringForKey:@"WCBlack.kbd"];
+        if (![old hasPrefix:@"== WCBlack kbd window =="]) {
+            NSString *txt = [NSString stringWithFormat:@"keyboard window NOT found; windows seen: %@",
+                             [census componentsJoinedByString:@", "]];
+            if (![txt isEqualToString:old])
+                [[NSUserDefaults standardUserDefaults] setObject:txt forKey:@"WCBlack.kbd"];
+        }
     }
 }
 static void WCEnforceRegistered(void) {
@@ -490,6 +505,9 @@ static void WCScanRegister(UIView *root, int depth) {
     } else if ([cls containsString:@"MsgContentNavBar"]) {
         WCRegisterBar(gBarsNav, root);
     }
+    // 任何 UINavigationBar 子类都登记进 nav 表：首页那条 #0F0F0F 的顶栏不是 MMUINavigationBar
+    // （钩子没挂上、注册表里那条不在当前窗口），类名对不上就永远漏刷；按基类兜底才稳。
+    if ([root isKindOfClass:[UINavigationBar class]]) WCRegisterBar(gBarsNav, root);
     for (UIView *s in root.subviews) WCScanRegister(s, depth - 1);
 }
 
@@ -550,8 +568,10 @@ static void WCForceKeyboardWindow(UIWindow *win) {
     if (!kbdDiagDone) {
         kbdDiagDone = YES;
         NSMutableString *out = [NSMutableString stringWithString:@"== WCBlack kbd window ==\n"];
-        WCDumpView(out, win, 0, 5);
-        WCAppendDiagText(out);
+        WCDumpView(out, win, 0, 7);
+        // 存独立键、整段覆盖：共享诊断有 12000 字上限、快照多了会把这段从头部挤掉
+        // （v4.2 真机粘贴里 kbd 段缺失就是这么丢的），独立键不受挤。
+        [[NSUserDefaults standardUserDefaults] setObject:out forKey:@"WCBlack.kbd"];
     }
     UIColor *cfg = WCConfigColor(@"chatbar");
     BOOL dark = (win.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
@@ -802,7 +822,10 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
     self.textView.selectable = YES;
     self.textView.font = [UIFont fontWithName:@"Menlo" size:10] ?: [UIFont systemFontOfSize:10];
     NSString *diag = [[NSUserDefaults standardUserDefaults] stringForKey:@"WCBlack.diag"];
-    self.textView.text = diag.length ? diag : @"（暂无诊断数据：先回首页停几秒、再随便进一个聊天页，然后回到本页点诊断）";
+    NSString *kbd = [[NSUserDefaults standardUserDefaults] stringForKey:@"WCBlack.kbd"];
+    NSString *full = diag.length ? diag : @"（暂无诊断数据：先回首页停几秒、再随便进一个聊天页，然后回到本页点诊断）";
+    if (kbd.length) full = [full stringByAppendingFormat:@"\n%@", kbd];
+    self.textView.text = full;
     [self.view addSubview:self.textView];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"复制全部" style:UIBarButtonItemStyleDone target:self action:@selector(wcCopyAll)];
 }
@@ -997,7 +1020,7 @@ static void WCInstall(void) {
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v4.2 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v4.3 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1009,7 +1032,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v4.2 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v4.3 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     if (!gRegistered) {
@@ -1021,8 +1044,8 @@ static void WCInstall(void) {
             for (id p in existing) { if ([[p valueForKey:@"title"] containsString:@"WCBlack"]) { dup = YES; break; } }
             if (!dup && [inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
                 ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-                    @"WCBlack 纯黑背景", @"4.2", @"WCBlackSettingsViewController");
-                os_log(WCLog(), "[WCBlack] v4.2 registered in plugin list");
+                    @"WCBlack 纯黑背景", @"4.3", @"WCBlackSettingsViewController");
+                os_log(WCLog(), "[WCBlack] v4.3 registered in plugin list");
             }
             gRegistered = YES;
         }
