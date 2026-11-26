@@ -539,3 +539,5 @@ static void HPInstall(void) {
                    dispatch_get_main_queue(), ^{ HPInstall(); });
 }
 @end
+
+// glassbuild retrigger: v10 content, run recovery 2026-11-26
