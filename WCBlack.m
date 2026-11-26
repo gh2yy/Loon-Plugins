@@ -1,7 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.10 (2026-11-26)：v8.9 基础上专攻侧滑切
-// 应用时底栏露浅灰——栏的背景在过渡/快照路径里被重建、绕开既有强涂；本版在
-// 背景的赋值与快照点拦截（setBackgroundContentView:/setTranslucent:/
-// snapshotViewAfterScreenUpdates:/prepareTabBarForTransition:），重建当场涂黑。
+// WCBlack.m — 微信深色模式纯黑背景 v8.11 (2026-11-27)：保留 v8.10 的侧滑底栏
+// 赋值/快照点拦截；分割线按用户要求扩到全微信——静态普查 255 个带 separator
+// 视图 ivar 的类逐个钩排版、同帧藏线，表格系统分隔线全局拦截，冷启动不闪。
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -29,7 +28,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.10"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.11"); });
     return l;
 }
 
@@ -506,8 +505,8 @@ static IMP gOrigSetSepStyle, gOrigSetDelegate, gOrigSetDataSource;
 static NSMutableSet<NSString *> *gWDInstalled;
 static NSMutableDictionary<NSString *, NSValue *> *gWDOrigs;
 static void WC_TV_setSepStyle(UITableView *s, SEL c, UITableViewCellSeparatorStyle style) {
-    if (style != UITableViewCellSeparatorStyleNone && WCHideSep() &&
-        (objc_getAssociatedObject(s, &kWCSepMainKey) || WCSepNameMatch(s))) {
+    // v8.11：全局拦截，不再只限首页表
+    if (style != UITableViewCellSeparatorStyleNone && WCHideSep()) {
         if (!objc_getAssociatedObject(s, &kWCSepOrigStyleKey))
             objc_setAssociatedObject(s, &kWCSepOrigStyleKey, @(style), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ((void (*)(id, SEL, NSInteger))gOrigSetSepStyle)(s, c, UITableViewCellSeparatorStyleNone);
@@ -571,7 +570,352 @@ static void WC_TV_setDataSource(UITableView *s, SEL c, id d) {
     ((void (*)(id, SEL, id))gOrigSetDataSource)(s, c, d);
     WCSepOnDelegate(s, d);
 }
+
+// v8.11 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
+// 静态普查完整二进制 46,673 个类，带 separator 视图 ivar 的类 255 个、301 条
+// ivar（名单内嵌于下）。给这些类逐个钩 layoutSubviews（控制器类钩
+// viewDidLayoutSubviews），原实现跑完就在同一次排版里按 ivar 把线藏掉——线
+// 在摆出的同一帧被藏，冷启动也不闪。再加 UITableView 两道：setSeparatorStyle:
+// 全局拦截（不再只限首页），layoutSubviews 开头把没走 setter 的默认样式表也
+// 压成 None（原排版之前执行，线根本不会被摆出来）。
+static NSMutableDictionary<NSString *, NSArray<NSString *> *> *gSepCensusIvars;
+static NSMutableDictionary<NSString *, NSValue *> *gSepCensusOrigs;
+static NSMutableSet<NSString *> *gSepCensusDone;
+static void WCSepHideIvars(id obj, Class regCls, NSArray<NSString *> *names) {
+    BOOL hide = WCHideSep();
+    for (NSString *name in names) {
+        Ivar iv = class_getInstanceVariable(regCls, name.UTF8String);
+        if (!iv) continue;
+        id v = object_getIvar(obj, iv);
+        if ([v isKindOfClass:[UIView class]]) ((UIView *)v).hidden = hide;
+        else if ([v isKindOfClass:[CALayer class]]) ((CALayer *)v).hidden = hide;
+        else if ([v isKindOfClass:[NSArray class]])
+            for (id el in (NSArray *)v) if ([el isKindOfClass:[UIView class]]) ((UIView *)el).hidden = hide;
+    }
+}
+static void WC_Sep_layout(id s, SEL c) {
+    NSMutableArray<NSString *> *chain = [NSMutableArray array];
+    IMP origToCall = NULL;
+    Class k = object_getClass(s);
+    while (k) {
+        NSString *kn = NSStringFromClass(k);
+        if (gSepCensusIvars[kn]) {
+            [chain addObject:kn];
+            if (!origToCall) {
+                NSValue *v = gSepCensusOrigs[kn];
+                if (v && v != (id)[NSNull null]) origToCall = [v pointerValue];
+            }
+        }
+        k = class_getSuperclass(k);
+    }
+    if (!origToCall && [s isKindOfClass:[UIView class]])
+        origToCall = class_getMethodImplementation([UIView class], @selector(layoutSubviews));
+    if (origToCall) ((void (*)(id, SEL))origToCall)(s, c);
+    for (NSString *kn in chain) WCSepHideIvars(s, NSClassFromString(kn), gSepCensusIvars[kn]);
+}
+static IMP gOrigTVLayout;
+static void WC_TV_layout(UITableView *s, SEL c) {
+    if (WCHideSep() && s.separatorStyle != UITableViewCellSeparatorStyleNone)
+        s.separatorStyle = UITableViewCellSeparatorStyleNone;
+    ((void (*)(id, SEL))gOrigTVLayout)(s, c);
+}
+static void WCInstallSepCensus(void) {
+    if (!gSepCensusDone) {
+        gSepCensusDone = [[NSMutableSet alloc] init];
+        gSepCensusIvars = [[NSMutableDictionary alloc] init];
+        gSepCensusOrigs = [[NSMutableDictionary alloc] init];
+    }
+    static const char *kSepCensus[] = {
+	"BTRecoFlowCanvasCell|_bottomSeparatorView",
+	"BTRecoFlowMsgCell|_bottomSeparatorView",
+	"BTRecoFlowTopicMsgCell|_topSeparatorView,_bottomSeparatorView",
+	"BizAppReaderMessageBigPicView|_separator",
+	"BraceletRankInfoView|_separatorLine",
+	"BraceletRankInfoViewV2|_separatorLine",
+	"BraceletWorkoutCreateSheetView|_infoSeparator,_reminderTimeSeparator",
+	"BrandCustomSharePanelSectionFooterView|_separator",
+	"BrandMyTabEntranceCardView|_horizontalSeparator",
+	"BrandMyTabEntranceCardNotify|_topSeparator",
+	"BrandMyTabEntranceCardButtons|_verticalSeparator",
+	"BrandProfileShopCardView|_recommendSeparator",
+	"BrandProfileProductCardView|_recommendSeparator",
+	"BrandProfileUrgePublishUserCell|_separatorView",
+	"CBTAsstBoardSendConfirmCellView|_separatorLine",
+	"CBTAsstBottomPanel|_topSeparatorLine,_attachmentSeparatorLine,_separatorLine,_bottomSeparatorLine",
+	"CBTAsstMemoryActionDialogView|_horizontalSeparatorView,_verticalSeparatorView",
+	"CBTAsstMemoryItemCell|_separatorView",
+	"CBTAsstMemoryRecentCell|_separatorView",
+	"CBTAsstMemoryTopicCell|_separatorView",
+	"CBTAsstMemoryTopicViewController|_titleSeparatorView",
+	"CBTAsstTalkingView|_navSeparatorView",
+	"CBTAttachmentCodeBlockView|_topSeparator,_bottomSeparator",
+	"CBTAttachmentMathBlockView|_topSeparatorLine,_bottomSeparatorLine",
+	"CBTContactRowView|_separatorView",
+	"CBTCoopV2CommNativeCellView|_separatorViews",
+	"CBTCoopV2FinderCellView|_separator",
+	"CBTGroupRowView|_separatorView",
+	"CBTMomentContentTableViewCell|_likeListTopSeparator,_commentViewListTopSeparator",
+	"CBTRefSourceCellContentView|_suppressSeparatorForLayout,_separatorLine",
+	"CBTReferenceSourceSheet|_topSeparatorLine",
+	"CameraQRCodeMyQRCodeModuleView|_addNewFriendSeparatorLine",
+	"ChatBotHistoryEnterRoomCell|_separatorLine",
+	"ChatBotVOIPMainView|_separatorLabel",
+	"ChatBotVoIPAskAIAsstTalkingView|_separator",
+	"ChatRoomInvitationMultiMenuTableViewCell|_separatorLineView",
+	"ContactsImportTableViewCell|_separatorView",
+	"EditImageMosaicToolAttrView|_separatorView",
+	"EditImagePenToolAttrView|_needSeparator,_separator",
+	"EditImageXiaoWeiEntryController|_toolBarSeparatorLine",
+	"EmoticonLensMoreHeaderView|_topSeparator",
+	"EmoticonLensMoreView|_navBarSeparator",
+	"EmoticonStoreLensDesignerView|_separatorView",
+	"EnterpriseSearchContactCell|_separatorBottomView",
+	"FakeMainFrameCell|_separatorLine",
+	"FavSelectedItemsSheetView|_navigationSeparator",
+	"GameLifeNotifyInteractiveMsgCell|_separator",
+	"KidsWatchInfoCellView|_separatorView",
+	"MJComposingCreationCamPreviewController|_bottomLinkSeparatorView",
+	"MJSegmentCellBorderView|_separatorLineLayer",
+	"MJThumbnailTileLayer|_separatorLineBounds,_separatorLineLayer",
+	"MJTimeCostReporterService|_keySeparator",
+	"MJTimecodeView|_separatorLabel",
+	"MMAlbumDropPickerCell|_separatorView",
+	"MMBGMSelectedTabTableLyricCell|_separator",
+	"MMBGMSelectedTabTableViewCell|_separatorLine",
+	"MMBottomToolView|_separators,_separatorSize",
+	"MMDatePickerHalfSheetView|_separatorLabel",
+	"MMEasterEggNewYearActivityViewController|_separatorView",
+	"MMFinderLiveAnchorGoodsCell|_actionButtonSeparatorLine",
+	"MMFinderLiveAnchorRealNameLikeListTableViewCell|_separatorLine",
+	"MMFinderLiveAnchorRealNameLikeListViewController|_recommendSeparator",
+	"MMFinderLiveCastItemCell|_topSeparatorLine,_bottomSeparatorLine",
+	"MMFinderLiveChooseModeView|_separatorLine",
+	"MMFinderLiveCompleteViewReplaySettingsCheckboxCell|_separatorBar",
+	"MMFinderLiveConcertTicketView|_separatorBarView",
+	"MMFinderLiveConcertTicketViewController|_bottomButtonsSeparators",
+	"MMFinderLiveConnectMicAudienceApplyPageSheet|_separatorBar",
+	"MMFinderLiveConnectMicAudienceApplyPageSheetTableViewCell|_separatorBar",
+	"MMFinderLiveConnectMicConditionCell|_separator",
+	"MMFinderLiveConnectMicExtendedPkSelectAnchorParticipatingTableViewCell|_separatorBar",
+	"MMFinderLiveConnectMicExtendedPkSelectDurationTableViewCell|_separatorBar",
+	"MMFinderLiveConnectMicExtendedPkSelectTableViewCell|_separatorBar",
+	"MMFinderLiveConnectMicModePageSheetNavigatingCell|_separatorBar",
+	"MMFinderLiveConnectMicModePageSheetSecondaryHeaderTableViewCell|_separatorBar",
+	"MMFinderLiveConnectMicModePageSheetSwitchCell|_separatorBar",
+	"MMFinderLiveConnectMicModePageSheetUsersTableViewCell|_separatorBar",
+	"MMFinderLiveConnectMicPkDesignatedGiftSelectionTableViewCell|_separatorBar",
+	"MMFinderLiveConnectMicPkDurationSelectionPageSheet|_separatorBar",
+	"MMFinderLiveConnectMicPkPanelTeamupNumberCell|_bottomSeparatorLine",
+	"MMFinderLiveConnectMicSelectConnectModeCell|_separatorLine",
+	"MMFinderLiveConnectedMicBaseCellHeaderView|_bottomSeparatorLine",
+	"MMFinderLiveConnectedMicHintBaseViewCell|_separatorBar",
+	"MMFinderLiveConnectedMicBaseUserCellView|_bottomSeparatorLine",
+	"MMFinderLiveFansGroupMemberTableViewCell|_separatorLine",
+	"MMFinderLiveFeedFriendsLikeListTableViewCell|_separatorLine",
+	"MMFinderLiveGiftStarRankCell|_separator",
+	"MMFinderLiveGiftStarGiftDetailPanel|_meBarSeparator",
+	"MMFinderLiveGiftStarLightAllCell|_separator",
+	"MMFinderLiveGoodsCell|_topSeparatorLine,_bottomSeparatorLine",
+	"MMFinderLiveGoodsSelectionPanel|_topSeparatorLine",
+	"MMFinderLiveMusicRelatedSettingTableFooterView|_separatorLeftMargin,_customSeparatorView",
+	"MMFinderLiveNewMusicRequestedSongPanel|_headerSeparator",
+	"MMFinderLiveNoticePromoteListTableViewCell|_horizontalSeparatorBar",
+	"MMFinderLiveOnlineStateCollectionViewCell|_separatorLine",
+	"MMFinderLivePaymentTrialModeCell|_separatorLine",
+	"MMFinderLivePaymentTrialModeSettingView|_separatorLine",
+	"MMFinderLiveRecentRewardCollectionCell|_needSeparatorLine,_separatorLine",
+	"MMFinderLiveShopInfoEcShopTailView|_separator",
+	"MMFinderLiveTestLiveInfoConfirmSheetRowView|_separatorView",
+	"MMFinderLiveTopicEducationNotifyPlaceholderView|_footerSeparator",
+	"MMFinderLiveInteractionWishProgressView|_rankSeparatorLine",
+	"MMFinderLiveInteractionWishOperationView|_rankSeparatorLine",
+	"MMLimitedModeBizCell|_separatorView",
+	"MMLimitedModeIndependentVerifyViewController|m_separatorLine",
+	"MMListCellConfig|_separatorConfig",
+	"MMLiveBeautyFineTuningControlPanelGroupSeparator|_separatorView",
+	"MMLiveCompleteStatisticsView|_horizontalSeparatorBar,_verticalSeparatorBar",
+	"MMLiveGenerateReplaySettingSubSwitchCellView|_topSeparatorLine",
+	"MMLiveMentionContactListTableViewCell|_separatorLine",
+	"MMLiveRewardGiftCustomizationTipView|_separatorBar",
+	"MMMLiveRewardQuotaSettingDetailCell|_separatorLine",
+	"MMLiveRewardQuotaSettingSheetView|_topSeparatorLine,_footerSeparatorLine",
+	"MMLiveStartLotteryNoticeOptionView|_separatorBar",
+	"MMLiveSyndicateIntroductionPageSheet|_settlementSettingsTopSeparator,_settlementSettingsBottomSeparator",
+	"MMLiveSyndicateManagementContactCell|_separator",
+	"MMLiveSyndicateManagementPageSheet|_buttonsSeparator",
+	"MMLiveSyndicateManagementQrCell|_separator",
+	"MMLiveSyndicateParticipantManagementPageSheet|_buttonsSeparator",
+	"MMMsgContentNavBar|_separatorView",
+	"MMMsgTipsExpandMultiHeadCardView|_separatorLineView",
+	"MMNewMsgContentNavBar|_separatorView",
+	"MMOrderCenterOrderSearchHistoryTableViewClearCell|_separatorBarView",
+	"MMOrderCenterOrderSearchHistoryTableViewItemCell|_separatorBarView",
+	"MMOrderCenterTableViewCellFinderRefererView|_separatorBarView",
+	"MMPickLocationContentView|_recentSentSeparatorLabel",
+	"MainFrameSectionFoldView|_topSeparatorView,_bottomSeparatorView",
+	"MassSendMessageCellView|m_separatorView",
+	"CellSourceView|_separatorLineView",
+	"MiniTaskCollectionScheduleCell|_separatorView",
+	"MultiDeviceCardManageContentView|_headerSeparator,_footerSeparator",
+	"MutiSessionCell|_bottomSeparatorView",
+	"NewMainFrameCell|_separatorLine",
+	"PendantPreviewSelectViewCell|_separatorView",
+	"QMCPremadeRouteItemView|_separatorLine",
+	"RoamPackageCreateDeviceCell|_uiSeparator",
+	"SelectSubContactCell|_bottomSeparatorView",
+	"SessionSelectSectionFoldView|_topSeparatorView,_bottomSeparatorView",
+	"SettingChatLogCell|_bannerSeparatorView",
+	"SolitaireInfoObj|_nsSeparator",
+	"SolitaireItem|_nsSeparator",
+	"SolitaireObj|_nsSeparator",
+	"TextStateFriendSquareSectionFooterView|_separatorView",
+	"TextStateFullScreenCardContentView|_iconSourceSeparator,_defaultHeadImageSourceSeparator",
+	"TextStateProfileCardContentView|_topSeparator,_iconSourceSeparator",
+	"TextStatePublishCustomIconView|_verticalSeparator",
+	"TextStatePublishRecentUseIconItemView|_separatorView",
+	"TextStateSquareButton|_separatorView",
+	"TranslateFunctionButton|_separatorLine",
+	"SelectLanguageButton|_separatorView",
+	"VoiceReminderConfirmCellView|m_separatorView",
+	"WAAgentInputNewPanel|_topSeparatorLine,_attachmentSeparatorLine",
+	"WAPNAuthUnbindViewController|_topSeparator,_bottomSeparator",
+	"WCAccountSignMethodSwitchViewController|_separatorTextLabel,_separatorLineView",
+	"WCAdCountdownView|_timeSeparator1Label,_timeSeparator2Label",
+	"WCAdDynamicFeedSeparatorView|_separatorLine",
+	"WCAdDynamicFeedElementInfo|_separatorDirection",
+	"WCBaseTimelineViewController|_holdSpeakSeparator",
+	"WCC2CPlayerProgressBar|_separatorLine,_separatorLineForTracking",
+	"WCCanvasComponentItem|_separatorInfo",
+	"WCCommentDetailViewControllerFB|_holdSpeakSeparator,_topSeparatorLine",
+	"WCCommentMultiImagesBrowseViewController|_holdSpeakSeparator",
+	"WCDataItem|_isNewDataSeparator",
+	"WCEcsShopCardViewBuildConfig|_secondLineSeparatorMargin,_shopBrand2ShopDescSeparatorLength",
+	"WCEcsWindowCardViewBuildConfig|_secondLineSeparatorMargin,_shopBrand2ShopDescSeparatorLength",
+	"WCFinderAdPromotionButton|_separatorLine",
+	"WCFinderAggregatedMentionCell|_separatorLine",
+	"WCFinderCollectionFeedItemContentView|_separatorView",
+	"WCFinderCommentDetailViewController|_commentAttachmentSeparatorView",
+	"WCFinderContactListCell|_separator",
+	"WCFinderFansListViewCell|_separator",
+	"WCFinderFeedContentVM|_hideSeparatorLine",
+	"WCFinderFeedDetailSectionFooterView|_separatorView",
+	"WCFinderFeedFavListCollectionViewCell|_separatorLine",
+	"WCFinderFeedFavListGuideView|_separatorLine",
+	"WCFinderFeedFriendsLikeListTableViewCell|_separatorLine",
+	"WCFinderFeedHighlightsPanel|_separatorLine",
+	"WCFinderFeedInputView|_commentAttachmentSeparatorView",
+	"WCFinderFeedLikeListCollectionViewCell|_separatorLine",
+	"WCFinderStreamFeedLikeGuideView|_separatorLine",
+	"WCFinderFeedSubtitleSettingTableViewCell|_separatorLine",
+	"WCFinderFullInteractivePanelView|_pagLinkTimeSeparator",
+	"WCFinderGameLiveListCell|_separator",
+	"WCFinderGameLiveListContentView|_separator",
+	"WCFinderGameLiveTabPageHeaderView|_separatorLine",
+	"WCFinderHalfProfileInteractionInfoView|_separator",
+	"WCFinderHelpPromotionUserCell|_separatorLine",
+	"WCFinderHighEntropyFeedCell|_separatorView",
+	"WCFinderHighEntropyPlaceholderCell|_bottomSeparator",
+	"WCFinderInteractionCommentRecordContentView|_separator",
+	"WCFinderItemCollectionCellView|_separator",
+	"WCFinderLandScapeVideoView|_topSeparator",
+	"WCFinderLiveCompleteLiveContentView|_livePreviewBottomSeparator",
+	"WCFinderLiveRosterSelectCell|_separator",
+	"WCFinderLiveStartLiveSectionCell|_postSeparatorLine,_bottomSeparatorLine",
+	"WCFinderLocationLbsTableViewCell|_separatorLine",
+	"WCFinderMSActivityLikeListCell|_bottomSeparatorLine",
+	"WCFinderMSActivityTopBlankCell|_separatorLine",
+	"WCFinderMemberShipCollectionTableViewCell|_topSeparatorLine,_bottomSeparatorLine",
+	"WCFinderMemberShipSearchResultCell|_separatorView",
+	"WCFinderMemberShipZoneIntroduceHeader|_topSeparatorLine,_bottomSeparatorLine",
+	"WCFinderMentionSearchContactTableViewCell|_separatorLine",
+	"WCFinderMentionUserContactTableViewCell|_separatorLine",
+	"WCFinderMyTabFinderCardView|_postSeparatorLine",
+	"WCFinderPersonalCenterPostActionView|_postSeparatorLine",
+	"WCFinderPersoncalCenterContactBlockCollectionViewCell|_separator",
+	"WCFinderPhotoFeedHeaderView|_separatorView",
+	"WCFinderProfileOverviewCollectionCell|_separatorLine",
+	"WCFinderRefuseLikeListTableViewCell|_separatorAlignAvatarLeft,_separator",
+	"WCFinderRefuseListTableViewCell|_separator",
+	"WCFinderSearchContactCellContentView|_separatorLine",
+	"WCFinderSearchSecurityTipsCell|_separatorLine",
+	"WCFinderShareFeedCellView|_separator",
+	"WCFinderShareTopicCellView|_separator",
+	"WCFinderTLFriendLikeFeedFoldTableViewCell|_sectionSeparator,_lineSeparator",
+	"WCMicroMerchantAdProductCardView|_tailSeparator",
+	"WCMomentsFinderRecommendationButton|_separatorLine",
+	"WCMomentsFinderRecommendationInfo|_customizedSeparatorTips",
+	"WCMomentsFinderRecommendationManager|_configurations_customizedSeparatorTips",
+	"WCMomentsFinderRecommendationViewModel|_customizedSeparatorTipsText",
+	"WCMomentsUserTableViewCell|_separatorLine",
+	"WCMomentsVisibilityTabBar|_separatorLine",
+	"WCPayCountryCodeAndPhoneNumberItem|_separator",
+	"WCPayF2FTransferFavorItemView|_separator",
+	"WCPayInputMoneyView|_separator",
+	"WCPayLQTKeyboardToolView|_separators",
+	"WCPayRealNameTipsViewController|_separatorLine",
+	"WCPayUploadIDCardTipsViewController|_separatorLine",
+	"WCPlayerConfigFullScreenProgressBarWithMultiSpeed|_separatorLine",
+	"WCPlayerConfigFullScreenProgressBarWithShrink|_separatorLine",
+	"WCRedesignBaseItemView|_separators,_topSeparator,_bottomSeparator",
+	"WCRedesignBaseItem|_separators",
+	"WCStoryTimelineEntranceTableViewCell|_separatorLine",
+	"WCTableViewSectionManager|_bDrawNoSeparator,_bDrawSeparatorBetweenCells",
+	"WeDropPermissionCell|_separatorLineTop,_separatorLineBottom",
+	"WebSearchTagView|_descSeparator",
+	"ilinkMultiSelectContactsViewController|_headerViewSeparatorView",
+	"_TtC6WeChat40FinderBulletBlackWordInputViewController|inputSeparator",
+	"_TtC6WeChatP33_D950BC01DA6365B954DE32A434FFB25E25FinderBulletBlackWordCell|separatorView",
+	"_TtC6WeChat25LedgerDailyCellRecordView|topSeparator,separator,bottomseparator",
+	"_TtC6WeChat20LedgerDetailItemCell|topSeparator,bottomseparator",
+	"_TtC6WeChat33LedgerUserTransactionsFiltertCell|separator",
+	"_TtC6WeChatP33_BA7D4393BD0E8BF147478A024CD0CA1214RangeIndicator|topSeparator,bottomSeparator",
+	"_TtC6WeChat25WCPayLedgerViewController|$__lazy_storage_$_separator",
+	"_TtC6WeChat36WSNativeHotListHotSearchItemBaseView|$__lazy_storage_$_todayTopSeparatorView",
+	"KSCrashReportFilterConcatenate|_separatorFmt",
+	"WAMiniToolMenuListItemView|_separatorLine",
+	"WAMediaCastingRoutePickerTableViewCell|_separatorLineView",
+	"DotLoadingView|_separatorDistance",
+	"_TtC9WeAppCore24WANavigateMapAppItemView|$__lazy_storage_$_separatorView",
+	"WCTabBarView|_separatorView",
+	"WCSplitViewController|_separatorLine",
+	"MMMenuContentView|_separatorViews",
+	"WCCustomNavigationBar|_rendererSeparatorHidden",
+	"WCCustomNavigationBarContentView|_separatorView",
+        NULL
+    };
+    for (int i = 0; kSepCensus[i]; i++) {
+        NSString *entry = [NSString stringWithUTF8String:kSepCensus[i]];
+        NSRange bar = [entry rangeOfString:@"|"];
+        if (bar.location == NSNotFound) continue;
+        NSString *clsName = [entry substringToIndex:bar.location];
+        if ([gSepCensusDone containsObject:clsName]) continue;
+        Class cls = NSClassFromString(clsName);
+        if (!cls) continue;
+        [gSepCensusDone addObject:clsName];
+        NSArray<NSString *> *ivars = [[entry substringFromIndex:bar.location + 1] componentsSeparatedByString:@","];
+        SEL sel = NULL;
+        if ([cls isSubclassOfClass:[UIView class]]) sel = @selector(layoutSubviews);
+        else if ([cls isSubclassOfClass:[UIViewController class]]) sel = @selector(viewDidLayoutSubviews);
+        if (!sel) continue;
+        // 若本类的该方法已是我的钩子（继承自先装的普查祖先类），不再重复装，
+        // 只登记 ivars，钩子解析时会沿继承链一并处理（orig 取祖先的真实现）。
+        Method m = class_getInstanceMethod(cls, sel);
+        if (m && method_getImplementation(m) == (IMP)WC_Sep_layout) {
+            gSepCensusIvars[clsName] = ivars;
+            gSepCensusOrigs[clsName] = (id)[NSNull null];
+            continue;
+        }
+        IMP orig = WCSwapOwn(cls, sel, (IMP)WC_Sep_layout);
+        if (orig) {
+            gSepCensusIvars[clsName] = ivars;
+            gSepCensusOrigs[clsName] = [NSValue valueWithPointer:orig];
+        }
+    }
+}
+
 static void WCInstallSepGate(void) {
+    WCInstallSepCensus();
+    if (!gOrigTVLayout) gOrigTVLayout = WCSwapOwn([UITableView class], @selector(layoutSubviews), (IMP)WC_TV_layout);
     if (gOrigSetSepStyle) return;
     gOrigSetSepStyle = WCSwapOwn([UITableView class], @selector(setSeparatorStyle:), (IMP)WC_TV_setSepStyle);
     gOrigSetDelegate = WCSwapOwn([UITableView class], @selector(setDelegate:), (IMP)WC_TV_setDelegate);
@@ -1140,7 +1484,7 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
 }
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
     if (s == 1) return @"点模块选颜色：纯黑 / 深灰 / 石墨 / 色谱选择 / 输入色值 / 原色（关闭该模块）。改完即时生效，不用重启微信。";
-    if (s == 2) return @"去掉首页会话列表里每行下面的分割线，只对首页生效，关掉开关即恢复。";
+    if (s == 2) return @"去掉微信各页面的分割线（会话列表、通讯录、设置等），冷启动也不闪。关掉开关即恢复。";
     return nil;
 }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -1155,7 +1499,7 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.accessoryView = nil;
     } else if (ip.section == 2) {
-        cell.textLabel.text = @"隐藏首页分割线";
+        cell.textLabel.text = @"隐藏分割线";
         cell.detailTextLabel.text = WCHideSep() ? @"开" : @"关";
         cell.accessoryType = UITableViewCellAccessoryNone;
         UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectZero];
@@ -1265,7 +1609,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.10 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.11 registered in plugin list");
             break;
         }
     }
@@ -1313,7 +1657,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.10 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.11 source hooks in");
             }
         }
     }
