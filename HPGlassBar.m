@@ -159,6 +159,11 @@ static void HPSetPlateFrame(UIView *plate, CGRect f) {
         UIView *fx = plate.subviews.firstObject;
         fx.frame = plate.bounds;
         fx.layer.cornerRadius = f.size.height / 2;
+        // 夜间亮边（v12 用户定）：黑色阴影在黑底上显不出来，给胶囊加 0.5pt 淡白边定轮廓；
+        // 白天不加（borderWidth 0），保持原样。trait 切换会触发重新布局、边随之刷新。
+        BOOL dark = plate.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
+        fx.layer.borderWidth = dark ? 0.5 : 0.0;
+        fx.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
     } else {
         plate.layer.cornerRadius = f.size.height / 2;
     }
@@ -559,7 +564,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v11 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v12 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
