@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v4.9 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v5.0 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,24 +69,32 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.9"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.0"); });
     return l;
 }
 
 #pragma mark - 配置
 
 static NSString *const kWCEnabledKey = @"WCBlack.enabled";
-static NSArray<NSString *> *WCModules(void) { return @[@"bg", @"nav", @"tab", @"chatbar", @"cell"]; }
+static NSArray<NSString *> *WCModules(void) { return @[@"bg", @"nav", @"tab", @"chatbar", @"cell", @"field"]; }
 static NSString *WCModuleTitle(NSString *m) {
     if ([m isEqualToString:@"bg"]) return @"主背景（列表 / 聊天）";
     if ([m isEqualToString:@"nav"]) return @"顶部导航栏";
     if ([m isEqualToString:@"tab"]) return @"底部标签栏";
     if ([m isEqualToString:@"chatbar"]) return @"聊天底部栏";
     if ([m isEqualToString:@"cell"]) return @"置顶行 / 卡片";
+    if ([m isEqualToString:@"field"]) return @"输入框底色";
     return m;
 }
 static BOOL WCEnabled(void) {
     NSNumber *v = [[NSUserDefaults standardUserDefaults] objectForKey:kWCEnabledKey];
+    return v ? v.boolValue : YES;
+}
+static NSString *const kWCHideSepKey = @"WCBlack.hideSep";
+// 首页分割线开关：默认隐藏（用户 v5.0 要求去掉），关掉开关或总开关关闭时恢复原样
+static BOOL WCHideSep(void) {
+    if (!WCEnabled()) return NO;
+    NSNumber *v = [[NSUserDefaults standardUserDefaults] objectForKey:kWCHideSepKey];
     return v ? v.boolValue : YES;
 }
 static UIColor *WCColorFromHex(NSString *hex) {
@@ -100,7 +108,9 @@ static UIColor *WCColorFromHex(NSString *hex) {
 static NSString *WCConfigHex(NSString *module) {
     NSString *hex = [[NSUserDefaults standardUserDefaults] stringForKey:[@"WCBlack." stringByAppendingString:module]];
     if (hex && [hex isEqualToString:@"off"]) return nil;
-    return hex ?: @"#000000";
+    if (hex) return hex;
+    // 输入框模块默认 #1A1A1A（v4.9 用户定的压暗值），其余模块默认纯黑
+    return [module isEqualToString:@"field"] ? @"#1A1A1A" : @"#000000";
 }
 static UIColor *WCConfigColor(NSString *module) {
     if (!WCEnabled()) return nil;
@@ -182,7 +192,7 @@ static UIColor *WCSubstituteForColor(UIColor *color) {
 
 #pragma mark - 靶向栏强制（注册表 + 定时强刷）
 
-static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey, kWCOrigBGKey, kWCOrigStdAppKey, kWCOrigEdgeAppKey;
+static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey, kWCOrigBGKey, kWCOrigStdAppKey, kWCOrigEdgeAppKey, kWCSepOrigStyleKey, kWCSepOrigColorKey, kWCSepHiddenKey, kWCUnderlayKey;
 
 static NSHashTable<UIView *> *gBarsTab, *gBarsNav, *gBarsInput;
 static void WCRegisterBar(NSHashTable<UIView *> *table, UIView *bar) {
@@ -327,8 +337,9 @@ static BOOL WCGrayInRange(UIColor *color, int lo, int hi); // 同上
 static void WCFieldScan(UIView *root, int depth) {
     if (!root || depth < 0) return;
     for (UIView *v in root.subviews) {
+        // v5.0：不再排除类名含 Text 的视图——v4.9 实测底色纹丝不动，最可能的
+        // 落空点就是这条排除把画底色的那层（类名多半带 Text）挡在门外了
         if (![v isKindOfClass:[UIVisualEffectView class]] &&
-            ![NSStringFromClass([v class]) containsString:@"Text"] &&
             WCGrayInRange(v.backgroundColor, 42, 46)) {
             WCStoreOrigBG(v);
             v.backgroundColor = WCFieldColor(v.backgroundColor);
@@ -387,7 +398,69 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
         if (bg && bg != dyn && WCIsOpaqueDarkNeutral(bg)) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
     }
     // v4.9：输入框底色压暗的强刷兜底（理由见 WCFieldScan）
-    if ([module isEqualToString:@"chatbar"]) WCFieldScan(bar, 4);
+    if ([module isEqualToString:@"chatbar"] && WCConfigColor(@"field")) WCFieldScan(bar, 4);
+}
+
+// v5.0 首页分割线：主列表（MainFrame）table 的系统分隔线关掉还不够时，微信 cell 多半
+// 还自绘了一条贴底发丝线——可见 cell 里逐个找：高 ≤1pt、宽 ≥60% cell 宽、贴在 cell
+// 底部的普通视图，藏起来并打标记；开关关闭/总开关关时按标记逐个恢复。
+static void WCHideCellLineIn(UIView *root, UITableViewCell *cell, BOOL hide, int depth) {
+    if (!root || depth < 0) return;
+    for (UIView *v in root.subviews) {
+        NSNumber *flag = objc_getAssociatedObject(v, &kWCSepHiddenKey);
+        if (hide) {
+            if (!flag.boolValue && v.bounds.size.height <= 1.0 &&
+                v.bounds.size.width >= cell.bounds.size.width * 0.6 &&
+                ![v isKindOfClass:[UILabel class]] && ![v isKindOfClass:[UIImageView class]] &&
+                ![v isKindOfClass:[UIVisualEffectView class]]) {
+                CGRect f = [v convertRect:v.bounds toView:cell];
+                if (f.origin.y >= cell.bounds.size.height - 2.0) {
+                    objc_setAssociatedObject(v, &kWCSepHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    v.hidden = YES;
+                }
+            }
+        } else if (flag.boolValue) {
+            v.hidden = NO;
+            objc_setAssociatedObject(v, &kWCSepHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        WCHideCellLineIn(v, cell, hide, depth - 1);
+    }
+}
+
+static void WCApplySeparators(UITableView *tv) {
+    BOOL hide = WCHideSep();
+    NSNumber *stored = objc_getAssociatedObject(tv, &kWCSepOrigStyleKey);
+    if (hide) {
+        if (!stored) {
+            objc_setAssociatedObject(tv, &kWCSepOrigStyleKey, @(tv.separatorStyle), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (tv.separatorColor) objc_setAssociatedObject(tv, &kWCSepOrigColorKey, tv.separatorColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (tv.separatorStyle != UITableViewCellSeparatorStyleNone) tv.separatorStyle = UITableViewCellSeparatorStyleNone;
+        for (UITableViewCell *cell in tv.visibleCells) WCHideCellLineIn(cell, cell, YES, 3);
+    } else if (stored) {
+        tv.separatorStyle = (UITableViewCellSeparatorStyle)stored.integerValue;
+        UIColor *c = objc_getAssociatedObject(tv, &kWCSepOrigColorKey);
+        if (c) tv.separatorColor = c;
+        objc_setAssociatedObject(tv, &kWCSepOrigStyleKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(tv, &kWCSepOrigColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        for (UITableViewCell *cell in tv.visibleCells) WCHideCellLineIn(cell, cell, NO, 3);
+    }
+}
+
+// 只认主列表：满屏 table 且 delegate/dataSource 是 MainFrame 体系（通讯录/设置/聊天列表都不碰）
+static void WCScanTablesInWindow(UIView *root, UIWindow *win, int depth) {
+    if (!root || depth < 0) return;
+    if ([root isKindOfClass:[UITableView class]]) {
+        UITableView *tv = (UITableView *)root;
+        NSString *d = NSStringFromClass([tv.delegate class]) ?: @"";
+        NSString *ds = NSStringFromClass([tv.dataSource class]) ?: @"";
+        if ([d containsString:@"MainFrame"] || [ds containsString:@"MainFrame"]) {
+            CGRect f = [tv convertRect:tv.bounds toView:win];
+            if (f.size.height >= win.bounds.size.height * 0.8 && f.size.width >= win.bounds.size.width * 0.9)
+                WCApplySeparators(tv);
+        }
+    }
+    for (UIView *s in root.subviews) WCScanTablesInWindow(s, win, depth - 1);
 }
 
 static void WCScanAndForceTabs(UIView *root, int depth); // 前向声明：定义在下方兜底扫描一节
@@ -416,6 +489,7 @@ static void WCScanAllWindows(void) {
         if ([cn containsString:@"Keyboard"] || [cn containsString:@"TextEffects"]) { sawKeyboard = YES; WCForceKeyboardWindow(w); continue; }
         WCScanAndForceTabs(w, 12);
         WCScanRegister(w, 16);
+        WCScanTablesInWindow(w, w, 10);
     }
     // 键盘窗口始终没找到时，把见过的窗口类名存进独立键（供定性：是枚举不到还是树被挤掉）；
     // 已存下真树时不覆盖。
@@ -604,6 +678,23 @@ static void WCDumpView(NSMutableString *out, UIView *v, int depth, int maxDepth)
     }
     for (UIView *s in v.subviews) WCDumpView(out, s, depth + 1, maxDepth);
 }
+// v5.0 输入框取证专用：连图层背景、圆角、子图层一起打——底色若是图层画的，这里见分晓
+static void WCDumpFieldHunt(NSMutableString *out, UIView *v, int depth, int maxDepth) {
+    if (!v || depth > maxDepth) return;
+    NSMutableString *indent = [NSMutableString string];
+    for (int i = 0; i < depth; i++) [indent appendString:@"  "];
+    CGRect f = v.frame;
+    UIColor *lbg = v.layer.backgroundColor ? [UIColor colorWithCGColor:v.layer.backgroundColor] : nil;
+    [out appendFormat:@"%@%@ f=%.0f,%.0f,%.0f,%.0f bg=%@ layerBG=%@ radius=%.1f clips=%d sublayers=%lu\n",
+        indent, NSStringFromClass([v class]), f.origin.x, f.origin.y, f.size.width, f.size.height,
+        WCHexOfColor(v.backgroundColor), WCHexOfColor(lbg), v.layer.cornerRadius, (int)v.clipsToBounds,
+        (unsigned long)v.layer.sublayers.count];
+    for (CALayer *l in v.layer.sublayers) {
+        UIColor *lc = l.backgroundColor ? [UIColor colorWithCGColor:l.backgroundColor] : nil;
+        [out appendFormat:@"%@  layer %@ bg=%@\n", indent, NSStringFromClass([l class]), WCHexOfColor(lc)];
+    }
+    for (UIView *s in v.subviews) WCDumpFieldHunt(out, s, depth + 1, maxDepth);
+}
 static void WCDumpAncestors(NSMutableString *out, UIView *v) {
     [out appendString:@"-- ancestors --\n"];
     UIView *p = v.superview;
@@ -712,6 +803,24 @@ static void WCCollectDiag(NSString *scene) {
         if (hitB) { WCDumpView(out, hitB, 0, 0); WCDumpAncestors(out, hitB); } else [out appendString:@"(none)\n"];
         (void)tabFound;
     }
+    // v5.0 专项取证：分割线（主列表 table 的 delegate 与分隔线状态）+ 输入框底色（带图层）
+    {
+        UIWindow *kw = wins.firstObject;
+        [out appendString:@"-- SEP / FIELD hunt --\n"];
+        UITableView *mt = kw ? (UITableView *)WCFindInTree(kw, ^BOOL(UIView *v) {
+            if (![v isKindOfClass:[UITableView class]]) return NO;
+            UITableView *t = (UITableView *)v;
+            NSString *d = NSStringFromClass([t.delegate class]) ?: @"";
+            NSString *ds = NSStringFromClass([t.dataSource class]) ?: @"";
+            return [d containsString:@"MainFrame"] || [ds containsString:@"MainFrame"];
+        }, 12) : nil;
+        if (mt) [out appendFormat:@"mainTable delegate=%@ style=%ld sepColor=%@\n",
+            NSStringFromClass([mt.delegate class]), (long)mt.separatorStyle, WCHexOfColor(mt.separatorColor)];
+        else [out appendString:@"mainTable (not found)\n"];
+        UIView *grow = kw ? WCFindInTree(kw, ^BOOL(UIView *v) { return [NSStringFromClass([v class]) isEqualToString:@"MMGrowTextView"]; }, 16) : nil;
+        if (grow) WCDumpFieldHunt(out, grow, 0, 4);
+        else [out appendString:@"growText (not found)\n"];
+    }
     WCAppendDiagText(out);
 }
 
@@ -734,15 +843,37 @@ static void WCSweep(void) {
 static IMP gOrigSetBG, gOrigNavBarTint, gOrigTabBarTint;
 static IMP gOrigMMTabLayout, gOrigMMTabWindow, gOrigNavLayout, gOrigInputLayout;
 
-// v4.9：输入框底色专用动态色——深色下压到 #1A1A1A（原 #2C2C2C 太灰，用户要求调低），
-// 浅色回退原色。独立于 chatbar 模块色：输入条是纯黑时，框体留一点灰阶才看得出是输入框。
+// v4.9：输入框底色专用动态色（原 #2C2C2C 太灰，用户要求调低）；v5.0 起改为「输入框」
+// 模块驱动（设置页可调，默认 #1A1A1A）。动态色的 provider 在解析时才读配置，所以
+// 全局共用一份即可，配置改了自动跟随；MRC 下 static 持有要 retain。
 static UIColor *WCFieldColor(UIColor *orig) {
-    UIColor *fb = WCSanitizeLightFallback([orig resolvedColorWithTraitCollection:WCLightTrait()]);
-    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
-        if (tc.userInterfaceStyle == UIUserInterfaceStyleDark)
-            return [UIColor colorWithWhite:(0x1A / 255.0) alpha:1.0];
-        return fb;
-    }];
+    static UIColor *shared = nil;
+    if (!shared) shared = [WCDynamicColor(@"field", [UIColor clearColor]) retain];
+    return shared;
+}
+
+// v5.0：输入框底色的最后一道保险——若底色是 MMGrowTextView 自己 drawRect 画的（任何
+// 视图/图层属性都查不到，v4.9 两道规则全落空的可能原因之一），就在它最底层垫一张
+// 同尺寸的色片盖住那笔绘制：色片在全部子视图之下、父视图自身绘制之上，文字层
+// （MMTextView 是子视图）不受影响。模块关或浅色时藏起色片，露出原样。
+static void WCEnsureFieldUnderlay(UIView *grow) {
+    UIView *u = objc_getAssociatedObject(grow, &kWCUnderlayKey);
+    BOOL dark = (grow.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    if (!dark || !WCConfigColor(@"field")) { if (u) u.hidden = YES; return; }
+    if (!u) {
+        u = [[UIView alloc] initWithFrame:grow.bounds];
+        u.userInteractionEnabled = NO;
+        u.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        u.layer.cornerRadius = grow.layer.cornerRadius > 0 ? grow.layer.cornerRadius : 10;
+        u.clipsToBounds = YES;
+        [grow insertSubview:u atIndex:0];
+        objc_setAssociatedObject(grow, &kWCUnderlayKey, u, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [u release];
+    }
+    u.hidden = NO;
+    UIColor *fc = WCFieldColor(nil);
+    if (u.backgroundColor != fc) u.backgroundColor = fc;
+    if (!CGRectEqualToRect(u.frame, grow.bounds)) u.frame = grow.bounds;
 }
 
 // 视图是否在 MMInputToolView 层级内（向上数 maxUp 层祖先，含直属父级）
@@ -772,21 +903,19 @@ static void WC_View_setBackgroundColor(UIView *self, SEL _cmd, UIColor *color) {
     // 通用、不能按色值全局换），此前靠 WCForceBar 每 0.4 秒补刷——键盘弹起时微信会
     // 重设它的背景，补刷落地前那一拍就是用户看到的「四周先灰、然后消失」。
     // 条件收窄到直属子视图 + 深色 + chatbar 开启 + 不透明深灰，还原中（计数>0）不拦。
-    // v4.9 追加第二条：输入框底色 #2C2C2C（灰阶 42–46）压到 #1A1A1A——框体不是直属
-    // 子视图，放宽到 3 层祖先内；类名含 Text 的是输入文字层，跳过。
+    // v4.9 追加第二条（输入框底色），v5.0 修正：底色改由「输入框」模块门控；祖先放宽
+    // 到 4 层（底色视图在 MMGrowTextView 之内时，向上数到 MMInputToolView 正好 4 层）；
+    // 类名含 Text 不再排除——v4.9 实测底色没动，这条排除是头号嫌疑。
     if (color && gWCRestoreDepth == 0 && ![self isKindOfClass:[UIVisualEffectView class]] &&
-        self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark &&
-        WCConfigColor(@"chatbar")) {
-        BOOL direct = WCInsideInputTool(self, 1);
-        if (direct && WCIsOpaqueDarkNeutral(color)) {
+        self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
+        if (WCConfigColor(@"chatbar") && WCInsideInputTool(self, 1) && WCIsOpaqueDarkNeutral(color)) {
             if (!objc_getAssociatedObject(self, &kWCOrigBGKey))
                 objc_setAssociatedObject(self, &kWCOrigBGKey, color, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             UIColor *dyn = WCDynamicColor(@"chatbar", [color resolvedColorWithTraitCollection:WCLightTrait()]);
             ((void (*)(id, SEL, id))gOrigSetBG)(self, _cmd, dyn);
             return;
         }
-        if (!direct && WCInsideInputTool(self, 3) && WCGrayInRange(color, 42, 46) &&
-            ![NSStringFromClass([self class]) containsString:@"Text"]) {
+        if (WCConfigColor(@"field") && WCInsideInputTool(self, 4) && WCGrayInRange(color, 42, 46)) {
             if (!objc_getAssociatedObject(self, &kWCOrigBGKey))
                 objc_setAssociatedObject(self, &kWCOrigBGKey, color, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             ((void (*)(id, SEL, id))gOrigSetBG)(self, _cmd, WCFieldColor(color));
@@ -838,6 +967,15 @@ static void WC_InputTool_layoutSubviews(UIView *self, SEL _cmd) {
             }
         }
     }
+}
+static IMP gOrigGrowLayout, gOrigGrowWindow;
+static void WC_Grow_layoutSubviews(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigGrowLayout)(self, _cmd);
+    WCEnsureFieldUnderlay(self);
+}
+static void WC_Grow_didMoveToWindow(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigGrowWindow)(self, _cmd);
+    if (self.window) WCEnsureFieldUnderlay(self);
 }
 static void WC_InputTool_didMoveToWindow(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigInputWindow)(self, _cmd);
@@ -976,22 +1114,30 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(wcReload) name:@"WCBlackConfigChanged" object:nil];
 }
 - (void)wcReload { [self.tableView reloadData]; }
+- (void)wcToggleSep:(UISwitch *)sw {
+    [[NSUserDefaults standardUserDefaults] setBool:sw.on forKey:kWCHideSepKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"WCBlackConfigChanged" object:nil];
+}
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     if (s == 0) return 1;
     if (s == 2) return 1;
+    if (s == 3) return 1;
     return (NSInteger)WCModules().count;
 }
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
     if (s == 0) return @"总开关";
-    if (s == 2) return @"诊断";
+    if (s == 2) return @"其他";
+    if (s == 3) return @"诊断";
     return @"各模块颜色（仅深色模式生效）";
 }
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
     if (s == 1) return @"点模块选颜色：纯黑 / 深灰 / 石墨 / 色谱选择 / 输入色值 / 原色（关闭该模块）。改完即时生效，不用重启微信。";
-    if (s == 2) return @"还有哪处不变色：先回首页停几秒、再随便进一个聊天页停两秒，回到本页点开诊断，用右上角「复制全部」粘贴发我。";
+    if (s == 2) return @"去掉首页会话列表里每行下面的分割线，只对首页生效，关掉开关即恢复。";
+    if (s == 3) return @"还有哪处不变色：先回首页停几秒、再随便进一个聊天页停两秒，回到本页点开诊断，用右上角「复制全部」粘贴发我。";
     return nil;
 }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -1006,6 +1152,15 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.accessoryView = nil;
     } else if (ip.section == 2) {
+        cell.textLabel.text = @"隐藏首页分割线";
+        cell.detailTextLabel.text = WCHideSep() ? @"开" : @"关";
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectZero];
+        sw.on = WCHideSep();
+        [sw addTarget:self action:@selector(wcToggleSep:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = sw;
+        [sw release];
+    } else if (ip.section == 3) {
         cell.textLabel.text = @"诊断信息";
         cell.detailTextLabel.text = @"点开查看 / 复制";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -1028,6 +1183,13 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
     if (ip.section == 2) {
+        BOOL on = !WCHideSep();
+        [[NSUserDefaults standardUserDefaults] setBool:on forKey:kWCHideSepKey];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"WCBlackConfigChanged" object:nil];
+        return;
+    }
+    if (ip.section == 3) {
         WCCollectDiag(@"settings"); // 点开即重采当前状态
         WCDiagViewController *dvc = [[WCDiagViewController alloc] init];
         [self.navigationController pushViewController:dvc animated:YES];
@@ -1107,7 +1269,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"4.9", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"5.0", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1115,7 +1277,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v4.9 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v5.0 registered in plugin list");
             break;
         }
     }
@@ -1151,6 +1313,11 @@ static void WCInstall(void) {
             gOrigContainerLayout = WCSwapOwn(inputContainer, @selector(layoutSubviews), (IMP)WC_Container_layoutSubviews);
             gOrigContainerWindow = WCSwapOwn(inputContainer, @selector(didMoveToWindow), (IMP)WC_Container_didMoveToWindow);
         }
+        Class growCls = NSClassFromString(@"MMGrowTextView");
+        if (growCls) {
+            gOrigGrowLayout = WCSwapOwn(growCls, @selector(layoutSubviews), (IMP)WC_Grow_layoutSubviews);
+            gOrigGrowWindow = WCSwapOwn(growCls, @selector(didMoveToWindow), (IMP)WC_Grow_didMoveToWindow);
+        }
         Class msgNav = NSClassFromString(@"MMMsgContentNavBar");
         if (msgNav) {
             gOrigMsgNavLayout = WCSwapOwn(msgNav, @selector(layoutSubviews), (IMP)WC_MsgNav_layoutSubviews);
@@ -1183,7 +1350,7 @@ static void WCInstall(void) {
             for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"chatbar", 4);
         }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v4.9 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v5.0 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1195,7 +1362,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v4.9 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v5.0 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     WCEnsureRegistered();
