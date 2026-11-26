@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.5 还原版 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v8.6 还原版 (2026-11-26)
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -26,7 +26,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.5"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.6"); });
     return l;
 }
 
@@ -453,7 +453,9 @@ static void WCHideCellLineIn(UIView *root, UITableViewCell *cell, BOOL hide, int
     }
 }
 
+static void WCSepTryMarkViaResponder(UITableView *tv);
 static void WCApplySeparators(UITableView *tv) {
+    WCSepTryMarkViaResponder(tv);
     BOOL hide = WCHideSep();
     NSNumber *stored = objc_getAssociatedObject(tv, &kWCSepOrigStyleKey);
     if (hide) {
@@ -486,13 +488,20 @@ static void WCEnsureRegistered(void);
 // 家务 tick 只遍历登记过的表做开关还原/补漏，不再扫窗口。
 static NSHashTable<UITableView *> *gSepTables;
 static BOOL WCSepNameMatch(UITableView *tv) {
+    NSString *t = NSStringFromClass([tv class]) ?: @"";
     NSString *d = NSStringFromClass([tv.delegate class]) ?: @"";
     NSString *ds = NSStringFromClass([tv.dataSource class]) ?: @"";
-    return [d containsString:@"MainFrame"] || [ds containsString:@"MainFrame"];
+    return [t containsString:@"MainFrame"] || [d containsString:@"MainFrame"] || [ds containsString:@"MainFrame"];
 }
 static IMP WCSwap(Class cls, SEL sel, IMP newImp);
 static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp);
-static IMP gOrigSetSepStyle, gOrigSetDelegate, gOrigSetDataSource, gOrigWillDisplay;
+static IMP gOrigSetSepStyle, gOrigSetDelegate, gOrigSetDataSource;
+// v8.6：willDisplay 按类登记——v8.5 只装第一个类、且类没实现 willDisplay 就
+// 直接放弃，cell 自带发丝线没人管、冷启动只能等 tick 补，这就是线还在闪的洞。
+// 现在：每个 MainFrame delegate 类都装；自有实现就换、继承来的就在子类加覆盖、
+// 整条链都没有就直接给它加一个方法，cell 显示前必经这一下。
+static NSMutableSet<NSString *> *gWDInstalled;
+static NSMutableDictionary<NSString *, NSValue *> *gWDOrigs;
 static void WC_TV_setSepStyle(UITableView *s, SEL c, UITableViewCellSeparatorStyle style) {
     if (style != UITableViewCellSeparatorStyleNone && WCHideSep() &&
         (objc_getAssociatedObject(s, &kWCSepMainKey) || WCSepNameMatch(s))) {
@@ -504,13 +513,44 @@ static void WC_TV_setSepStyle(UITableView *s, SEL c, UITableViewCellSeparatorSty
     ((void (*)(id, SEL, NSInteger))gOrigSetSepStyle)(s, c, style);
 }
 static void WC_Main_willDisplay(id self, SEL c, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
-    ((void (*)(id, SEL, id, id, id))gOrigWillDisplay)(self, c, tv, cell, ip);
-    if (WCHideSep()) WCHideCellLineIn(cell, cell, YES, 3);
+    NSValue *v = gWDOrigs[NSStringFromClass([self class])];
+    if (v) ((void (*)(id, SEL, id, id, id))[v pointerValue])(self, c, tv, cell, ip);
+    if (WCHideSep() && (objc_getAssociatedObject(tv, &kWCSepMainKey) || WCSepNameMatch(tv)))
+        WCHideCellLineIn(cell, cell, YES, 3);
 }
 static void WCInstallWillDisplayHook(Class dc) {
-    if (!dc || gOrigWillDisplay) return;
-    if (![dc instancesRespondToSelector:@selector(tableView:willDisplayCell:forRowAtIndexPath:)]) return;
-    gOrigWillDisplay = WCSwap(dc, @selector(tableView:willDisplayCell:forRowAtIndexPath:), (IMP)WC_Main_willDisplay);
+    if (!dc) return;
+    if (!gWDInstalled) { gWDInstalled = [[NSMutableSet alloc] init]; gWDOrigs = [[NSMutableDictionary alloc] init]; }
+    NSString *name = NSStringFromClass(dc);
+    if ([gWDInstalled containsObject:name]) return;
+    [gWDInstalled addObject:name];
+    SEL sel = @selector(tableView:willDisplayCell:forRowAtIndexPath:);
+    if ([dc instancesRespondToSelector:sel]) {
+        IMP orig = WCSwapOwn(dc, sel, (IMP)WC_Main_willDisplay);
+        if (orig) gWDOrigs[name] = [NSValue valueWithPointer:orig];
+        os_log(WCLog(), "[WCBlack] sep willDisplay hooked on %{public}@", name);
+    } else {
+        BOOL ok = class_addMethod(dc, sel, (IMP)WC_Main_willDisplay, "v@:@@@");
+        os_log(WCLog(), "[WCBlack] sep willDisplay added on %{public}@ ok=%d", name, ok);
+    }
+}
+// delegate/dataSource 命名都对不上时的兜底认定：沿响应链找拥有这张表的控制
+// 器，类名含 MainFrame 就打标登记（tick 调 WCApplySeparators 时表已在层级里）。
+static void WCSepTryMarkViaResponder(UITableView *tv) {
+    if (objc_getAssociatedObject(tv, &kWCSepMainKey)) return;
+    UIResponder *r = tv;
+    while (r) {
+        if ([r isKindOfClass:[UIViewController class]] &&
+            [NSStringFromClass([r class]) containsString:@"MainFrame"]) {
+            objc_setAssociatedObject(tv, &kWCSepMainKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (!gSepTables) gSepTables = [[NSHashTable weakObjectsHashTable] retain];
+            if (![gSepTables containsObject:tv]) [gSepTables addObject:tv];
+            if (tv.delegate) WCInstallWillDisplayHook([tv.delegate class]);
+            os_log(WCLog(), "[WCBlack] sep marked via responder %{public}@", NSStringFromClass([r class]));
+            return;
+        }
+        r = r.nextResponder;
+    }
 }
 static void WCSepOnDelegate(UITableView *s, id d) {
     if (!d || ![NSStringFromClass([d class]) containsString:@"MainFrame"]) return;
@@ -1165,7 +1205,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.5 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.6 registered in plugin list");
             break;
         }
     }
@@ -1213,7 +1253,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.5 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.6 source hooks in");
             }
         }
     }
