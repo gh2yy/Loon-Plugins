@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v5.3 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v5.4 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.3"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.4"); });
     return l;
 }
 
@@ -415,11 +415,28 @@ static BOOL WCPatchIsImageLike(UIView *v) {
     for (CALayer *l in v.layer.sublayers) if ([l isKindOfClass:[CAGradientLayer class]]) return YES;
     return NO;
 }
+static void WCPatchHide(UIView *v, NSMutableArray *hits, NSString *cn, CGRect vr) {
+    objc_setAssociatedObject(v, &kWCPatchHiddenKey, @(v.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [WCFieldPatchViews() addObject:v];
+    v.hidden = YES;
+    [hits addObject:[NSString stringWithFormat:@"hide %@ f=%.0f,%.0f,%.0f,%.0f", cn, vr.origin.x, vr.origin.y, vr.size.width, vr.size.height]];
+}
+// v5.4：v5.3 只藏掉了话筒图标本体，底下那片毛玻璃/图片渲染的胶囊还在（44,44,44
+// 软边一片）。用户拍板：话筒这一簇整个去掉。这版规则：完全落在右端条带里的
+// 控件（话筒按钮）直接藏；带灰底的普通视图涂掉；其余只要在这一截里渲染了任何
+// 东西（效果视图、图片、其它底色）一律藏。已登记的每拍维护，微信重新显示出来
+// 就再按回去。多行输入态（框高 >56）右端是展开箭头，整场猎杀跳过。
 static void WCFieldPatchHunt(UIView *grow) {
     UIColor *cfg = WCConfigColor(@"field");
     if (!cfg || !grow.window) return;
-    UIView *bar = grow.superview ?: grow;
+    for (UIView *v in WCFieldPatchViews().allObjects) {
+        if (!v.window) continue;
+        if (objc_getAssociatedObject(v, &kWCPatchHiddenKey)) { if (!v.hidden) v.hidden = YES; }
+        else if (v.backgroundColor != cfg) v.backgroundColor = cfg;
+    }
     CGRect gr = [grow convertRect:grow.bounds toView:nil];
+    if (gr.size.height > 56) return;
+    UIView *bar = grow.superview ?: grow;
     CGFloat stripX = gr.origin.x + gr.size.width * 0.70;
     NSMutableArray *stack = [NSMutableArray arrayWithObject:bar];
     NSMutableArray *hits = [NSMutableArray array];
@@ -431,7 +448,6 @@ static void WCFieldPatchHunt(UIView *grow) {
         if ([cn isEqualToString:@"MMTextView"] || [cn isEqualToString:@"MMGrowTextView"]) continue;
         if ([WCFieldPlates() containsObject:v]) continue;
         if ([WCFieldPatchViews() containsObject:v]) continue;
-        if ([v isKindOfClass:[UIVisualEffectView class]]) continue;
         CGRect vr = [v convertRect:v.bounds toView:nil];
         if (vr.size.width <= 0 || vr.size.height <= 0) continue;
         if (vr.size.width > gr.size.width * 0.32 + 8 || vr.size.height > gr.size.height + 12) continue;
@@ -440,16 +456,17 @@ static void WCFieldPatchHunt(UIView *grow) {
         if (vr.origin.x + vr.size.width < stripX) continue;
         if (vr.origin.y > gr.origin.y + gr.size.height * 0.75) continue;
         if (vr.origin.y + vr.size.height < gr.origin.y + gr.size.height * 0.25) continue;
-        if (WCPatchIsGrayish(v)) {
+        BOOL fullyInStrip = vr.origin.x >= stripX - 4;
+        if ([v isKindOfClass:[UIControl class]] && fullyInStrip) {
+            WCPatchHide(v, hits, cn, vr);
+        } else if (WCPatchIsGrayish(v)) {
             WCStoreOrigBG(v);
             [WCFieldPatchViews() addObject:v];
             if (v.backgroundColor != cfg) v.backgroundColor = cfg;
             [hits addObject:[NSString stringWithFormat:@"paint %@ f=%.0f,%.0f,%.0f,%.0f", cn, vr.origin.x, vr.origin.y, vr.size.width, vr.size.height]];
-        } else if (WCPatchIsImageLike(v)) {
-            objc_setAssociatedObject(v, &kWCPatchHiddenKey, @(v.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [WCFieldPatchViews() addObject:v];
-            v.hidden = YES;
-            [hits addObject:[NSString stringWithFormat:@"hide %@ f=%.0f,%.0f,%.0f,%.0f", cn, vr.origin.x, vr.origin.y, vr.size.width, vr.size.height]];
+        } else if ([v isKindOfClass:[UIVisualEffectView class]] || WCPatchIsImageLike(v) ||
+                   (v.backgroundColor && CGColorGetAlpha(v.backgroundColor.CGColor) >= 0.03)) {
+            WCPatchHide(v, hits, cn, vr);
         }
     }
     if (hits.count) {
@@ -1451,7 +1468,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"5.3", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"5.4", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1459,7 +1476,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v5.3 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v5.4 registered in plugin list");
             break;
         }
     }
@@ -1530,7 +1547,7 @@ static void WCInstall(void) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCCollectDiag(@"kbdup"); });
         }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v5.3 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v5.4 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1542,7 +1559,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v5.3 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v5.4 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     WCEnsureRegistered();
