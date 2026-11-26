@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v5.1 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v5.2 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.1"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.2"); });
     return l;
 }
 
@@ -349,6 +349,52 @@ static void WCFieldPaint(UIView *v) {
     [WCFieldViews() addObject:v];
     if (v.backgroundColor != cfg) v.backgroundColor = cfg;
 }
+// v5.2：静态色涂在底板视图上仍不见效（v5.1 真机截图还是 #2C2C2C）——底板上面还压着
+// 一张全幅背景图（UIImageView），键盘弹起时它多半被微信重新插回到底板之上，涂谁都
+// 被它盖住。这次不跟它们抢：自己放一张色板，紧贴 MMTextView 正下方——文字层之下、
+// 其余一切背景之上，这个位置除了文字本身没有任何东西能盖住。每拍检查位置，被
+// 微信重排了就插回去。
+static NSMutableSet *WCFieldPlates(void) {
+    static NSMutableSet *s = nil;
+    if (!s) s = [[NSMutableSet alloc] init];
+    return s;
+}
+static void WCEnsureFieldPlate(UIView *grow) {
+    UIColor *cfg = WCConfigColor(@"field");
+    if (!cfg) return;
+    UIView *plate = objc_getAssociatedObject(grow, &kWCUnderlayKey);
+    if (!plate) {
+        plate = [[UIView alloc] initWithFrame:grow.bounds];
+        plate.userInteractionEnabled = NO;
+        plate.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        plate.layer.cornerRadius = grow.layer.cornerRadius > 0 ? grow.layer.cornerRadius : 8;
+        plate.clipsToBounds = YES;
+        objc_setAssociatedObject(grow, &kWCUnderlayKey, plate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [WCFieldPlates() addObject:plate];
+        [plate release];
+    }
+    NSInteger ti = -1;
+    for (NSInteger i = 0; i < (NSInteger)grow.subviews.count; i++)
+        if ([NSStringFromClass([grow.subviews[i] class]) isEqualToString:@"MMTextView"]) { ti = i; break; }
+    NSUInteger pi = (plate.superview == grow) ? [grow.subviews indexOfObject:plate] : NSNotFound;
+    BOOL placed = (plate.superview == grow) &&
+                  ((ti >= 0 && (NSInteger)pi == ti - 1) || (ti < 0 && pi == grow.subviews.count - 1));
+    if (!placed) {
+        [plate removeFromSuperview];
+        ti = -1;
+        for (NSInteger i = 0; i < (NSInteger)grow.subviews.count; i++)
+            if ([NSStringFromClass([grow.subviews[i] class]) isEqualToString:@"MMTextView"]) { ti = i; break; }
+        [grow insertSubview:plate atIndex:(ti >= 0 ? ti : (NSInteger)grow.subviews.count)];
+    }
+    if (plate.backgroundColor != cfg) plate.backgroundColor = cfg;
+    if (!CGRectEqualToRect(plate.frame, grow.bounds)) plate.frame = grow.bounds;
+    plate.hidden = NO;
+}
+static void WCFieldPlatesIn(UIView *root, int depth) {
+    if (!root || depth < 0) return;
+    if ([NSStringFromClass([root class]) isEqualToString:@"MMGrowTextView"]) WCEnsureFieldPlate(root);
+    for (UIView *s in root.subviews) WCFieldPlatesIn(s, depth - 1);
+}
 static void WCFieldScan(UIView *root, int depth) {
     if (!root || depth < 0) return;
     for (UIView *v in root.subviews) {
@@ -365,22 +411,29 @@ static void WCFieldSweep(UIView *bar) {
     NSMutableSet *views = WCFieldViews();
     if (dark && WCConfigColor(@"field")) {
         WCFieldScan(bar, 5);
+        WCFieldPlatesIn(bar, 6);
         UIColor *cfg = WCConfigColor(@"field");
         for (UIView *v in views.allObjects) {
             if (!v.window) { [views removeObject:v]; continue; }
             if (v.backgroundColor != cfg) v.backgroundColor = cfg;
         }
-    } else if (views.count) {
-        for (UIView *v in views.allObjects) {
-            UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
-            if (ob) {
-                gWCRestoreDepth++;
-                v.backgroundColor = ob;
-                gWCRestoreDepth--;
-                objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else {
+        if (views.count) {
+            for (UIView *v in views.allObjects) {
+                UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
+                if (ob) {
+                    gWCRestoreDepth++;
+                    v.backgroundColor = ob;
+                    gWCRestoreDepth--;
+                    objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                }
             }
+            [views removeAllObjects];
         }
-        [views removeAllObjects];
+        for (UIView *p in WCFieldPlates().allObjects) {
+            if (!p.window) [WCFieldPlates() removeObject:p];
+            else p.hidden = YES;
+        }
     }
 }
 
@@ -1308,7 +1361,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"5.1", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"5.2", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1316,7 +1369,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v5.1 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v5.2 registered in plugin list");
             break;
         }
     }
@@ -1384,7 +1437,7 @@ static void WCInstall(void) {
             for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"chatbar", 4);
         }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v5.1 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v5.2 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1396,7 +1449,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v5.1 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v5.2 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     WCEnsureRegistered();
