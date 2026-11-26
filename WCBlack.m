@@ -1,6 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.0 还原版 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v8.1 还原版 (2026-11-26)
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
-//   1) 背景变色：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
+//   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
 //      换成模块色（bg 主背景 / cell 置顶行与卡片；置顶行色名
 //      Table_ChatRow_Pinned_BG 与 BG_0 都归 bg）。浅色一律原样，深浅切换
@@ -9,26 +9,30 @@
 //      cell 底部发丝线，关开关即还原。
 //   3) 设置页（我→设置→插件→WCBlack 纯黑背景）：总开关 + bg/cell 两模块
 //      选色 + 分割线开关。改完即时生效（动态色 provider 实时读配置）。
-// 已全部删除（v6.1–v7.6 的三栏路线）：顶栏/玻璃底栏/聊天底栏的钉制、强涂、
-// trait 钩子、状态机与探针、colorDic 实验、输入框色板、话筒隐藏、键盘处理、
-// 诊断页。三栏恢复微信（含玻璃插件）原生表现。
+// 用户追加保留：聊天页底栏（MMInputToolView/InputToolContainerView，仅
+// 聊天页）强涂 chatbar 色 + 输入框底色（v5.2 色板 + 话筒按类名藏，field
+// 模块）。做法回到 v5/v6.1 的存档强涂，但深浅只看栏自己的 trait——没有
+// 状态机、没有探针、没有巡逻钉制。一级页面的顶栏与底部 tab 栏明确不碰：
+// v6.1–v7.6 的顶栏/底栏钉制强涂、状态机与探针、colorDic 实验、键盘处理、
+// 诊断页全部删除，恢复微信（含玻璃插件）原生表现。
 // 安全纪律：+load/WCInstall 只做 swizzle，绝不给微信的类发消息（v7.2 闪退教训）。
 
 
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <os/log.h>
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.0"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.1"); });
     return l;
 }
 
 #pragma mark - 配置
 
 static NSString *const kWCEnabledKey = @"WCBlack.enabled";
-static NSArray<NSString *> *WCModules(void) { return @[@"bg", @"cell"]; }
+static NSArray<NSString *> *WCModules(void) { return @[@"bg", @"cell", @"chatbar", @"field"]; }
 static NSString *WCModuleTitle(NSString *m) {
     if ([m isEqualToString:@"bg"]) return @"主背景（列表 / 聊天）";
     if ([m isEqualToString:@"nav"]) return @"顶部导航栏";
@@ -153,6 +157,268 @@ static UIColor *WCDynamicColor(NSString *module, UIColor *lightFallback) {
 // 分割线存档键（仅此一组）
 static char kWCSepOrigStyleKey, kWCSepOrigColorKey, kWCSepHiddenKey;
 
+static char kWCOrigBGKey, kWCPatchHiddenKey, kWCUnderlayKey;
+static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey;
+static int gWCRestoreDepth = 0;
+static NSHashTable<UIView *> *gBarsInput;
+
+static void WCStoreOrigBG(UIView *v) {
+    if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
+        objc_setAssociatedObject(v, &kWCOrigBGKey, v.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+static BOOL WCGrayInRange(UIColor *color, int lo, int hi) {
+    if (!color) return NO;
+    UIColor *d = [color resolvedColorWithTraitCollection:WCDarkTrait()];
+    CGFloat w = 0, a = 0;
+    if (![d getWhite:&w alpha:&a] || a < 0.95) return NO;
+    int v = (int)lrint(w * 255.0);
+    return v >= lo && v <= hi;
+}
+static BOOL WCGrayInRange(UIColor *color, int lo, int hi); // 前向声明：定义在 Hooks 一节
+
+// v5.1 输入框底色重做：v5.0 取证定案——底色是 MMGrowTextView 里一张专用底板视图
+// （全幅、圆角 8），我们的动态色其实写上去了（诊断里 bg 已是 #1A1A1A），但它在图层
+// 上的快照是透明的（layerBG=#000000 a0.00），渲染出来等于没涂，底下的图还在透。
+// 动态色这条路对这张视图不可靠，改走静态色 + 登记表 + 每拍重申：
+// 静态色没有 provider、没有快照歧义，写上就是这个色；登记表保证浅色/关模块时能还原。
+static NSMutableSet *WCFieldViews(void) {
+    static NSMutableSet *s = nil;
+    if (!s) s = [[NSMutableSet alloc] init];
+    return s;
+}
+static void WCFieldPaint(UIView *v) {
+    UIColor *cfg = WCConfigColor(@"field");
+    if (!cfg) return;
+    WCStoreOrigBG(v);
+    [WCFieldViews() addObject:v];
+    if (v.backgroundColor != cfg) v.backgroundColor = cfg;
+}
+// v5.2：静态色涂在底板视图上仍不见效（v5.1 真机截图还是 #2C2C2C）——底板上面还压着
+// 一张全幅背景图（UIImageView），键盘弹起时它多半被微信重新插回到底板之上，涂谁都
+// 被它盖住。这次不跟它们抢：自己放一张色板，紧贴 MMTextView 正下方——文字层之下、
+// 其余一切背景之上，这个位置除了文字本身没有任何东西能盖住。每拍检查位置，被
+// 微信重排了就插回去。
+static NSMutableSet *WCFieldPlates(void) {
+    static NSMutableSet *s = nil;
+    if (!s) s = [[NSMutableSet alloc] init];
+    return s;
+}
+static void WCEnsureFieldPlate(UIView *grow) {
+    UIColor *cfg = WCConfigColor(@"field");
+    if (!cfg) return;
+    UIView *plate = objc_getAssociatedObject(grow, &kWCUnderlayKey);
+    if (!plate) {
+        plate = [[UIView alloc] initWithFrame:grow.bounds];
+        plate.userInteractionEnabled = NO;
+        plate.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        plate.layer.cornerRadius = grow.layer.cornerRadius > 0 ? grow.layer.cornerRadius : 8;
+        plate.clipsToBounds = YES;
+        objc_setAssociatedObject(grow, &kWCUnderlayKey, plate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [WCFieldPlates() addObject:plate];
+        [plate release];
+    }
+    NSInteger ti = -1;
+    for (NSInteger i = 0; i < (NSInteger)grow.subviews.count; i++)
+        if ([NSStringFromClass([grow.subviews[i] class]) isEqualToString:@"MMTextView"]) { ti = i; break; }
+    NSUInteger pi = (plate.superview == grow) ? [grow.subviews indexOfObject:plate] : NSNotFound;
+    BOOL placed = (plate.superview == grow) &&
+                  ((ti >= 0 && (NSInteger)pi == ti - 1) || (ti < 0 && pi == grow.subviews.count - 1));
+    if (!placed) {
+        [plate removeFromSuperview];
+        ti = -1;
+        for (NSInteger i = 0; i < (NSInteger)grow.subviews.count; i++)
+            if ([NSStringFromClass([grow.subviews[i] class]) isEqualToString:@"MMTextView"]) { ti = i; break; }
+        [grow insertSubview:plate atIndex:(ti >= 0 ? ti : (NSInteger)grow.subviews.count)];
+    }
+    if (plate.backgroundColor != cfg) plate.backgroundColor = cfg;
+    if (!CGRectEqualToRect(plate.frame, grow.bounds)) plate.frame = grow.bounds;
+    plate.hidden = NO;
+}
+// v5.3：输入框右端话筒区残留原色（14:30 截图实测：框内其余全是 (26,26,26)，右端
+// 约 30pt 仍是 (44,44,44)，且只在键盘弹起、编辑态出现，压在色板之上）。身份未明
+// 就不点名：每拍在输入条整棵子树里按几何+渲染色猎——横向必须落在输入框框内、
+// 伸进右端条带、尺寸不大于条带、垂直压在框身中段的视图：带灰底色的直接改静态
+// 色（话筒按钮本体也照此办，图标不受影响）；纯图片/渐变渲染的先藏起来。全部
+// 登记，浅色或关模块时逐个还原。命中名单写进诊断（gWCPatchInfo），猎错猎漏
+// 都看得见；键盘弹起时另自动采一份诊断，万一没猎中也能当场点名。
+static NSMutableSet *WCFieldPatchViews(void) {
+    static NSMutableSet *s = nil;
+    if (!s) s = [[NSMutableSet alloc] init];
+    return s;
+}
+static NSString *gWCPatchInfo = nil;
+static BOOL WCPatchIsGrayish(UIView *v) {
+    if (WCGrayInRange(v.backgroundColor, 36, 52)) return YES;
+    CGColorRef lc = v.layer.backgroundColor;
+    if (lc && WCGrayInRange([UIColor colorWithCGColor:lc], 36, 52)) return YES;
+    return NO;
+}
+static BOOL WCPatchIsImageLike(UIView *v) {
+    if ([v isKindOfClass:[UIImageView class]] && [(UIImageView *)v image]) return YES;
+    if (v.layer.contents) return YES;
+    for (CALayer *l in v.layer.sublayers) if ([l isKindOfClass:[CAGradientLayer class]]) return YES;
+    return NO;
+}
+static void WCPatchHide(UIView *v, NSMutableArray *hits, NSString *cn, CGRect vr) {
+    objc_setAssociatedObject(v, &kWCPatchHiddenKey, @(v.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [WCFieldPatchViews() addObject:v];
+    v.hidden = YES;
+    [hits addObject:[NSString stringWithFormat:@"hide %@ f=%.0f,%.0f,%.0f,%.0f", cn, vr.origin.x, vr.origin.y, vr.size.width, vr.size.height]];
+}
+// v5.4：v5.3 只藏掉了话筒图标本体，底下那片毛玻璃/图片渲染的胶囊还在（44,44,44
+// 软边一片）。用户拍板：话筒这一簇整个去掉。这版规则：完全落在右端条带里的
+// 控件（话筒按钮）直接藏；带灰底的普通视图涂掉；其余只要在这一截里渲染了任何
+// 东西（效果视图、图片、其它底色）一律藏。已登记的每拍维护，微信重新显示出来
+// 就再按回去。多行输入态（框高 >56）右端是展开箭头，整场猎杀跳过。
+static void WCFieldPatchHunt(UIView *grow) {
+    UIColor *cfg = WCConfigColor(@"field");
+    if (!cfg || !grow.window) return;
+    for (UIView *v in WCFieldPatchViews().allObjects) {
+        if (!v.window) continue;
+        if (objc_getAssociatedObject(v, &kWCPatchHiddenKey)) { if (!v.hidden) v.hidden = YES; }
+        else if (v.backgroundColor != cfg) v.backgroundColor = cfg;
+    }
+    CGRect gr = [grow convertRect:grow.bounds toView:nil];
+    if (gr.size.height > 56) return;
+    UIView *bar = grow.superview ?: grow;
+    CGFloat stripX = gr.origin.x + gr.size.width * 0.70;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:bar];
+    NSMutableArray *hits = [NSMutableArray array];
+    while (stack.count) {
+        UIView *v = stack.lastObject; [stack removeLastObject];
+        for (UIView *s in v.subviews) [stack addObject:s];
+        if (v == grow || v == bar) continue;
+        NSString *cn = NSStringFromClass([v class]);
+        if ([cn isEqualToString:@"MMTextView"] || [cn isEqualToString:@"MMGrowTextView"]) continue;
+        if ([WCFieldPlates() containsObject:v]) continue;
+        if ([WCFieldPatchViews() containsObject:v]) continue;
+        CGRect vr = [v convertRect:v.bounds toView:nil];
+        if (vr.size.width <= 0 || vr.size.height <= 0) continue;
+        if (vr.size.width > gr.size.width * 0.32 + 8 || vr.size.height > gr.size.height + 12) continue;
+        if (vr.origin.x < gr.origin.x - 4) continue;
+        if (vr.origin.x + vr.size.width > gr.origin.x + gr.size.width + 4) continue;
+        if (vr.origin.x + vr.size.width < stripX) continue;
+        if (vr.origin.y > gr.origin.y + gr.size.height * 0.75) continue;
+        if (vr.origin.y + vr.size.height < gr.origin.y + gr.size.height * 0.25) continue;
+        BOOL fullyInStrip = vr.origin.x >= stripX - 4;
+        if ([v isKindOfClass:[UIControl class]] && fullyInStrip) {
+            WCPatchHide(v, hits, cn, vr);
+        } else if (WCPatchIsGrayish(v)) {
+            WCStoreOrigBG(v);
+            [WCFieldPatchViews() addObject:v];
+            if (v.backgroundColor != cfg) v.backgroundColor = cfg;
+            [hits addObject:[NSString stringWithFormat:@"paint %@ f=%.0f,%.0f,%.0f,%.0f", cn, vr.origin.x, vr.origin.y, vr.size.width, vr.size.height]];
+        } else if ([v isKindOfClass:[UIVisualEffectView class]] || WCPatchIsImageLike(v) ||
+                   (v.backgroundColor && CGColorGetAlpha(v.backgroundColor.CGColor) >= 0.03)) {
+            WCPatchHide(v, hits, cn, vr);
+        }
+    }
+    if (hits.count) {
+        NSString *info = [hits componentsJoinedByString:@" | "];
+        if (![info isEqualToString:gWCPatchInfo]) {
+            [info retain];
+            [gWCPatchInfo release];
+            gWCPatchInfo = info;
+        }
+    }
+}
+static void WCFieldPlatesIn(UIView *root, int depth) {
+    if (!root || depth < 0) return;
+    if ([NSStringFromClass([root class]) isEqualToString:@"MMGrowTextView"]) { WCEnsureFieldPlate(root); WCFieldPatchHunt(root); }
+    for (UIView *s in root.subviews) WCFieldPlatesIn(s, depth - 1);
+}
+
+// v5.5：话筒真身由 kbdup 诊断点名——MMGrowDictationIconView（输入框内 f=266,0,32,40），
+// 它靠子图层与子视图拼出图标和光晕（本体 bg=nil），v5.3/v5.4 的颜色/图片规则全不匹配；
+// 它那张 72×72 光晕图还探出输入框右界、被「必须落在框内」的护栏挡掉。既然已点名，
+// 就按类名整个藏：登记进 patch 表，浅色/关模块时由 patch 还原统一放回，每拍重申。
+static void WCFieldHideDictation(UIView *root, int depth) {
+    if (!root || depth < 0) return;
+    if ([NSStringFromClass([root class]) isEqualToString:@"MMGrowDictationIconView"]) {
+        if (![WCFieldPatchViews() containsObject:root]) {
+            objc_setAssociatedObject(root, &kWCPatchHiddenKey, @(root.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [WCFieldPatchViews() addObject:root];
+            if (!gWCPatchInfo || ![gWCPatchInfo containsString:@"MMGrowDictationIconView"]) {
+                NSString *info = gWCPatchInfo ? [gWCPatchInfo stringByAppendingString:@" | hide MMGrowDictationIconView (named)"] : @"hide MMGrowDictationIconView (named)";
+                [info retain];
+                [gWCPatchInfo release];
+                gWCPatchInfo = info;
+            }
+        }
+        if (!root.hidden) root.hidden = YES;
+    }
+    for (UIView *s in root.subviews) WCFieldHideDictation(s, depth - 1);
+}
+static void WCFieldScan(UIView *root, int depth) {
+    if (!root || depth < 0) return;
+    for (UIView *v in root.subviews) {
+        if (![v isKindOfClass:[UIVisualEffectView class]] &&
+            WCGrayInRange(v.backgroundColor, 42, 46))
+            WCFieldPaint(v);
+        WCFieldScan(v, depth - 1);
+    }
+}
+// 深色+模块开：扫描新出现的底板并登记、已登记的逐个重申静态色；
+// 浅色或模块关：把登记过的逐个还原并清表。
+static void WCFieldSweep(UIView *bar) {
+    BOOL dark = (bar.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    NSMutableSet *views = WCFieldViews();
+    if (WCConfigColor(@"field")) WCFieldHideDictation(bar, 8);  // v5.7：话筒不分深浅
+    if (dark && WCConfigColor(@"field")) {
+        WCFieldScan(bar, 5);
+        WCFieldPlatesIn(bar, 6);
+        UIColor *cfg = WCConfigColor(@"field");
+        for (UIView *v in views.allObjects) {
+            if (!v.window) { [views removeObject:v]; continue; }
+            if (v.backgroundColor != cfg) v.backgroundColor = cfg;
+        }
+    } else {
+        if (views.count) {
+            for (UIView *v in views.allObjects) {
+                UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
+                if (ob) {
+                    gWCRestoreDepth++;
+                    v.backgroundColor = ob;
+                    gWCRestoreDepth--;
+                    objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                }
+            }
+            [views removeAllObjects];
+        }
+        for (UIView *p in WCFieldPlates().allObjects) {
+            if (!p.window) [WCFieldPlates() removeObject:p];
+            else p.hidden = YES;
+        }
+        NSMutableSet *patches = WCFieldPatchViews();
+        if (patches.count) {
+            NSMutableSet *keepDic = nil;
+            for (UIView *v in patches.allObjects) {
+                if (WCConfigColor(@"field") &&
+                    [NSStringFromClass([v class]) isEqualToString:@"MMGrowDictationIconView"]) {
+                    if (!keepDic) keepDic = [NSMutableSet set];
+                    [keepDic addObject:v];
+                    continue;
+                }
+                UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
+                if (ob) {
+                    gWCRestoreDepth++;
+                    v.backgroundColor = ob;
+                    gWCRestoreDepth--;
+                    objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                }
+                NSNumber *oh = objc_getAssociatedObject(v, &kWCPatchHiddenKey);
+                if (oh) {
+                    v.hidden = oh.boolValue;
+                    objc_setAssociatedObject(v, &kWCPatchHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                }
+            }
+            [patches removeAllObjects];
+            if (keepDic) [patches unionSet:keepDic];
+        }
+    }
+}
+
+
 #pragma mark - 首页分割线
 
 static void WCHideCellLineIn(UIView *root, UITableViewCell *cell, BOOL hide, int depth) {
@@ -254,6 +520,210 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
 // 是旧主题/十六进制色名解析（查到的名字全是 "#1C1C1C" 这类色值串与 navigator_btn_text_color
 // 等旧主题键，module 一项都没命中），微信原生界面的令牌色不走字符串查询这条路；且 v4.0
 // 真机进聊天页后聊天记录整页空白——该 hook 位于消息渲染的热路径上，是唯一新增的全局侵入点，
+static void WCRegisterBar(NSHashTable<UIView *> *table, UIView *bar) {
+    if (table && bar && ![table containsObject:bar]) [table addObject:bar];
+}
+static UIImage *WCSolidImage(UIColor *color) {
+    static NSMutableDictionary<NSString *, UIImage *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [[NSMutableDictionary alloc] init]; });
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    [color getRed:&r green:&g blue:&b alpha:&a];
+    NSString *key = [NSString stringWithFormat:@"%d-%d-%d", (int)lrint(r * 255), (int)lrint(g * 255), (int)lrint(b * 255)];
+    UIImage *img = cache[key];
+    if (img) return img;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(2, 2), YES, 1);
+    [color setFill];
+    UIRectFill(CGRectMake(0, 0, 2, 2));
+    img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if (img) cache[key] = img;
+    if (img) [WCMyImages() addObject:img];
+    return img;
+}
+static BOOL WCIsOpaqueDarkNeutral(UIColor *c) {
+    if (!c) return NO;
+    UIColor *d = [c resolvedColorWithTraitCollection:WCDarkTrait()];
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (![d getRed:&r green:&g blue:&b alpha:&a]) {
+        CGFloat w = 0;
+        if (![d getWhite:&w alpha:&a]) return NO;
+        r = g = b = w;
+    }
+    if (a < 0.95) return NO;
+    CGFloat mx = MAX(r, MAX(g, b)), mn = MIN(r, MIN(g, b));
+    CGFloat lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return (mx - mn) < 0.05 && lum > 0.005 && lum < 0.40;
+}
+
+static void WCApplyStrong(UIView *root, UIView *bar, UIColor *dyn, int depth) {
+    if (depth < 0) return;
+    for (UIView *v in root.subviews) {
+        if ([v isKindOfClass:[UIVisualEffectView class]]) {
+            UIVisualEffectView *ev = (UIVisualEffectView *)v;
+            if (ev.effect) {
+                if (!objc_getAssociatedObject(ev, &kWCOrigEffectKey))
+                    objc_setAssociatedObject(ev, &kWCOrigEffectKey, ev.effect, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                ev.effect = nil;
+            }
+            if (ev.contentView.backgroundColor != dyn) { WCStoreOrigBG(ev.contentView); ev.contentView.backgroundColor = dyn; }
+            if (v.backgroundColor != dyn) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
+        } else if ([v isKindOfClass:[UIImageView class]] &&
+                   v.frame.size.width >= bar.bounds.size.width * 0.9 &&
+                   v.frame.size.height >= bar.bounds.size.height * 0.85) {
+            if (!v.hidden) {
+                NSMutableArray *hidden = objc_getAssociatedObject(bar, &kWCHiddenViewsKey);
+                if (!hidden) { hidden = [NSMutableArray array]; objc_setAssociatedObject(bar, &kWCHiddenViewsKey, hidden, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+                if (![hidden containsObject:v]) [hidden addObject:v];
+                v.hidden = YES;
+            }
+        } else {
+            UIColor *bg = v.backgroundColor;
+            if (bg && bg != dyn) {
+                NSString *m = WCModuleForColor(bg);
+                BOOL translucentOverlay = NO;
+                if (!m) {
+                    UIColor *d = [bg resolvedColorWithTraitCollection:WCDarkTrait()];
+                    CGFloat w = 0, al = 0;
+                    if ([d getWhite:&w alpha:&al] && al > 0.03 && al < 0.95) translucentOverlay = YES;
+                }
+                if (m || translucentOverlay) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
+            }
+        }
+        WCApplyStrong(v, bar, dyn, depth - 1);
+    }
+}
+
+static void WCRestoreStrong(UIView *root, int depth) {
+    if (depth < 0 || !root) return;
+    gWCRestoreDepth++;
+    for (UIView *v in root.subviews) {
+        if ([v isKindOfClass:[UIVisualEffectView class]]) {
+            UIVisualEffectView *ev = (UIVisualEffectView *)v;
+            UIVisualEffect *orig = objc_getAssociatedObject(ev, &kWCOrigEffectKey);
+            if (orig) {
+                ev.effect = orig;
+                objc_setAssociatedObject(ev, &kWCOrigEffectKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            UIColor *cb = objc_getAssociatedObject(ev.contentView, &kWCOrigBGKey);
+            if (cb) {
+                ev.contentView.backgroundColor = cb;
+                objc_setAssociatedObject(ev.contentView, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        }
+        UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
+        if (ob) {
+            v.backgroundColor = ob;
+            objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        WCRestoreStrong(v, depth - 1);
+    }
+    gWCRestoreDepth--;
+}
+
+static void WCRestoreBar(UIView *bar) {
+    NSNumber *forced = objc_getAssociatedObject(bar, &kWCForcedKey);
+    if (!forced.boolValue) return;
+    if (bar.overrideUserInterfaceStyle == UIUserInterfaceStyleDark) bar.overrideUserInterfaceStyle = UIUserInterfaceStyleUnspecified;
+    UIColor *fb = objc_getAssociatedObject(bar, &kWCFallbackKey);
+    UIColor *dyn = objc_getAssociatedObject(bar, &kWCDynKey);
+    if (fb && bar.backgroundColor == dyn) bar.backgroundColor = fb;
+    for (UIView *v in (NSMutableArray *)objc_getAssociatedObject(bar, &kWCHiddenViewsKey)) v.hidden = NO;
+    objc_setAssociatedObject(bar, &kWCHiddenViewsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    WCRestoreStrong(bar, 4);
+    if ([bar isKindOfClass:[UINavigationBar class]]) {
+        UIImage *orig = objc_getAssociatedObject(bar, &kWCOrigNavImageKey);
+        [(UINavigationBar *)bar setBackgroundImage:orig forBarMetrics:UIBarMetricsDefault];
+        UIColor *tint = objc_getAssociatedObject(bar, &kWCOrigTintKey);
+        [(UINavigationBar *)bar setBarTintColor:tint];
+    }
+    objc_setAssociatedObject(bar, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void WCForceBar(UIView *bar, NSString *module, int depth) {
+    if (!bar) return;
+    // v8.1：深浅只看栏自己的 trait（无状态机/探针）；trait 翻面回调里 trait 已是新值
+    BOOL dark = (bar.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    if ([module isEqualToString:@"chatbar"]) WCFieldSweep(bar);
+    if (!dark || !WCConfigColor(module)) { WCRestoreBar(bar); return; }
+    if (bar.overrideUserInterfaceStyle != UIUserInterfaceStyleDark) bar.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    NSNumber *forced = objc_getAssociatedObject(bar, &kWCForcedKey);
+    UIColor *dyn = objc_getAssociatedObject(bar, &kWCDynKey);
+    if (!forced.boolValue) {
+        UIColor *cur = bar.backgroundColor;
+        UIColor *fb = cur ? [cur resolvedColorWithTraitCollection:WCLightTrait()] : [UIColor clearColor];
+        objc_setAssociatedObject(bar, &kWCFallbackKey, fb, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        dyn = WCDynamicColor(module, fb);
+        objc_setAssociatedObject(bar, &kWCDynKey, dyn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if ([bar isKindOfClass:[UINavigationBar class]]) {
+            UIImage *orig = [(UINavigationBar *)bar backgroundImageForBarMetrics:UIBarMetricsDefault];
+            if (orig) objc_setAssociatedObject(bar, &kWCOrigNavImageKey, orig, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            UIColor *tint = [(UINavigationBar *)bar barTintColor];
+            if (tint) objc_setAssociatedObject(bar, &kWCOrigTintKey, tint, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        objc_setAssociatedObject(bar, &kWCForcedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // 全屏宿主（MMInputToolView 440×956）绝不涂根：透明覆盖层涂了会盖死消息页（v3.4 定案）
+    if (bar.bounds.size.height > 200) {
+        UIColor *fb = objc_getAssociatedObject(bar, &kWCFallbackKey);
+        if (fb && bar.backgroundColor == dyn) bar.backgroundColor = fb;
+    } else if (bar.backgroundColor != dyn) {
+        bar.backgroundColor = dyn;
+    }
+    if ([bar isKindOfClass:[UINavigationBar class]]) {
+        UIColor *cfg = WCConfigColor(module);
+        UIImage *img = cfg ? WCSolidImage(cfg) : nil;
+        UINavigationBar *nb = (UINavigationBar *)bar;
+        if (img && [nb backgroundImageForBarMetrics:UIBarMetricsDefault] != img)
+            [nb setBackgroundImage:img forBarMetrics:UIBarMetricsDefault];
+        if (nb.barTintColor != dyn) nb.barTintColor = dyn;
+    }
+    WCApplyStrong(bar, bar, dyn, depth);
+    for (UIView *v in bar.subviews) {
+        if ([v isKindOfClass:[UIVisualEffectView class]]) continue;
+        UIColor *bg = v.backgroundColor;
+        if (bg && bg != dyn && WCIsOpaqueDarkNeutral(bg)) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
+    }
+}
+
+
+#pragma mark - 聊天底栏钩子（仅 MMInputToolView / InputToolContainerView）
+
+static IMP gO_InT, gO_InW, gO_ContT, gO_ContW;
+static void WC_In_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_InT)(s, c, p); if (s.window) WCForceBar(s, @"chatbar", 4); }
+static void WC_In_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_InW)(s, c); if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain]; if (s.window) { WCRegisterBar(gBarsInput, s); WCForceBar(s, @"chatbar", 4); } }
+static void WC_Cont_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_ContT)(s, c, p); if (s.window) WCForceBar(s, @"chatbar", 4); }
+static void WC_Cont_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContW)(s, c); if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain]; if (s.window) { WCRegisterBar(gBarsInput, s); WCForceBar(s, @"chatbar", 4); } }
+
+static void WCInstallChatbarHooks(void) {
+    Class c;
+    c = NSClassFromString(@"MMInputToolView");
+    if (c && !gO_InT) { gO_InT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_In_trait); gO_InW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_In_window); }
+    c = NSClassFromString(@"InputToolContainerView");
+    if (c && !gO_ContT) { gO_ContT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_Cont_trait); gO_ContW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_Cont_window); }
+}
+
+static IMP gOrigDicSetHidden, gOrigDicWindow;
+static BOOL WCDicShouldHide(UIView *v) {
+    // v5.7：话筒去掉不分深浅（用户要求白色下也没有）；只剩 field 模块这一道总闸，
+    // 模块设为原色或总开关关时，钩子透传、巡逻还原，图标回到原样
+    (void)v;
+    return WCConfigColor(@"field") != nil;
+}
+static void WC_Dic_setHidden(UIView *self, SEL _cmd, BOOL hidden) {
+    // v5.6：话筒图标的显隐开关直接拦——深色+输入框模块开时，微信怎么设都按隐藏走，
+    // 不给它在状态切换瞬间闪现的机会（v5.5 靠 0.4 秒巡逻去藏，切换时总慢一拍，
+    // 视频末尾那一下闪跳就是这么来的）
+    if (!hidden && WCDicShouldHide(self)) hidden = YES;
+    ((void (*)(id, SEL, BOOL))gOrigDicSetHidden)(self, _cmd, hidden);
+}
+static void WC_Dic_didMoveToWindow(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigDicWindow)(self, _cmd);
+    if (self.window && WCDicShouldHide(self) && !self.hidden)
+        ((void (*)(id, SEL, BOOL))gOrigDicSetHidden)(self, _cmd, YES);
+}
+
+
 #pragma mark - v6 底层色源（WCColorMgr 按名发色，在发色处换深色值）
 
 // 微信全 App 的深色出自包内 DesignToken 色板（weui_color*.xml，178 个色名），
@@ -270,6 +740,11 @@ static NSDictionary *WCNameModuleMap(void) {
             @"bg", @"BG_1",
             @"bg", @"BG_2",
             @"cell", @"BG_3",
+            @"field", @"ActionSheet_BG",
+            @"field", @"BG_5",
+            @"field", @"Dialog_BG",
+            @"field", @"SearchBar_ForHomepage_SearchBox_BG",
+            @"field", @"Sheet_BG",
                                     @"bg", @"Filter_DropDown_DarkerBG",
             @"bg", @"Filter_DropDown_DefaultBG",
             @"bg", @"Filter_Option_DarkerBG",
@@ -316,6 +791,7 @@ static NSString *WCValueModuleForDark(UIColor *color) {
     switch (gray) {
         case 0x11: case 0x12: case 0x19: case 0x1E: return @"bg";   // BG_0/BG_2/BG_1
         case 0x20: return @"cell";                                   // BG_3
+        case 0x2C: return @"field";                                  // BG_5
         default: return nil;
     }
 }
@@ -559,7 +1035,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"8.0", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"8.1", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -567,7 +1043,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.0 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.1 registered in plugin list");
             break;
         }
     }
@@ -577,6 +1053,7 @@ static void WCEnsureRegistered(void) {
 
 static void WCHousekeepingTick(void) {
     WCEnsureRegistered();
+    if (gBarsInput) for (UIView *b in gBarsInput.allObjects) if (b.window) WCFieldSweep(b);
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
         if ([NSStringFromClass([w class]) containsString:@"TextEffects"]) continue;
         WCScanTablesInWindow(w, w, 16);
@@ -614,10 +1091,21 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.0 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.1 source hooks in");
             }
         }
     }
+    // 话筒钩子（v5.6/v5.7 定案：按类名当即按回隐藏，只受 field 总闸）
+    static BOOL dicHooked = NO;
+    if (!dicHooked) {
+        Class dic = NSClassFromString(@"MMGrowDictationIconView");
+        if (dic) {
+            gOrigDicSetHidden = WCSwapOwn(dic, @selector(setHidden:), (IMP)WC_Dic_setHidden);
+            gOrigDicWindow = WCSwapOwn(dic, @selector(didMoveToWindow), (IMP)WC_Dic_didMoveToWindow);
+            if (gOrigDicSetHidden && gOrigDicWindow) dicHooked = YES;
+        }
+    }
+    WCInstallChatbarHooks();
     WCEnsureRegistered();
     WCStartHousekeepingTimer();
     gInstalled = YES;
