@@ -5,6 +5,11 @@
 //   一次性 layout 强制斗不过后手。v3 改为：三栏实例注册表 + 0.4s 定时强刷（谁最后画就再覆盖谁），
 //   导航另强制 setBackgroundImage 为模块色纯色图；特效视图摘除前先存档原 effect，浅色时还原。
 //   设置页自定义颜色新增系统色谱选择器（UIColorPickerViewController），保留输 hex。
+// v3.1 修闪退（2026-11-26 崩溃日志 WeChat-2026-11-26-083637.ips 定案）：构建无 -fobjc-arc（MRC），
+//   v3 把 [NSHashTable weakObjectsHashTable] 这类 autorelease 对象直接赋给全局变量、没 retain，
+//   +load 阶段的自动释放池一排空表就被释放，指针指向的内存被回收复用——定时强刷遍历时撞上一个
+//   UIViewController，对它发 window 直接 doesNotRecognizeSelector 崩溃（栈：WCEnforceRegistered）。
+//   修：三表与色图缓存改 alloc/init 永久持有；cfgObserver token 补 retain；强刷遍历加 UIView 类型守卫。
 // v1 真机结论（用户 2026-11-26 实测）：列表/聊天主背景已纯黑；但顶部导航、底部 tab、聊天底栏仍灰。
 //   采样定案：导航实际 #0F0F0F（不在 v1 目标表内）；tab 渲染 #181818——包内 WCTabBarGlass.dylib
 //   在 MMTabBar 上压了一层 UIVisualEffectView 毛玻璃，背景色改了也被它盖住；聊天底栏为
@@ -131,10 +136,11 @@ static void WCRegisterBar(NSHashTable<UIView *> *table, UIView *bar) {
     if (table && bar) [table addObject:bar];
 }
 
-// 1x1 纯色图（导航背景图强制用），按 hex 缓存
+// 1x1 纯色图（导航背景图强制用），按 hex 缓存（MRC：必须 alloc 持有，见 v3.1 注）
 static UIImage *WCSolidImage(UIColor *color) {
     static NSMutableDictionary<NSString *, UIImage *> *cache;
-    if (!cache) cache = [NSMutableDictionary dictionary];
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [[NSMutableDictionary alloc] init]; });
     CGFloat r = 0, g = 0, b = 0, a = 0;
     [color getRed:&r green:&g blue:&b alpha:&a];
     NSString *key = [NSString stringWithFormat:@"%d-%d-%d", (int)lrint(r * 255), (int)lrint(g * 255), (int)lrint(b * 255)];
@@ -236,9 +242,10 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
 }
 
 static void WCEnforceRegistered(void) {
-    for (UIView *b in gBarsTab.allObjects) if (b.window) WCForceBar(b, @"tab", 3);
-    for (UIView *b in gBarsNav.allObjects) if (b.window) WCForceBar(b, @"nav", 3);
-    for (UIView *b in gBarsInput.allObjects) if (b.window) WCForceBar(b, @"chatbar", 2);
+    // 类型守卫：表里只该有 UIView，混入异物直接跳过（v3 闪退教训）
+    for (id b in gBarsTab.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"tab", 3);
+    for (id b in gBarsNav.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"nav", 3);
+    for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"chatbar", 2);
 }
 static dispatch_source_t gEnforcerTimer; // 必须静态持有，否则定时器被释放
 static void WCStartEnforcer(void) {
@@ -484,15 +491,17 @@ static void WCInstall(void) {
             gOrigInputWindow = WCSwapOwn(mmInput, @selector(didMoveToWindow), (IMP)WC_InputTool_didMoveToWindow);
         }
         if (!gBarsTab) {
-            gBarsTab = [NSHashTable weakObjectsHashTable];
-            gBarsNav = [NSHashTable weakObjectsHashTable];
-            gBarsInput = [NSHashTable weakObjectsHashTable];
+            // MRC：alloc/init 永久持有；weakObjectsHashTable 是 autorelease 的，直接赋全局会被释放（v3 闪退根因）
+            NSPointerFunctionsOptions opts = NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality;
+            gBarsTab = [[NSHashTable alloc] initWithOptions:opts capacity:0];
+            gBarsNav = [[NSHashTable alloc] initWithOptions:opts capacity:0];
+            gBarsInput = [[NSHashTable alloc] initWithOptions:opts capacity:0];
         }
         WCStartEnforcer();
-        static id cfgObserver; // 必须持有 token，否则观察会被注销
-        cfgObserver = [[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }];
+        static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
+        cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v3 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v3.1 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     if (!gRegistered) {
         Class mgr = NSClassFromString(@"WCPluginsMgr");
@@ -503,8 +512,8 @@ static void WCInstall(void) {
             for (id p in existing) { if ([[p valueForKey:@"title"] containsString:@"WCBlack"]) { dup = YES; break; } }
             if (!dup && [inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
                 ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-                    @"WCBlack 纯黑背景", @"3.0", @"WCBlackSettingsViewController");
-                os_log(WCLog(), "[WCBlack] v3 registered in plugin list");
+                    @"WCBlack 纯黑背景", @"3.1", @"WCBlackSettingsViewController");
+                os_log(WCLog(), "[WCBlack] v3.1 registered in plugin list");
             }
             gRegistered = YES;
         }
