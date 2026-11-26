@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v6.2 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v6.3 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v6.2"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v6.3"); });
     return l;
 }
 
@@ -514,20 +514,22 @@ static void WCScanTablesInWindow(UIView *root, UIWindow *win, int depth) {
 
 
 static void WCCollectDiag(NSString *scene);
+static BOOL WCProbeWeChatDark(void);
 static void WCEnsureRegistered(void);
 static void WCAppendSourceStats(NSMutableString *out);
 
 #pragma mark - 诊断快照（设置页展示，用户截图/复制即可，不用连电脑抓日志）
 
-static NSString *WCHexOfColor(UIColor *c) {
+static NSString *WCHexOfColorIn(UIColor *c, UITraitCollection *tc) {
     if (!c) return @"nil";
-    UIColor *d = [c resolvedColorWithTraitCollection:WCDarkTrait()];
+    UIColor *d = [c resolvedColorWithTraitCollection:tc];
     CGFloat r = 0, g = 0, b = 0, a = 0, w = 0;
     if ([d getWhite:&w alpha:&a])
         return [NSString stringWithFormat:@"#%02X%02X%02X a%.2f", (int)lrint(w * 255), (int)lrint(w * 255), (int)lrint(w * 255), a];
     if (![d getRed:&r green:&g blue:&b alpha:&a]) return @"pat";
     return [NSString stringWithFormat:@"#%02X%02X%02X a%.2f", (int)lrint(r * 255), (int)lrint(g * 255), (int)lrint(b * 255), a];
 }
+static NSString *WCHexOfColor(UIColor *c) { return WCHexOfColorIn(c, WCDarkTrait()); }
 static void WCDumpView(NSMutableString *out, UIView *v, int depth, int maxDepth) {
     if (!v || depth > maxDepth) return;
     NSMutableString *indent = [NSMutableString string];
@@ -886,6 +888,7 @@ static void WCAppendSourceStats(NSMutableString *out) {
         NSArray *names = [gWCNameHits.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
             return [gWCNameHits[b] compare:gWCNameHits[a]];
         }];
+		[out appendFormat:@"probe dark=%@ enabled=%@\n", WCProbeWeChatDark() ? @"YES" : @"NO", WCEnabled() ? @"YES" : @"NO"];
         [out appendFormat:@"getColor remaps: %lu names\n", (unsigned long)names.count];
         for (NSString *n in names) {
             if ([names indexOfObject:n] >= 20) break;
@@ -1099,7 +1102,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"6.2", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"6.3", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1132,9 +1135,13 @@ static BOOL WCProbeWeChatDark(void) {
         id c = ((id (*)(id, SEL, id))gOrigGetColor)(gWCMgr, @selector(getColor:), @"BG_0");
         if (c && [c isKindOfClass:dynCls]) {
             UIColor *resolved = ((UIColor *(*)(id, SEL))gOrigToColor)(c, @selector(toColor));
-            NSString *a = WCHexOfColor(resolved);
-            if ([a isEqualToString:WCHexOfColor([c darkmodeColor])]) dark = YES;
-            else if ([a isEqualToString:WCHexOfColor([c normalColor])]) dark = NO;
+            // v6.3 修正：旧探针把结果一律按深色 trait 解析再比——结果若是 trait 动态色，
+            // 深色解析永远等于深色值，探针会卡死在 YES，浅色下栏永远还原不了（16:57 截图实证）。
+            // 改法：同一结果在深/浅两套 trait 下各读一次；两读相同才是微信旗标给的定值，
+            // 拿它和深色值比；两读不同说明这只色跟 trait 走、读不出旗标，保留回退值不改判。
+            NSString *aD = WCHexOfColorIn(resolved, WCDarkTrait());
+            NSString *aL = WCHexOfColorIn(resolved, WCLightTrait());
+            if ([aD isEqualToString:aL]) dark = [aD isEqualToString:WCHexOfColor([c darkmodeColor])];
         }
     }
     cached = dark;
@@ -1261,6 +1268,7 @@ static void WCRestoreStrong(UIView *root, int depth) {
 static void WCRestoreBar(UIView *bar) {
     NSNumber *forced = objc_getAssociatedObject(bar, &kWCForcedKey);
     if (!forced.boolValue) return;
+    if (bar.overrideUserInterfaceStyle == UIUserInterfaceStyleDark) bar.overrideUserInterfaceStyle = UIUserInterfaceStyleUnspecified;
     UIColor *fb = objc_getAssociatedObject(bar, &kWCFallbackKey);
     UIColor *dyn = objc_getAssociatedObject(bar, &kWCDynKey);
     if (fb && bar.backgroundColor == dyn) bar.backgroundColor = fb;
@@ -1281,6 +1289,7 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
     BOOL dark = gWCWeChatDark;
     if ([module isEqualToString:@"chatbar"]) WCFieldSweep(bar);
     if (!dark || !WCConfigColor(module)) { WCRestoreBar(bar); return; }
+    if (bar.overrideUserInterfaceStyle != UIUserInterfaceStyleDark) bar.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     NSNumber *forced = objc_getAssociatedObject(bar, &kWCForcedKey);
     UIColor *dyn = objc_getAssociatedObject(bar, &kWCDynKey);
     if (!forced.boolValue) {
@@ -1323,6 +1332,7 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
 static void WCRestoreTabView(UIView *v) {
     NSNumber *forced = objc_getAssociatedObject(v, &kWCForcedKey);
     if (!forced.boolValue) return;
+    if (v.overrideUserInterfaceStyle == UIUserInterfaceStyleDark) v.overrideUserInterfaceStyle = UIUserInterfaceStyleUnspecified;
     if ([v isKindOfClass:[UITabBar class]]) {
         UITabBar *tb = (UITabBar *)v;
         tb.standardAppearance = objc_getAssociatedObject(v, &kWCOrigStdAppKey);
@@ -1341,6 +1351,7 @@ static void WCRestoreTabView(UIView *v) {
 static void WCForceTabView(UIView *v) {
     UIColor *cfg = WCConfigColor(@"tab");
     if (!cfg || !gWCWeChatDark) { WCRestoreTabView(v); return; }
+    if (v.overrideUserInterfaceStyle != UIUserInterfaceStyleDark) v.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     UIColor *dyn = WCDynamicColor(@"tab", [UIColor whiteColor]);
     NSNumber *forced = objc_getAssociatedObject(v, &kWCForcedKey);
     if (!forced.boolValue) {
@@ -1418,9 +1429,11 @@ static void WCChromeAlignForView(UIView *v, int kind) {
         UIView *scope = v;
         for (int i = 0; i < 3 && scope.superview; i++) scope = scope.superview;
         WCAlignBandIn(scope, 8);
+        WCAlignTopBandsInWindow(v.window);
     } else if (kind == 1) {
         CGRect f = [v convertRect:v.bounds toView:nil];
         if (f.origin.y > v.window.bounds.size.height * 0.7) { WCRegisterBar(gBarsTab, v); WCForceTabView(v); }
+        WCAlignTopBandsInWindow(v.window);
     } else {
         WCRegisterBar(gBarsInput, v);
         WCForceBar(v, @"chatbar", 4);
@@ -1430,6 +1443,34 @@ static void WCChromeAlignForView(UIView *v, int kind) {
 static IMP gO_MMNavL, gO_MMNavW, gO_MsgNavL, gO_MsgNavW, gO_NewMsgNavL, gO_NewMsgNavW;
 static IMP gO_GTabL, gO_GTabW, gO_GNTabL, gO_GNTabW, gO_MMTabL, gO_MMTabW;
 static IMP gO_InL, gO_InW, gO_ContL, gO_ContW;
+
+// 切主 tab 时顶部闪：目标页的顶部条带会被微信在露面时重设底色，它不是导航栏、
+// 没有出生钩子可挂。借底栏/导航栏在切换同一轮里的布局回调，横扫一遍窗口顶部：
+// 已登记的栏先逐个重申，再沿与顶部相交的子树找新的条带候选钉深+强涂。
+static void WCAlignTopBandsIn(UIView *root, UIWindow *win, int depth) {
+    if (!root || depth < 0 || !gWCWeChatDark) return;
+    CGRect wf = [root convertRect:root.bounds toView:nil];
+    if (wf.origin.y > 190 || wf.origin.y + wf.size.height < -80) return;
+    if (root.bounds.size.width >= win.bounds.size.width * 0.95 &&
+        root.bounds.size.height >= 20 && root.bounds.size.height <= 140 &&
+        wf.origin.y < 70 && wf.origin.y > -70) {
+        if (WCIsOpaqueNeutralAny(root.backgroundColor)) {
+            if (root.overrideUserInterfaceStyle != UIUserInterfaceStyleDark) root.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+            WCRegisterBar(gBarsNav, root);
+            WCForceBar(root, @"nav", 3);
+        } else if ([root isKindOfClass:[UIVisualEffectView class]] && ((UIVisualEffectView *)root).effect &&
+                   root.superview && [root.superview isKindOfClass:[UIView class]]) {
+            WCRegisterBar(gBarsNav, root.superview);
+            WCForceBar(root.superview, @"nav", 3);
+        }
+    }
+    for (UIView *s in root.subviews) WCAlignTopBandsIn(s, win, depth - 1);
+}
+static void WCAlignTopBandsInWindow(UIWindow *win) {
+    if (!win || !gWCWeChatDark) return;
+    if (gBarsNav) for (UIView *b in gBarsNav.allObjects) if (b.window == win) WCForceBar(b, @"nav", 3);
+    WCAlignTopBandsIn(win, win, 12);
+}
 
 static void WC_MMNav_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMNavL)(s, c); WCChromeAlignForView(s, 0); }
 static void WC_MMNav_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMNavW)(s, c); WCChromeAlignForView(s, 0); }
@@ -1554,7 +1595,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v6.2 source hooks in");
+                os_log(WCLog(), "[WCBlack] v6.3 source hooks in");
             }
         }
     }
@@ -1567,7 +1608,7 @@ static void WCInstall(void) {
             gOrigDicWindow = WCSwapOwn(dic, @selector(didMoveToWindow), (IMP)WC_Dic_didMoveToWindow);
             if (gOrigDicSetHidden && gOrigDicWindow) {
                 dicHooked = YES;
-                os_log(WCLog(), "[WCBlack] v6.2 dictation icon hooks in");
+                os_log(WCLog(), "[WCBlack] v6.3 dictation icon hooks in");
             }
         }
     }
