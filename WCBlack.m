@@ -1,4 +1,17 @@
-// WCBlack.m — 微信深色模式纯黑背景 v7.0 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v7.1 (2026-11-26)
+// v7.1：v7.0 普查定案——整场会话（冷启+四次深浅互切+点遍 tab+进出聊天）经
+//   getColor: 请求了 41 个色名，顶栏只请求了前景色（Title_FG/RightSide_FG/
+//   LeftSide_FG），三栏的背景名（TopNavigationBar_DefaultBG/Material_
+//   NavigationBar/TabBar_BG/Material_Toolbar/Toolbar_BG/SearchBar_GreyBG）
+//   一次都没出现，getColorValueForName: 更是整场零调用。三栏背景不经这两个
+//   入口取色，remap 表里加名无用（保留，无害）。同日录屏逐帧：切深时内容区
+//   瞬间黑、顶栏与底栏在浅灰（约 207/190）挂了约 0.4 秒再硬切黑——正是我
+//   v6.5 去抖的转深确认时长，分毫不差。本版拆掉整套表面层时序：删 0.4 秒
+//   巡逻 tick（只留 5 秒家务 tick，不碰栏颜色）、删状态去抖、删 layoutSubviews
+//   逐布局重涂；深浅状态只在事件点更新（WCColorMgr setCurrentType: 钩子 +
+//   getColor 热路径上的 currentType 代际/系统侧/探针三路廉价检测），栏的配色
+//   只在自己的 traitCollectionDidChange（系统翻面那一遍、与内容区同帧）与
+//   出生时做，翻面事件负责把登记过的栏钉到新侧。目标：切换时三栏与内容同帧。
 // v7.0：用户把包内全部 XML 重新核过——色板全集是 375 个名（weui_color_component.xml 等
 //   之前没解析全，旧 tokens.txt 只有 178）。三栏其实有色板色：顶栏 TopNavigationBar_
 //   DefaultBG / Material_NavigationBar（#EDEDEDF0,#121212E5）、底栏 TabBar_BG /
@@ -543,7 +556,9 @@ static BOOL WCProbeWeChatDark(void);
 static void WCEnsureRegistered(void);
 static void WCAppendSourceStats(NSMutableString *out);
 static BOOL WCStateDark(void);
-static NSString *WCFlipLogSnapshot(void);
+static NSString *WCTraitLogSnapshot(void);
+static void WCOnThemeFlip(NSString *why);
+static void WCNoteColorFetch(id mgr);
 
 #pragma mark - 诊断快照（设置页展示，用户截图/复制即可，不用连电脑抓日志）
 
@@ -862,6 +877,7 @@ static id gWCMgr = nil;
 
 static id WC_WCColorMgr_getColor(id self, SEL _cmd, NSString *name) {
     gWCMgr = self;
+    WCNoteColorFetch(self);
     WCNoteSeen(gWCSeenNames, name);
     id orig = ((id (*)(id, SEL, id))gOrigGetColor)(self, _cmd, name);
     if (!orig || !name || !WCEnabled()) return orig;
@@ -925,15 +941,22 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
     return cfg;
 }
 
+// v7：微信自己的主题切换事件（WCColorMgr 的类型 setter）。只钉栏，不配色。
+static IMP gOrigSetCurrentType;
+static void WC_WCColorMgr_setCurrentType(id self, SEL _cmd, long type) {
+    ((void (*)(id, SEL, long))gOrigSetCurrentType)(self, _cmd, type);
+    WCOnThemeFlip(@"setCurrentType");
+}
+
 static void WCAppendSourceStats(NSMutableString *out) {
-    [out appendString:@"== WCBlack v6 source ==\n"];
+    [out appendString:@"== WCBlack v7 source ==\n"];
     @synchronized (gWCNameCache) {
         NSArray *names = [gWCNameHits.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
             return [gWCNameHits[b] compare:gWCNameHits[a]];
         }];
 		[out appendFormat:@"probe raw=%@ state=%@ enabled=%@\n", WCProbeWeChatDark() ? @"YES" : @"NO", WCStateDark() ? @"YES" : @"NO", WCEnabled() ? @"YES" : @"NO"];
-        NSString *flips = WCFlipLogSnapshot();
-        if (flips.length) [out appendFormat:@"flips:\n%@", flips];
+        NSString *tlog = WCTraitLogSnapshot();
+        if (tlog.length) [out appendFormat:@"trait:\n%@", tlog];
         [out appendFormat:@"getColor remaps: %lu names\n", (unsigned long)names.count];
         for (NSString *n in names) {
             if ([names indexOfObject:n] >= 20) break;
@@ -1181,7 +1204,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"7.0", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"7.1", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1202,11 +1225,11 @@ static void WCEnsureRegistered(void) {
 // 微信就是深色。探针结果每拍刷新，栏的强制/还原都以它为准；同时把栏容器的
 // overrideUserInterfaceStyle 钉到同侧，让栏内的图标、材质、tint 自己按深色解析。
 static BOOL gWCWeChatDark = NO;
-static BOOL WCProbeWeChatDark(void) {
+static BOOL WCProbeWeChatDarkIn(BOOL fresh) {
     static NSTimeInterval last = 0;
     static BOOL cached = NO;
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (now - last < 0.5) return cached;
+    if (!fresh && now - last < 0.5) return cached;
     last = now;
     BOOL dark = ([UITraitCollection currentTraitCollection].userInterfaceStyle == UIUserInterfaceStyleDark);
     Class dynCls = NSClassFromString(@"MMDynamicColor");
@@ -1226,35 +1249,56 @@ static BOOL WCProbeWeChatDark(void) {
     cached = dark;
     return dark;
 }
+static BOOL WCProbeWeChatDark(void) { return WCProbeWeChatDarkIn(NO); }
+static BOOL WCProbeWeChatDarkNow(void) { return WCProbeWeChatDarkIn(YES); }
 
-// v6.5 状态去抖：深浅状态只许经这里改。v6.4 实测互切后顶栏黑白横跳约 3 秒才稳——
-// 微信切换后几秒内旗标/外观传播是乱的，逐次采样跟着翻，强涂与还原就打架。
-// 候选值须持续一段时间才生效（转深 0.4 秒、转浅 1.0 秒）；进程内首次采样直接定值。
-// 每次真翻转记一行进诊断，便于下次直接看翻转节奏。
-static BOOL gWCPendingDark = NO;
-static NSTimeInterval gWCPendingSince = 0;
-static BOOL gWCStateInit = NO;
-static NSMutableString *gWCFlipLog = nil;
+// v7 原生化：深浅状态只在事件点改——微信自己的主题切换（setCurrentType:、
+// currentType 代际、系统 trait 变化，都在 getColor 钩里顺带捕捉），或栏自己
+// 的 trait 真翻面（见栏钩子一节的对账逻辑）。没有巡逻、没有去抖、没有逐布局重涂。
+// 栏的配色只在 traitCollectionDidChange 里做（系统翻面那一遍），与内容区同帧。
+static NSMutableString *gWCTraitLog = nil;
+static long gWCTypeLast = -1;
+static BOOL gWCSystemDark = NO;
+static BOOL gWCFlipInit = NO;
 static BOOL WCStateDark(void) { return gWCWeChatDark; }
-static NSString *WCFlipLogSnapshot(void) { return gWCFlipLog ?: @""; }
-static void WCUpdateDarkState(void) {
-    BOOL raw = WCEnabled() && WCProbeWeChatDark();
-    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (!gWCStateInit) {
-        gWCStateInit = YES;
-        gWCWeChatDark = raw;
-        return;
+static NSString *WCTraitLogSnapshot(void) { return gWCTraitLog ?: @""; }
+static void WCThemeLog(NSString *fmt, ...) {
+    if (!gWCTraitLog) gWCTraitLog = [[NSMutableString alloc] init];
+    va_list ap;
+    va_start(ap, fmt);
+    NSString *line = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    [gWCTraitLog appendFormat:@"%@\n", line];
+    [line release];
+    if (gWCTraitLog.length > 800) [gWCTraitLog deleteCharactersInRange:NSMakeRange(0, gWCTraitLog.length - 800)];
+}
+static void WCApplyThemeToBars(void);
+static void WCOnThemeFlip(NSString *why) {
+    BOOL raw = WCEnabled() && WCProbeWeChatDarkNow();
+    BOOL changed = (raw != gWCWeChatDark);
+    gWCWeChatDark = raw;
+    if (!gWCFlipInit) { gWCFlipInit = YES; WCApplyThemeToBars(); return; }
+    if (changed) WCThemeLog(@"flip->%@ (%@) @%.1f", raw ? @"dark" : @"light", why, [NSDate timeIntervalSinceReferenceDate]);
+    WCApplyThemeToBars();
+}
+// 取色热路径上的顺带检测：只做几次廉价比较，代际/系统侧真变了才走翻面。
+// currentType 是微信主题类型（手动深浅/跟随系统都经它）；系统 trait 变化只认
+// 明确的深/浅（Unspecified 不采信，防后台取色误触）。
+static void WCNoteColorFetch(id mgr) {
+    if (mgr && [mgr respondsToSelector:@selector(currentType)]) {
+        long t = (long)((long (*)(id, SEL))objc_msgSend)(mgr, @selector(currentType));
+        if (t != gWCTypeLast) {
+            BOOL first = (gWCTypeLast == -1);
+            gWCTypeLast = t;
+            if (!first) { WCOnThemeFlip(@"type"); return; }
+        }
     }
-    if (raw == gWCWeChatDark) { gWCPendingSince = 0; return; }
-    if (gWCPendingSince == 0 || gWCPendingDark != raw) { gWCPendingDark = raw; gWCPendingSince = now; return; }
-    NSTimeInterval need = raw ? 0.4 : 1.0;
-    if (now - gWCPendingSince >= need) {
-        gWCWeChatDark = raw;
-        gWCPendingSince = 0;
-        if (!gWCFlipLog) gWCFlipLog = [[NSMutableString alloc] init];
-        [gWCFlipLog appendFormat:@"flip->%@ @%.1f\n", raw ? @"dark" : @"light", now];
-        if (gWCFlipLog.length > 800) [gWCFlipLog deleteCharactersInRange:NSMakeRange(0, gWCFlipLog.length - 800)];
+    UIUserInterfaceStyle st = [UITraitCollection currentTraitCollection].userInterfaceStyle;
+    if (st == UIUserInterfaceStyleDark || st == UIUserInterfaceStyleLight) {
+        BOOL sysDark = (st == UIUserInterfaceStyleDark);
+        if (sysDark != gWCSystemDark) { gWCSystemDark = sysDark; WCOnThemeFlip(@"sys"); return; }
     }
+    if (WCProbeWeChatDark() != gWCWeChatDark) WCOnThemeFlip(@"probe");
 }
 
 static void WCRegisterBar(NSHashTable<UIView *> *table, UIView *bar) {
@@ -1411,7 +1455,7 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
     if (!bar) return;
     BOOL dark = gWCWeChatDark;
     if ([module isEqualToString:@"chatbar"]) WCFieldSweep(bar);
-    if (!dark || !WCConfigColor(module)) { WCRestoreBar(bar); return; }
+    if (!dark || !WCConfigColor(module)) { WCRestoreBar(bar); WCReclaimArtifacts(bar); return; }
     if (bar.overrideUserInterfaceStyle != UIUserInterfaceStyleDark) bar.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     NSNumber *forced = objc_getAssociatedObject(bar, &kWCForcedKey);
     UIColor *dyn = objc_getAssociatedObject(bar, &kWCDynKey);
@@ -1473,7 +1517,7 @@ static void WCRestoreTabView(UIView *v) {
 
 static void WCForceTabView(UIView *v) {
     UIColor *cfg = WCConfigColor(@"tab");
-    if (!cfg || !gWCWeChatDark) { WCRestoreTabView(v); return; }
+    if (!cfg || !gWCWeChatDark) { WCRestoreTabView(v); WCReclaimArtifacts(v); return; }
     if (v.overrideUserInterfaceStyle != UIUserInterfaceStyleDark) v.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     UIColor *dyn = WCDynamicColor(@"tab", [UIColor whiteColor]);
     NSNumber *forced = objc_getAssociatedObject(v, &kWCForcedKey);
@@ -1508,79 +1552,147 @@ static void WCForceTabView(UIView *v) {
     WCApplyStrong(v, v, dyn, 3);
 }
 
-#pragma mark - v6.2 栏出生钩子（对齐从轮询提前到栏自己的布局回调，消进入/退出闪白）
+#pragma mark - v7 栏原生化（trait 驱动，无巡逻、无去抖、无逐布局重涂）
 
-// v6.1 实测：稳态全黑，但进入/退出聊天时顶栏、底栏、输入条会闪白 0.1–0.2 秒——
-// 逐帧验过：白只出现在栏区、内容区从不白。那是新栏出生时自带浅色，要等维护 tick
-// （0.4 秒一拍）才被对齐。改法：钩这些栏自己的 layoutSubviews/didMoveToWindow，
-// 原实现跑完立刻在同一轮布局里对齐，赶在转场第一帧渲染之前。稳态重复调用按
-// 每视图 0.1 秒节流，tick 保留作兜底。
-static void WCAlignBandIn(UIView *root, int depth) {
-    if (!root || depth < 0 || !gWCWeChatDark) return;
-    if (root.window && root.bounds.size.width >= root.window.bounds.size.width * 0.95 &&
-        root.bounds.size.height >= 20 && root.bounds.size.height <= 140) {
-        CGRect wf = [root convertRect:root.bounds toView:nil];
-        if (wf.origin.y < 70 && wf.origin.y > -70) {
-            if (WCIsOpaqueNeutralAny(root.backgroundColor)) {
-                WCRegisterBar(gBarsNav, root);
-                WCForceBar(root, @"nav", 3);
-            } else if ([root isKindOfClass:[UIVisualEffectView class]] && ((UIVisualEffectView *)root).effect &&
-                       root.superview && [root.superview isKindOfClass:[UIView class]]) {
-                WCRegisterBar(gBarsNav, root.superview);
-                WCForceBar(root.superview, @"nav", 3);
-            }
-        }
-    }
-    for (UIView *s in root.subviews) WCAlignBandIn(s, depth - 1);
+// v7 方向：栏的配色只在两个时刻动手——
+//  ① 出生时（didMoveToWindow）：一次性登记 + 按微信当前深浅钉 override；
+//  ② trait 真翻面时（traitCollectionDidChange）：在系统翻面那一遍里配色，
+//     与内容区同帧。布局回调不再碰颜色；微信的主题切换事件（setCurrentType: /
+//     currentType 代际 / 系统 trait 变化，见 getColor 钩）只负责钉 override，
+//     配色仍由 trait 回调完成。
+// 顶栏背景条没有自己的类钩子：翻面与出生时按几何特征一次性找到候选、
+// 登记并走同一套 WCForceBar（一次，不轮询）；浅色侧同一入口还原。
+
+static void WCApplyBarTrait(UIView *v, int kind) {
+    if (!v) return;
+    if (kind == 0) WCForceBar(v, @"nav", 3);
+    else if (kind == 1) WCForceTabView(v);
+    else WCForceBar(v, @"chatbar", 4);
 }
 
-static void WCAlignTopBandsInWindow(UIWindow *win);
-static void WCChromeAlignForView(UIView *v, int kind) {
+// 栏自己的 trait 翻面：先对账——trait 与微信状态不一致时，用新鲜探针裁决
+// 是钉子旧了（重钉，等下一次 trait 回调配色）还是状态旧了（更新状态再配色）。
+static void WCBarTraitChanged(UIView *v, int kind, UITraitCollection *prev) {
     if (!v || !v.window) return;
-    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    NSNumber *ts = objc_getAssociatedObject(v, &kWCAlignTsKey);
-    if (ts && now - ts.doubleValue < 0.1) return;
-    objc_setAssociatedObject(v, &kWCAlignTsKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    WCUpdateDarkState();
-    UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleUnspecified;
-    if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
+    if (prev && prev.userInterfaceStyle == v.traitCollection.userInterfaceStyle) {
+        // 非明暗变化（如旋转/尺寸类）：只在强制状态与当前侧不符时补一次
+        NSNumber *forced = objc_getAssociatedObject(v, &kWCForcedKey);
+        BOOL sideDark = (v.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+        if (!!forced.boolValue == sideDark && gWCWeChatDark == sideDark) return;
+    }
+    BOOL traitDark = (v.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    if (traitDark != gWCWeChatDark) {
+        if (WCProbeWeChatDarkNow() == traitDark) {
+            gWCWeChatDark = traitDark;
+            WCThemeLog(@"trait %@ ->%@ @%.1f", NSStringFromClass([v class]), traitDark ? @"dark" : @"light", [NSDate timeIntervalSinceReferenceDate]);
+        } else {
+            UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+            if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
+            return;
+        }
+    }
+    WCApplyBarTrait(v, kind);
+}
+
+static void WCPinTopBandsInWindow(UIWindow *win);
+static void WCBarDidMoveToWindow(UIView *v, int kind) {
+    if (!v || !v.window) return;
     if (!gBarsNav) gBarsNav = [[NSHashTable weakObjectsHashTable] retain];
     if (!gBarsTab) gBarsTab = [[NSHashTable weakObjectsHashTable] retain];
     if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain];
+    UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+    if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
     if (kind == 0) {
         WCRegisterBar(gBarsNav, v);
-        WCForceBar(v, @"nav", 3);
-        if (!gWCWeChatDark) WCReclaimArtifacts(v);
-        UIView *scope = v;
-        for (int i = 0; i < 3 && scope.superview; i++) scope = scope.superview;
-        WCAlignBandIn(scope, 8);
-        WCAlignTopBandsInWindow(v.window);
+        WCPinTopBandsInWindow(v.window);
     } else if (kind == 1) {
         CGRect f = [v convertRect:v.bounds toView:nil];
-        if (f.origin.y > v.window.bounds.size.height * 0.7) { WCRegisterBar(gBarsTab, v); WCForceTabView(v); }
-        WCAlignTopBandsInWindow(v.window);
+        if (f.origin.y > v.window.bounds.size.height * 0.7) { WCRegisterBar(gBarsTab, v); }
+        else return;
+        WCPinTopBandsInWindow(v.window);
     } else {
         WCRegisterBar(gBarsInput, v);
-        WCForceBar(v, @"chatbar", 4);
+    }
+    WCApplyBarTrait(v, kind);
+}
+
+// 翻面时把登记过的栏逐个钉到新侧；配色由随之而来的 trait 回调接手，
+// 若某栏的 override 本来就对（无 trait 回调），这里补一次配色兜底。
+// 顶部条带候选也在此入口一次性找齐并配色（它没有自己的 trait 钩子）。
+static void WCApplyThemeToBars(void) {
+    UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+    if (gBarsNav) for (UIView *b in gBarsNav.allObjects) {
+        if (!b.window) continue;
+        if (b.overrideUserInterfaceStyle != want) b.overrideUserInterfaceStyle = want;
+        WCApplyBarTrait(b, 0);
+    }
+    if (gBarsTab) for (UIView *b in gBarsTab.allObjects) {
+        if (!b.window) continue;
+        if (b.overrideUserInterfaceStyle != want) b.overrideUserInterfaceStyle = want;
+        WCApplyBarTrait(b, 1);
+    }
+    if (gBarsInput) for (UIView *b in gBarsInput.allObjects) {
+        if (!b.window) continue;
+        if (b.overrideUserInterfaceStyle != want) b.overrideUserInterfaceStyle = want;
+        WCApplyBarTrait(b, 2);
+    }
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if ([NSStringFromClass([w class]) containsString:@"TextEffects"]) continue;
+        WCPinTopBandsInWindow(w);
     }
 }
 
-static IMP gO_MMNavL, gO_MMNavW, gO_MsgNavL, gO_MsgNavW, gO_NewMsgNavL, gO_NewMsgNavW;
-static IMP gO_GTabL, gO_GTabW, gO_GNTabL, gO_GNTabW, gO_MMTabL, gO_MMTabW;
-static IMP gO_InL, gO_InW, gO_ContL, gO_ContW;
+static IMP gO_MMNavT, gO_MMNavW, gO_MsgNavT, gO_MsgNavW, gO_NewMsgNavT, gO_NewMsgNavW;
+static IMP gO_GTabT, gO_GTabW, gO_GNTabT, gO_GNTabW, gO_MMTabT, gO_MMTabW;
+static IMP gO_InT, gO_InW, gO_ContT, gO_ContW;
 
-// 切主 tab 时顶部闪：目标页的顶部条带会被微信在露面时重设底色，它不是导航栏、
-// 没有出生钩子可挂。借底栏/导航栏在切换同一轮里的布局回调，横扫一遍窗口顶部：
-// 已登记的栏先逐个重申，再沿与顶部相交的子树找新的条带候选钉深+强涂。
-static void WCAlignTopBandsIn(UIView *root, UIWindow *win, int depth) {
-    if (!root || depth < 0 || !gWCWeChatDark) return;
+static void WC_MMNav_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_MMNavT)(s, c, p); WCBarTraitChanged(s, 0, p); }
+static void WC_MMNav_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMNavW)(s, c); WCBarDidMoveToWindow(s, 0); }
+static void WC_MsgNav_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_MsgNavT)(s, c, p); WCBarTraitChanged(s, 0, p); }
+static void WC_MsgNav_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MsgNavW)(s, c); WCBarDidMoveToWindow(s, 0); }
+static void WC_NewMsgNav_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_NewMsgNavT)(s, c, p); WCBarTraitChanged(s, 0, p); }
+static void WC_NewMsgNav_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_NewMsgNavW)(s, c); WCBarDidMoveToWindow(s, 0); }
+static void WC_GTab_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_GTabT)(s, c, p); WCBarTraitChanged(s, 1, p); }
+static void WC_GTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_GTabW)(s, c); WCBarDidMoveToWindow(s, 1); }
+static void WC_GNTab_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_GNTabT)(s, c, p); WCBarTraitChanged(s, 1, p); }
+static void WC_GNTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_GNTabW)(s, c); WCBarDidMoveToWindow(s, 1); }
+static void WC_MMTab_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_MMTabT)(s, c, p); WCBarTraitChanged(s, 1, p); }
+static void WC_MMTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMTabW)(s, c); WCBarDidMoveToWindow(s, 1); }
+static void WC_In_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_InT)(s, c, p); WCBarTraitChanged(s, 2, p); }
+static void WC_In_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_InW)(s, c); WCBarDidMoveToWindow(s, 2); }
+static void WC_Cont_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_ContT)(s, c, p); WCBarTraitChanged(s, 2, p); }
+static void WC_Cont_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContW)(s, c); WCBarDidMoveToWindow(s, 2); }
+
+static void WCInstallChromeHooks(void) {
+    Class c;
+    c = NSClassFromString(@"MMUINavigationBar");
+    if (c && !gO_MMNavT) { gO_MMNavT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_MMNav_trait); gO_MMNavW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MMNav_window); }
+    c = NSClassFromString(@"MMMsgContentNavBar");
+    if (c && !gO_MsgNavT) { gO_MsgNavT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_MsgNav_trait); gO_MsgNavW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MsgNav_window); }
+    c = NSClassFromString(@"MMNewMsgContentNavBar");
+    if (c && !gO_NewMsgNavT) { gO_NewMsgNavT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_NewMsgNav_trait); gO_NewMsgNavW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_NewMsgNav_window); }
+    c = NSClassFromString(@"WCTabBarView");
+    if (c && !gO_GTabT) { gO_GTabT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_GTab_trait); gO_GTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_GTab_window); }
+    c = NSClassFromString(@"WCGNativeTabBar");
+    if (c && !gO_GNTabT) { gO_GNTabT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_GNTab_trait); gO_GNTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_GNTab_window); }
+    c = NSClassFromString(@"MMTabBar");
+    if (c && !gO_MMTabT) { gO_MMTabT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_MMTab_trait); gO_MMTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MMTab_window); }
+    c = NSClassFromString(@"MMInputToolView");
+    if (c && !gO_InT) { gO_InT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_In_trait); gO_InW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_In_window); }
+    c = NSClassFromString(@"InputToolContainerView");
+    if (c && !gO_ContT) { gO_ContT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_Cont_trait); gO_ContW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_Cont_window); }
+}
+
+// 顶部条带：只认几何特征（满宽、20–140pt 高、贴窗口顶部），找到即登记并走
+// 同一套 WCForceBar（深色强涂、浅色还原），只在翻面/出生时跑一次，不轮询。
+static void WCPinTopBandsIn(UIView *root, UIWindow *win, int depth) {
+    if (!root || depth < 0) return;
     CGRect wf = [root convertRect:root.bounds toView:nil];
     if (wf.origin.y > 190 || wf.origin.y + wf.size.height < -80) return;
     if (root.bounds.size.width >= win.bounds.size.width * 0.95 &&
         root.bounds.size.height >= 20 && root.bounds.size.height <= 140 &&
         wf.origin.y < 70 && wf.origin.y > -70) {
         if (WCIsOpaqueNeutralAny(root.backgroundColor)) {
-            if (root.overrideUserInterfaceStyle != UIUserInterfaceStyleDark) root.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
             WCRegisterBar(gBarsNav, root);
             WCForceBar(root, @"nav", 3);
         } else if ([root isKindOfClass:[UIVisualEffectView class]] && ((UIVisualEffectView *)root).effect &&
@@ -1589,125 +1701,38 @@ static void WCAlignTopBandsIn(UIView *root, UIWindow *win, int depth) {
             WCForceBar(root.superview, @"nav", 3);
         }
     }
-    for (UIView *s in root.subviews) WCAlignTopBandsIn(s, win, depth - 1);
+    for (UIView *s in root.subviews) WCPinTopBandsIn(s, win, depth - 1);
 }
-static void WCAlignTopBandsInWindow(UIWindow *win) {
-    if (!win || !gWCWeChatDark) return;
+static void WCPinTopBandsInWindow(UIWindow *win) {
+    if (!win) return;
     if (gBarsNav) for (UIView *b in gBarsNav.allObjects) if (b.window == win) WCForceBar(b, @"nav", 3);
-    WCAlignTopBandsIn(win, win, 12);
+    WCPinTopBandsIn(win, win, 12);
 }
 
-static void WC_MMNav_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMNavL)(s, c); WCChromeAlignForView(s, 0); }
-static void WC_MMNav_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMNavW)(s, c); WCChromeAlignForView(s, 0); }
-static void WC_MsgNav_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MsgNavL)(s, c); WCChromeAlignForView(s, 0); }
-static void WC_MsgNav_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MsgNavW)(s, c); WCChromeAlignForView(s, 0); }
-static void WC_NewMsgNav_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_NewMsgNavL)(s, c); WCChromeAlignForView(s, 0); }
-static void WC_NewMsgNav_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_NewMsgNavW)(s, c); WCChromeAlignForView(s, 0); }
-static void WC_GTab_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_GTabL)(s, c); WCChromeAlignForView(s, 1); }
-static void WC_GTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_GTabW)(s, c); WCChromeAlignForView(s, 1); }
-static void WC_GNTab_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_GNTabL)(s, c); WCChromeAlignForView(s, 1); }
-static void WC_GNTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_GNTabW)(s, c); WCChromeAlignForView(s, 1); }
-static void WC_MMTab_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMTabL)(s, c); WCChromeAlignForView(s, 1); }
-static void WC_MMTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMTabW)(s, c); WCChromeAlignForView(s, 1); }
-static void WC_In_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_InL)(s, c); WCChromeAlignForView(s, 2); }
-static void WC_In_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_InW)(s, c); WCChromeAlignForView(s, 2); }
-static void WC_Cont_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContL)(s, c); WCChromeAlignForView(s, 2); }
-static void WC_Cont_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContW)(s, c); WCChromeAlignForView(s, 2); }
 
-static void WCInstallChromeHooks(void) {
-    Class c;
-    c = NSClassFromString(@"MMUINavigationBar");
-    if (c && !gO_MMNavL) { gO_MMNavL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_MMNav_layout); gO_MMNavW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MMNav_window); }
-    c = NSClassFromString(@"MMMsgContentNavBar");
-    if (c && !gO_MsgNavL) { gO_MsgNavL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_MsgNav_layout); gO_MsgNavW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MsgNav_window); }
-    c = NSClassFromString(@"MMNewMsgContentNavBar");
-    if (c && !gO_NewMsgNavL) { gO_NewMsgNavL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_NewMsgNav_layout); gO_NewMsgNavW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_NewMsgNav_window); }
-    c = NSClassFromString(@"WCTabBarView");
-    if (c && !gO_GTabW) { gO_GTabL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_GTab_layout); gO_GTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_GTab_window); }
-    c = NSClassFromString(@"WCGNativeTabBar");
-    if (c && !gO_GNTabW) { gO_GNTabL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_GNTab_layout); gO_GNTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_GNTab_window); }
-    c = NSClassFromString(@"MMTabBar");
-    if (c && !gO_MMTabL) { gO_MMTabL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_MMTab_layout); gO_MMTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MMTab_window); }
-    c = NSClassFromString(@"MMInputToolView");
-    if (c && !gO_InL) { gO_InL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_In_layout); gO_InW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_In_window); }
-    c = NSClassFromString(@"InputToolContainerView");
-    if (c && !gO_ContL) { gO_ContL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_Cont_layout); gO_ContW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_Cont_window); }
-}
+#pragma mark - 家务 tick（只做注册重试、分割线、输入框维护；不碰栏颜色）
 
-#pragma mark - 维护 tick（注册重试、输入框维护、分割线、栏对齐）
-
-static void WCScanChrome(UIView *root, UIWindow *win, int depth) {
-    if (!root || depth < 0) return;
-    NSString *cn = NSStringFromClass([root class]);
-    UIUserInterfaceStyle want = (WCEnabled() && gWCWeChatDark) ? UIUserInterfaceStyleDark : UIUserInterfaceStyleUnspecified;
-    if ([cn containsString:@"InputTool"]) {
-        if (root.overrideUserInterfaceStyle != want) root.overrideUserInterfaceStyle = want;
-        WCRegisterBar(gBarsInput, root);
-        WCForceBar(root, @"chatbar", 4);
-    } else if (WCIsTabCandidate(root)) {
-        CGRect f = [root convertRect:root.bounds toView:nil];
-        if (win && f.origin.y > win.bounds.size.height * 0.7) {
-            if (root.overrideUserInterfaceStyle != want) root.overrideUserInterfaceStyle = want;
-            WCRegisterBar(gBarsTab, root);
-            WCForceTabView(root);
-            return;
-        }
-    }
-    if ([root isKindOfClass:[UINavigationBar class]] || [cn containsString:@"MsgContentNavBar"]) {
-        if (root.overrideUserInterfaceStyle != want) root.overrideUserInterfaceStyle = want;
-        WCRegisterBar(gBarsNav, root);
-        WCForceBar(root, @"nav", 3);
-        if (!gWCWeChatDark) WCReclaimArtifacts(root);
-    } else if (!gWCWeChatDark && root.window && root.bounds.size.width >= root.window.bounds.size.width * 0.95 &&
-               root.bounds.size.height >= 20 && root.bounds.size.height <= 140 &&
-               root.backgroundColor && [WCMyColors() containsObject:root.backgroundColor]) {
-        // 浅色下顶部条带若还挂着我的动态色（重建拷贝残留），摘掉回透明
-        CGRect wf = [root convertRect:root.bounds toView:nil];
-        if (wf.origin.y < 70 && wf.origin.y > -70) root.backgroundColor = nil;
-    } else if (gWCWeChatDark && root.window && root.bounds.size.width >= root.window.bounds.size.width * 0.95 &&
-               root.bounds.size.height >= 20 && root.bounds.size.height <= 140) {
-        CGRect wf = [root convertRect:root.bounds toView:nil];
-        if (wf.origin.y < 70 && wf.origin.y > -70) {
-            if (WCIsOpaqueNeutralAny(root.backgroundColor)) {
-                WCRegisterBar(gBarsNav, root);
-                WCForceBar(root, @"nav", 3);
-            } else if ([root isKindOfClass:[UIVisualEffectView class]] && ((UIVisualEffectView *)root).effect &&
-                       root.superview && [root.superview isKindOfClass:[UIView class]]) {
-                WCRegisterBar(gBarsNav, root.superview);
-                WCForceBar(root.superview, @"nav", 3);
-            }
-        }
-    }
-    for (UIView *s in root.subviews) WCScanChrome(s, win, depth - 1);
-}
-
-static void WCSlimTick(void) {
+// v7：0.4 秒的维护 tick 已删除——栏的颜色只在 trait 回调与主题事件里动，
+// 轮询对齐正是切换时色块延后的根源。留下的这个 5 秒慢 tick 只做与颜色无关
+// 的家务：插件入口注册重试、首页分割线、输入框色板/话筒维护。
+static void WCHousekeepingTick(void) {
     WCEnsureRegistered();
-    WCUpdateDarkState();
-    if (!gBarsNav) gBarsNav = [[NSHashTable weakObjectsHashTable] retain];
-    if (!gBarsTab) gBarsTab = [[NSHashTable weakObjectsHashTable] retain];
-    if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain];
-    if (!gWCWeChatDark) {
-        // 非深色（含关插件）：把登记过的顶栏背景条逐个还原（它只在深色时才被扫描命中）
-        for (UIView *b in gBarsNav.allObjects) { WCRestoreBar(b); WCReclaimArtifacts(b); }
-    }
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
         if ([NSStringFromClass([w class]) containsString:@"TextEffects"]) { WCForceKeyboardWindow(w); continue; }
-        WCScanChrome(w, w, 16);
         WCScanTablesInWindow(w, w, 16);
     }
+    if (gBarsInput) for (UIView *b in gBarsInput.allObjects) if (b.window) WCFieldSweep(b);
 }
 
-static dispatch_source_t gSlimTimer;
-static void WCStartSlimTimer(void) {
-    if (gSlimTimer) return;
-    gSlimTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    dispatch_source_set_timer(gSlimTimer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                              (uint64_t)(0.4 * NSEC_PER_SEC), (uint64_t)(0.05 * NSEC_PER_SEC));
-    dispatch_source_set_event_handler(gSlimTimer, ^{ WCSlimTick(); });
-    dispatch_resume(gSlimTimer);
+static dispatch_source_t gHouseTimer;
+static void WCStartHousekeepingTimer(void) {
+    if (gHouseTimer) return;
+    gHouseTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(gHouseTimer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
+                              (uint64_t)(5.0 * NSEC_PER_SEC), (uint64_t)(0.5 * NSEC_PER_SEC));
+    dispatch_source_set_event_handler(gHouseTimer, ^{ WCHousekeepingTick(); });
+    dispatch_resume(gHouseTimer);
 }
-
 #pragma mark - 安装与注册（v6）
 
 static BOOL gSrcHooked = NO;
@@ -1727,9 +1752,12 @@ static void WCInstall(void) {
             if (!gOrigGetColorValue) gOrigGetColorValue = WCSwap(mgr, @selector(getColorValueForName:), (IMP)WC_WCColorMgr_getColorValue);
             if (!gOrigToColor) gOrigToColor = WCSwap(dyn, @selector(toColor), (IMP)WC_MMDynamicColor_toColor);
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
+            // v7：主题切换事件（WCColorMgr 的类型 setter，切换时调用；找不到也不影响，
+            // getColor 钩里的代际/系统侧检测是第二道）
+            if (!gOrigSetCurrentType) gOrigSetCurrentType = WCSwap(mgr, @selector(setCurrentType:), (IMP)WC_WCColorMgr_setCurrentType);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v6.3 source hooks in");
+                os_log(WCLog(), "[WCBlack] v7.1 source hooks in");
             }
         }
     }
@@ -1748,7 +1776,7 @@ static void WCInstall(void) {
     }
     WCInstallChromeHooks();
     WCEnsureRegistered();
-    WCStartSlimTimer();
+    WCStartHousekeepingTimer();
     gInstalled = YES;
 }
 
