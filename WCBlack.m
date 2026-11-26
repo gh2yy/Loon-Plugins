@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.4 还原版 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v8.5 还原版 (2026-11-26)
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -12,7 +12,7 @@
 // 用户追加保留：聊天页底栏（MMInputToolView/InputToolContainerView，仅
 // 聊天页）强涂 chatbar 色 + 输入框底色（v5.2 色板 + 话筒按类名藏，field
 // 模块）。做法回到 v5/v6.1 的存档强涂，但深浅只看栏自己的 trait——没有
-// 状态机、没有探针、没有巡逻钉制。一级页面的顶栏明确不碰；底部 tab 栏按用户要求单独做纯黑（v8.4 新增，
+// 状态机、没有探针、没有巡逻钉制。一级页面的顶栏明确不碰；底部 tab 栏按用户要求单独做纯黑（v8.5 新增，
 // 做法同聊天底栏：只对玻璃栏本体钉 trait + 强涂）：
 // v6.1–v7.6 的顶栏/底栏钉制强涂、状态机与探针、colorDic 实验、键盘处理、
 // 诊断页全部删除，恢复微信（含玻璃插件）原生表现。
@@ -26,7 +26,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.4"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.5"); });
     return l;
 }
 
@@ -163,7 +163,7 @@ static char kWCOrigBGKey, kWCPatchHiddenKey, kWCUnderlayKey;
 static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey;
 static int gWCRestoreDepth = 0;
 static NSHashTable<UIView *> *gBarsInput, *gBarsTab;
-// v8.4：栏的深浅状态不看视图 trait（玻璃栏的 trait 一直是浅的——微信深色是
+// v8.5：栏的深浅状态不看视图 trait（玻璃栏的 trait 一直是浅的——微信深色是
 // 色板内部状态、跟 trait 两套系统，v8.1/v8.2 因此对底栏全程没生效）。状态由
 // 探针问微信自己（BG_0 的 toColor 定值与深色值比对，v6.1 定案法），只在取色
 // 钩子/主题切换钩子/家务 tick 里刷新；栏钩子只读状态、不当场探（防 v7.4 污染）。
@@ -474,54 +474,65 @@ static void WCApplySeparators(UITableView *tv) {
 }
 
 // 只认主列表：满屏 table 且 delegate/dataSource 是 MainFrame 体系（通讯录/设置/聊天列表都不碰）
-static void WCScanTablesInWindow(UIView *root, UIWindow *win, int depth) {
-    if (!root || depth < 0) return;
-    if ([root isKindOfClass:[UITableView class]]) {
-        UITableView *tv = (UITableView *)root;
-        NSString *d = NSStringFromClass([tv.delegate class]) ?: @"";
-        NSString *ds = NSStringFromClass([tv.dataSource class]) ?: @"";
-        if ([d containsString:@"MainFrame"] || [ds containsString:@"MainFrame"]) {
-            CGRect f = [tv convertRect:tv.bounds toView:win];
-            if (f.size.height >= win.bounds.size.height * 0.8 && f.size.width >= win.bounds.size.width * 0.9) {
-                objc_setAssociatedObject(tv, &kWCSepMainKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                WCApplySeparators(tv);
-            }
-        }
-    }
-    for (UIView *s in root.subviews) WCScanTablesInWindow(s, win, depth - 1);
-}
 
 static void WCEnsureRegistered(void);
 
-// v8.4：分割线冷启动先闪后没——旧路径只有 5 秒家务 tick 会应用隐藏，冷启动
-// 列表先按微信原样画出来、最多 5 秒后才被 tick 抹掉。改事件驱动：钩
-// UITableView 的 layoutSubviews/didMoveToWindow（原 IMP 直调），认格的
-// MainFrame 主列表在入窗与每次布局的同一遍里就把分隔线关掉，赶在首帧前；
-// tick 扫描保留作兜底（顺带给认格的表打标）。
-static BOOL WCSepIsMainTable(UITableView *tv) {
-    if (!tv.window) return NO;
+// v8.5：分割线改源头拦截（用户点名不要扫描）：不遍历窗口、不等 tick。
+// ① 钩 UITableView 的 setSeparatorStyle:——微信给 MainFrame 列表设样式的那
+//    一下就把值改成 None，线根本没机会被设上；原值存档，关开关时放行还原。
+// ② 钩 setDelegate:/setDataSource:——MainFrame 的 delegate 落到表上时打标
+//    登记，并给该 delegate 类装 willDisplay 钩子。
+// ③ willDisplay 在每个 cell 显示前那一下藏掉它自带的底部发丝线。
+// 家务 tick 只遍历登记过的表做开关还原/补漏，不再扫窗口。
+static NSHashTable<UITableView *> *gSepTables;
+static BOOL WCSepNameMatch(UITableView *tv) {
     NSString *d = NSStringFromClass([tv.delegate class]) ?: @"";
     NSString *ds = NSStringFromClass([tv.dataSource class]) ?: @"";
-    if (![d containsString:@"MainFrame"] && ![ds containsString:@"MainFrame"]) return NO;
-    CGRect f = [tv convertRect:tv.bounds toView:tv.window];
-    return f.size.height >= tv.window.bounds.size.height * 0.8 && f.size.width >= tv.window.bounds.size.width * 0.9;
+    return [d containsString:@"MainFrame"] || [ds containsString:@"MainFrame"];
 }
-static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp); // 前向声明：定义在 Hooks 一节
-static IMP gO_TVLayout, gO_TVWindow;
-static void WC_TV_tryApply(UITableView *tv) {
-    if (!WCHideSep()) return;
-    if (!objc_getAssociatedObject(tv, &kWCSepMainKey)) {
-        if (!WCSepIsMainTable(tv)) return;
-        objc_setAssociatedObject(tv, &kWCSepMainKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+static IMP WCSwap(Class cls, SEL sel, IMP newImp);
+static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp);
+static IMP gOrigSetSepStyle, gOrigSetDelegate, gOrigSetDataSource, gOrigWillDisplay;
+static void WC_TV_setSepStyle(UITableView *s, SEL c, UITableViewCellSeparatorStyle style) {
+    if (style != UITableViewCellSeparatorStyleNone && WCHideSep() &&
+        (objc_getAssociatedObject(s, &kWCSepMainKey) || WCSepNameMatch(s))) {
+        if (!objc_getAssociatedObject(s, &kWCSepOrigStyleKey))
+            objc_setAssociatedObject(s, &kWCSepOrigStyleKey, @(style), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ((void (*)(id, SEL, NSInteger))gOrigSetSepStyle)(s, c, UITableViewCellSeparatorStyleNone);
+        return;
     }
-    WCApplySeparators(tv);
+    ((void (*)(id, SEL, NSInteger))gOrigSetSepStyle)(s, c, style);
 }
-static void WC_TV_layout(UITableView *s, SEL c) { ((void (*)(id, SEL))gO_TVLayout)(s, c); WC_TV_tryApply(s); }
-static void WC_TV_window(UITableView *s, SEL c) { ((void (*)(id, SEL))gO_TVWindow)(s, c); if (s.window) WC_TV_tryApply(s); }
-static void WCInstallSepHooks(void) {
-    if (gO_TVLayout) return;
-    gO_TVLayout = WCSwapOwn([UITableView class], @selector(layoutSubviews), (IMP)WC_TV_layout);
-    gO_TVWindow = WCSwapOwn([UITableView class], @selector(didMoveToWindow), (IMP)WC_TV_window);
+static void WC_Main_willDisplay(id self, SEL c, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
+    ((void (*)(id, SEL, id, id, id))gOrigWillDisplay)(self, c, tv, cell, ip);
+    if (WCHideSep()) WCHideCellLineIn(cell, cell, YES, 3);
+}
+static void WCInstallWillDisplayHook(Class dc) {
+    if (!dc || gOrigWillDisplay) return;
+    if (![dc instancesRespondToSelector:@selector(tableView:willDisplayCell:forRowAtIndexPath:)]) return;
+    gOrigWillDisplay = WCSwap(dc, @selector(tableView:willDisplayCell:forRowAtIndexPath:), (IMP)WC_Main_willDisplay);
+}
+static void WCSepOnDelegate(UITableView *s, id d) {
+    if (!d || ![NSStringFromClass([d class]) containsString:@"MainFrame"]) return;
+    objc_setAssociatedObject(s, &kWCSepMainKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!gSepTables) gSepTables = [[NSHashTable weakObjectsHashTable] retain];
+    if (![gSepTables containsObject:s]) [gSepTables addObject:s];
+    WCInstallWillDisplayHook([d class]);
+    WCApplySeparators(s);
+}
+static void WC_TV_setDelegate(UITableView *s, SEL c, id d) {
+    ((void (*)(id, SEL, id))gOrigSetDelegate)(s, c, d);
+    WCSepOnDelegate(s, d);
+}
+static void WC_TV_setDataSource(UITableView *s, SEL c, id d) {
+    ((void (*)(id, SEL, id))gOrigSetDataSource)(s, c, d);
+    WCSepOnDelegate(s, d);
+}
+static void WCInstallSepGate(void) {
+    if (gOrigSetSepStyle) return;
+    gOrigSetSepStyle = WCSwapOwn([UITableView class], @selector(setSeparatorStyle:), (IMP)WC_TV_setSepStyle);
+    gOrigSetDelegate = WCSwapOwn([UITableView class], @selector(setDelegate:), (IMP)WC_TV_setDelegate);
+    gOrigSetDataSource = WCSwapOwn([UITableView class], @selector(setDataSource:), (IMP)WC_TV_setDataSource);
 }
 
 static NSString *WCHexOfColorIn(UIColor *c, UITraitCollection *tc) {
@@ -684,7 +695,7 @@ static void WCRestoreBar(UIView *bar) {
 
 static void WCForceBar(UIView *bar, NSString *module, int depth) {
     if (!bar) return;
-    // v8.4：深浅认微信自己的状态（探针维护的 gWCWeChatDark），不看栏的 trait
+    // v8.5：深浅认微信自己的状态（探针维护的 gWCWeChatDark），不看栏的 trait
     BOOL dark = gWCWeChatDark;
     if ([module isEqualToString:@"chatbar"]) WCFieldSweep(bar);
     if (!dark || !WCConfigColor(module)) { WCRestoreBar(bar); return; }
@@ -767,7 +778,7 @@ static void WC_Dic_didMoveToWindow(UIView *self, SEL _cmd) {
 
 
 
-#pragma mark - 底部 tab 栏钩子（仅玻璃栏本体，v8.4：用户要纯黑）
+#pragma mark - 底部 tab 栏钩子（仅玻璃栏本体，v8.5：用户要纯黑）
 // 可见底栏是包内玻璃插件 WCTabBarGlass 自己造的 UITabBar（WCGNativeTabBar），
 // 不走微信色板、只认 trait；源头 remap 够不到它。做法同聊天底栏：钩 trait 翻面
 // 与入窗，深浅只看栏自己的 trait，无状态机、无探针、无巡逻。
@@ -936,7 +947,7 @@ static UIColor *WC_MMDynamicColor_toColor(id self, SEL _cmd) {
     return cfg;
 }
 
-#pragma mark - v8.4 微信深浅探针（问微信自己，不看视图 trait）
+#pragma mark - v8.5 微信深浅探针（问微信自己，不看视图 trait）
 
 static BOOL WCProbeWeChatDarkIn(BOOL fresh) {
     static NSTimeInterval last = 0;
@@ -1146,7 +1157,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"8.4", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"8.5", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1154,7 +1165,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.4 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.5 registered in plugin list");
             break;
         }
     }
@@ -1167,10 +1178,7 @@ static void WCHousekeepingTick(void) {
     WCRefreshDarkState(NO);
     if (gBarsInput) for (UIView *b in gBarsInput.allObjects) if (b.window) WCFieldSweep(b);
     if (gBarsTab) for (UIView *b in gBarsTab.allObjects) if (b.window) WCForceBar(b, @"tab", 4);
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if ([NSStringFromClass([w class]) containsString:@"TextEffects"]) continue;
-        WCScanTablesInWindow(w, w, 16);
-    }
+    if (gSepTables) for (UITableView *tv in gSepTables.allObjects) if (tv.window) WCApplySeparators(tv);
 }
 
 static dispatch_source_t gHouseTimer;
@@ -1205,7 +1213,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.4 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.5 source hooks in");
             }
         }
     }
@@ -1220,7 +1228,7 @@ static void WCInstall(void) {
         }
     }
     WCInstallChatbarHooks();
-    WCInstallSepHooks();
+    WCInstallSepGate();
     WCInstallTabHooks();
     WCEnsureRegistered();
     WCStartHousekeepingTimer();
