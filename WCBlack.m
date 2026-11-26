@@ -1411,6 +1411,7 @@ static void WCAlignBandIn(UIView *root, int depth) {
     for (UIView *s in root.subviews) WCAlignBandIn(s, depth - 1);
 }
 
+static void WCAlignTopBandsInWindow(UIWindow *win);
 static void WCChromeAlignForView(UIView *v, int kind) {
     if (!v || !v.window) return;
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
