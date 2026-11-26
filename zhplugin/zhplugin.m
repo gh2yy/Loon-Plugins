@@ -30,8 +30,9 @@
 //   仍由既有触发链（ZHRequestApply 下一拍 ZHApplyBar）驱动，主题切换经同一
 //   路径重钉风格。
 //   诊断本轮新增另一半：①UIAccessibility 三开关运行时实读——降低透明度
-//   （isReduceTransparencyEnabled）/ 增强对比（isDarkerSystemColorsEnabled）/
-//   色彩反转（isInvertColorsEnabled），各一行布尔；②三只胶囊各自的完整
+//   （UIAccessibilityIsReduceTransparencyEnabled）/ 增强对比
+//   （UIAccessibilityDarkerSystemColorsEnabled，注意无 Is 前缀）/ 色彩反转
+//   （UIAccessibilityIsInvertColorsEnabled），各一行布尔；②三只胶囊各自的完整
 //   子树——列 effect view 的全部子视图（含 _UIVisualEffectBackdropView 等
 //   系统内部子视图、并附每视图的 layer 类），看玻璃与材质各自的背板子
 //   视图在不在。判读表见 PATCH_NOTES 探针 v3 段。原栏仍完全不动。
@@ -861,7 +862,7 @@ static NSString *ZPBuildDiagnostics(void) {
     // 元素推向黑白、色彩反转翻转合成结果），判读探针显形前必须先看这一行。
     [s appendFormat:@"辅助功能实读 降低透明度=%@ 增强对比=%@ 色彩反转=%@\n",
          UIAccessibilityIsReduceTransparencyEnabled() ? @"YES" : @"NO",
-         UIAccessibilityIsDarkerSystemColorsEnabled() ? @"YES" : @"NO",
+         UIAccessibilityDarkerSystemColorsEnabled() ? @"YES" : @"NO",
          UIAccessibilityIsInvertColorsEnabled() ? @"YES" : @"NO"];
     ZPAppendProbeDiag(s, @"探针甲（keyWindow 直挂·容器+玻璃 对照组）", bar, &kCapsuleKey, &kGlassBoxKey,
                       @"无容器（降级单只）",
