@@ -535,6 +535,8 @@ static void WCCollectDiag(NSString *scene);
 static BOOL WCProbeWeChatDark(void);
 static void WCEnsureRegistered(void);
 static void WCAppendSourceStats(NSMutableString *out);
+static BOOL WCStateDark(void);
+static NSString *WCFlipLogSnapshot(void);
 
 #pragma mark - 诊断快照（设置页展示，用户截图/复制即可，不用连电脑抓日志）
 
@@ -906,7 +908,9 @@ static void WCAppendSourceStats(NSMutableString *out) {
         NSArray *names = [gWCNameHits.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
             return [gWCNameHits[b] compare:gWCNameHits[a]];
         }];
-		[out appendFormat:@"probe dark=%@ enabled=%@\n", WCProbeWeChatDark() ? @"YES" : @"NO", WCEnabled() ? @"YES" : @"NO"];
+		[out appendFormat:@"probe raw=%@ state=%@ enabled=%@\n", WCProbeWeChatDark() ? @"YES" : @"NO", WCStateDark() ? @"YES" : @"NO", WCEnabled() ? @"YES" : @"NO"];
+        NSString *flips = WCFlipLogSnapshot();
+        if (flips.length) [out appendFormat:@"flips:\n%@", flips];
         [out appendFormat:@"getColor remaps: %lu names\n", (unsigned long)names.count];
         for (NSString *n in names) {
             if ([names indexOfObject:n] >= 20) break;
@@ -1121,7 +1125,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"6.4", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"6.5", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1165,6 +1169,36 @@ static BOOL WCProbeWeChatDark(void) {
     }
     cached = dark;
     return dark;
+}
+
+// v6.5 状态去抖：深浅状态只许经这里改。v6.4 实测互切后顶栏黑白横跳约 3 秒才稳——
+// 微信切换后几秒内旗标/外观传播是乱的，逐次采样跟着翻，强涂与还原就打架。
+// 候选值须持续一段时间才生效（转深 0.4 秒、转浅 1.0 秒）；进程内首次采样直接定值。
+// 每次真翻转记一行进诊断，便于下次直接看翻转节奏。
+static BOOL gWCPendingDark = NO;
+static NSTimeInterval gWCPendingSince = 0;
+static BOOL gWCStateInit = NO;
+static NSMutableString *gWCFlipLog = nil;
+static BOOL WCStateDark(void) { return gWCWeChatDark; }
+static NSString *WCFlipLogSnapshot(void) { return gWCFlipLog ?: @""; }
+static void WCUpdateDarkState(void) {
+    BOOL raw = WCEnabled() && WCProbeWeChatDark();
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (!gWCStateInit) {
+        gWCStateInit = YES;
+        gWCWeChatDark = raw;
+        return;
+    }
+    if (raw == gWCWeChatDark) { gWCPendingSince = 0; return; }
+    if (gWCPendingSince == 0 || gWCPendingDark != raw) { gWCPendingDark = raw; gWCPendingSince = now; return; }
+    NSTimeInterval need = raw ? 0.4 : 1.0;
+    if (now - gWCPendingSince >= need) {
+        gWCWeChatDark = raw;
+        gWCPendingSince = 0;
+        if (!gWCFlipLog) gWCFlipLog = [[NSMutableString alloc] init];
+        [gWCFlipLog appendFormat:@"flip->%@ @%.1f\n", raw ? @"dark" : @"light", now];
+        if (gWCFlipLog.length > 800) [gWCFlipLog deleteCharactersInRange:NSMakeRange(0, gWCFlipLog.length - 800)];
+    }
 }
 
 static void WCRegisterBar(NSHashTable<UIView *> *table, UIView *bar) {
@@ -1451,7 +1485,7 @@ static void WCChromeAlignForView(UIView *v, int kind) {
     NSNumber *ts = objc_getAssociatedObject(v, &kWCAlignTsKey);
     if (ts && now - ts.doubleValue < 0.1) return;
     objc_setAssociatedObject(v, &kWCAlignTsKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    gWCWeChatDark = WCEnabled() && WCProbeWeChatDark();
+    WCUpdateDarkState();
     UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleUnspecified;
     if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
     if (!gBarsNav) gBarsNav = [[NSHashTable weakObjectsHashTable] retain];
@@ -1460,6 +1494,7 @@ static void WCChromeAlignForView(UIView *v, int kind) {
     if (kind == 0) {
         WCRegisterBar(gBarsNav, v);
         WCForceBar(v, @"nav", 3);
+        if (!gWCWeChatDark) WCReclaimArtifacts(v);
         UIView *scope = v;
         for (int i = 0; i < 3 && scope.superview; i++) scope = scope.superview;
         WCAlignBandIn(scope, 8);
@@ -1592,7 +1627,7 @@ static void WCScanChrome(UIView *root, UIWindow *win, int depth) {
 
 static void WCSlimTick(void) {
     WCEnsureRegistered();
-    gWCWeChatDark = WCEnabled() && WCProbeWeChatDark();
+    WCUpdateDarkState();
     if (!gBarsNav) gBarsNav = [[NSHashTable weakObjectsHashTable] retain];
     if (!gBarsTab) gBarsTab = [[NSHashTable weakObjectsHashTable] retain];
     if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain];
