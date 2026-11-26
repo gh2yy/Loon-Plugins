@@ -234,16 +234,16 @@ static void HPApplyCapsuleShadow(UIVisualEffectView *plate) {
 }
 @end
 
-// 从原按钮同步数据与内部布局到自建按钮（每轮布局都同步，远程图标迟到也能跟上）
-static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
+// 从原按钮同步数据到自建按钮；内部布局按原内容并集整体平移 (dx,dy) 后居中进槽位
+// （每轮布局都同步，远程图标迟到也能跟上）
+static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig, CGFloat dx, CGFloat dy) {
     gb.normalImage = HPGetObj(orig, @"normalImage");
     gb.selectedImage = HPGetObj(orig, @"hightlightImage");
     gb.normalColor = HPGetObj(orig, @"normalTitleColor");
     gb.selectedColor = HPGetObj(orig, @"highlightTitleColor");
     gb.title = HPGetObj(orig, @"title");
 
-    CGRect of = HPRectInBar(bar, orig);
-    gb.frame = of;
+    CGRect of = gb.frame;
     UIView *oIcon = HPGetObj(orig, @"tabImageView");
     if (!oIcon) oIcon = HPGetObj(orig, @"imageView");
     UIView *oLabel = HPGetObj(orig, @"label");
@@ -251,12 +251,12 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
     UIView *oBorder = HPGetObj(orig, @"tabImageBorderView");
     if (oIcon && [oIcon isDescendantOfView:bar]) {
         CGRect r = HPRectInBar(bar, oIcon);
-        gb.iconView.frame = CGRectMake(r.origin.x - of.origin.x, r.origin.y - of.origin.y, r.size.width, r.size.height);
+        gb.iconView.frame = CGRectMake(r.origin.x + dx - of.origin.x, r.origin.y + dy - of.origin.y, r.size.width, r.size.height);
         gb.iconView.hidden = oIcon.hidden;
     }
     if (oLabel && [oLabel isDescendantOfView:bar]) {
         CGRect r = HPRectInBar(bar, oLabel);
-        gb.textLabel.frame = CGRectMake(r.origin.x - of.origin.x, r.origin.y - of.origin.y, r.size.width, r.size.height);
+        gb.textLabel.frame = CGRectMake(r.origin.x + dx - of.origin.x, r.origin.y + dy - of.origin.y, r.size.width, r.size.height);
         gb.textLabel.font = [(UILabel *)oLabel font];
         gb.textLabel.hidden = oLabel.hidden || gb.title.length == 0;
     } else {
@@ -264,7 +264,7 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
     }
     if (oBorder && [oBorder isDescendantOfView:bar]) {
         CGRect r = HPRectInBar(bar, oBorder);
-        gb.borderView.frame = CGRectMake(r.origin.x - of.origin.x, r.origin.y - of.origin.y, r.size.width, r.size.height);
+        gb.borderView.frame = CGRectMake(r.origin.x + dx - of.origin.x, r.origin.y + dy - of.origin.y, r.size.width, r.size.height);
         gb.borderView.image = [(UIImageView *)oBorder image];
         gb.borderView.hidden = oBorder.hidden || gb.borderView.image == nil;
     } else {
@@ -278,7 +278,7 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
         if (sub.frame.size.width > 20 || sub.frame.size.height > 20) continue;
         if (sub.frame.size.width < 2 || sub.frame.size.height < 2) continue;
         CGRect r = HPRectInBar(bar, sub);
-        gb.badgeDot.frame = CGRectMake(r.origin.x - of.origin.x, r.origin.y - of.origin.y, r.size.width, r.size.height);
+        gb.badgeDot.frame = CGRectMake(r.origin.x + dx - of.origin.x, r.origin.y + dy - of.origin.y, r.size.width, r.size.height);
         gb.badgeDot.backgroundColor = sub.backgroundColor ?: [UIColor redColor];
         gb.badgeDot.layer.cornerRadius = MIN(r.size.width, r.size.height) / 2;
         gb.badgeDot.hidden = NO;
@@ -291,7 +291,7 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
 
 static void HPEnsurePlates(UIView *bar) {
     if (objc_getAssociatedObject(bar, &kCapsuleKey)) return;
-    UIVisualEffectView *capsule = HPMakePlate(1);
+    UIVisualEffectView *capsule = HPMakePlate(0); // 胶囊无填充：XHS fillForBar 默认仅 noteBottom 为 50、其余（含主页栏）为 0，纯玻璃才是清透的来源（v7 复查二进制定案）
     [bar insertSubview:capsule atIndex:0];
     objc_setAssociatedObject(bar, &kCapsuleKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UIVisualEffectView *lens = HPMakePlate(2);
@@ -349,14 +349,41 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
         objc_setAssociatedObject(bar, &kRowSigKey, [sig copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    // 同步 + 隐藏原按钮
+    // 槽位几何：按内容宽度定槽，胶囊只包住槽位组并居中——按钮少时不再拉满整宽（照 XHS 重构后的自适应长度）
+    NSMutableArray *contents = [NSMutableArray array];
+    CGFloat maxContentW = 0;
     CGRect rowRect = CGRectNull;
-    for (NSUInteger i = 0; i < btns.count; i++) {
-        UIView *orig = btns[i];
-        HPSyncGlassButton(row[i], bar, orig);
-        orig.hidden = YES;
+    for (UIView *orig in btns) {
+        CGRect cr = HPButtonContentRect(bar, orig);
+        [contents addObject:[NSValue valueWithCGRect:cr]];
+        if (cr.size.width > maxContentW) maxContentW = cr.size.width;
         CGRect f = HPRectInBar(bar, orig);
         rowRect = CGRectIsNull(rowRect) ? f : CGRectUnion(rowRect, f);
+    }
+    CGFloat slotW = MIN(MAX(maxContentW + 34, 64.0), 96.0);
+    CGFloat capH = 58.0;
+    CGFloat capW = slotW * (CGFloat)btns.count + 16;
+    if (capW > bounds.size.width - 20) {
+        capW = bounds.size.width - 20;
+        slotW = (capW - 16) / (CGFloat)btns.count;
+    }
+    CGFloat capX = (bounds.size.width - capW) / 2;
+    CGFloat capY = CGRectGetMidY(rowRect) - capH / 2;
+    if (capY < 2) capY = 2;
+    if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
+    CGRect capRect = CGRectMake(capX, capY, capW, capH);
+
+    // 同步 + 隐藏原按钮：内容并集整体平移进槽位中心
+    for (NSUInteger i = 0; i < btns.count; i++) {
+        UIView *orig = btns[i];
+        HPGlassButton *gb = row[i];
+        CGRect slot = CGRectMake(capX + 8 + (CGFloat)i * slotW, capY, slotW, capH);
+        gb.frame = slot;
+        CGRect cr = [contents[i] CGRectValue];
+        HPSyncGlassButton(gb, bar, orig,
+                          CGRectGetMidX(slot) - CGRectGetMidX(cr),
+                          CGRectGetMidY(slot) - CGRectGetMidY(cr));
+        orig.hidden = YES;
     }
 
     // 选中态：以 updateButton 钩子记录的原按钮为准
@@ -369,25 +396,14 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
         if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
     }
 
-    // 胶囊：贴合按钮行
+    // 胶囊 + 透镜：透镜贴合整个槽位（横向内缩 4、纵向内缩 5），不再比按钮小一圈
     UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
     UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
-    CGFloat capH = 58.0;
-    CGFloat capX = MAX(10.0, rowRect.origin.x - 12);
-    CGFloat capR = MIN(bounds.size.width - 10, CGRectGetMaxX(rowRect) + 12);
-    CGFloat capY = CGRectGetMidY(rowRect) - capH / 2;
-    if (capY < 2) capY = 2;
-    if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
-    CGRect capRect = CGRectMake(capX, capY, capR - capX, capH);
     HPSetPlateFrame(capsule, capRect);
     HPApplyCapsuleShadow(capsule);
-
-    // 透镜：贴选中按钮的内容中心
-    CGRect cr = HPButtonContentRect(bar, btns[sel]);
-    CGFloat lensW = MIN(MAX(cr.size.width + 30, 60.0), 110.0);
-    CGFloat lensH = capH - 16;
-    HPSetPlateFrame(lens, CGRectMake(CGRectGetMidX(cr) - lensW / 2,
-                                     capRect.origin.y + (capH - lensH) / 2, lensW, lensH));
+    CGFloat lensH = capH - 10;
+    HPSetPlateFrame(lens, CGRectMake(capX + 8 + (CGFloat)sel * slotW + 4,
+                                     capY + (capH - lensH) / 2, slotW - 8, lensH));
     lens.hidden = NO;
 
     // 层级：胶囊 < 透镜 < 自建按钮
@@ -510,7 +526,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v6 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v7 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
