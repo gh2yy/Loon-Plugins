@@ -189,6 +189,14 @@ static void WCStoreOrigBG(UIView *v) {
     if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
         objc_setAssociatedObject(v, &kWCOrigBGKey, v.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
+static BOOL WCGrayInRange(UIColor *color, int lo, int hi) {
+    if (!color) return NO;
+    UIColor *d = [color resolvedColorWithTraitCollection:WCDarkTrait()];
+    CGFloat w = 0, a = 0;
+    if (![d getWhite:&w alpha:&a] || a < 0.95) return NO;
+    int v = (int)lrint(w * 255.0);
+    return v >= lo && v <= hi;
+}
 static BOOL WCIsTabCandidate(UIView *v) {
     if ([v isKindOfClass:[UITabBar class]]) return YES;
     NSString *cls = NSStringFromClass([v class]);
