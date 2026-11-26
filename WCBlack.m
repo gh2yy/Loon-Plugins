@@ -1,4 +1,7 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.9 还原版 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v8.10 (2026-11-26)：v8.9 基础上专攻侧滑切
+// 应用时底栏露浅灰——栏的背景在过渡/快照路径里被重建、绕开既有强涂；本版在
+// 背景的赋值与快照点拦截（setBackgroundContentView:/setTranslucent:/
+// snapshotViewAfterScreenUpdates:/prepareTabBarForTransition:），重建当场涂黑。
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -26,7 +29,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.9"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.10"); });
     return l;
 }
 
@@ -832,6 +835,30 @@ static void WC_TabView_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_TabView
 static void WC_MMTab_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_MMTabT)(s, c, p); if (s.window) WCForceBar(s, @"tab", 4); }
 static void WC_MMTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMTabW)(s, c); if (s.window) { WC_Tab_reg(s); WCForceBar(s, @"tab", 4); } }
 
+// v8.10：侧滑切应用时底栏露浅灰（用户录屏逐帧定案：内容全程深色、只有底栏在
+// 过渡画面里翻浅，玻璃关掉也犯）。既有强涂挂在 trait/入窗/5 秒家务上，过渡
+// 路径里栏的背景被重建/被快照时全绕开了。改在赋值与快照点拦：背景视图一被
+// 换上、半透明一被重设、快照一生成、控制器一准备转场，就在同一调用栈里涂黑。
+static void WCApplyBarsState(void);
+static IMP gO_TabBgView, gO_TabTranslucent, gO_TabSnapshot, gO_CtlPrepare;
+static void WC_Tab_setBgView(UIView *s, SEL c, UIView *v) {
+    ((void (*)(id, SEL, id))gO_TabBgView)(s, c, v);
+    WCForceBar(s, @"tab", 4);
+}
+static void WC_Tab_setTranslucent(UIView *s, SEL c, BOOL t) {
+    ((void (*)(id, SEL, BOOL))gO_TabTranslucent)(s, c, t);
+    WCForceBar(s, @"tab", 4);
+}
+static UIView *WC_Tab_snapshot(UIView *s, SEL c, BOOL afterUpdates) {
+    UIView *snap = ((UIView *(*)(id, SEL, BOOL))gO_TabSnapshot)(s, c, afterUpdates);
+    if (snap) WCForceBar(snap, @"tab", 4);
+    return snap;
+}
+static void WC_Ctl_prepare(id s, SEL c, id arg) {
+    ((void (*)(id, SEL, id))gO_CtlPrepare)(s, c, arg);
+    WCApplyBarsState();
+}
+
 static void WCInstallTabHooks(void) {
     Class c;
     c = NSClassFromString(@"WCGNativeTabBar");
@@ -840,6 +867,15 @@ static void WCInstallTabHooks(void) {
     if (c && !gO_TabViewT) { gO_TabViewT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_TabView_trait); gO_TabViewW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_TabView_window); }
     c = NSClassFromString(@"MMTabBar");
     if (c && !gO_MMTabT) { gO_MMTabT = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_MMTab_trait); gO_MMTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MMTab_window); }
+    // v8.10 赋值/快照点拦截
+    c = NSClassFromString(@"WCTabBarView");
+    if (c && !gO_TabBgView) {
+        gO_TabBgView = WCSwapOwn(c, @selector(setBackgroundContentView:), (IMP)WC_Tab_setBgView);
+        gO_TabTranslucent = WCSwapOwn(c, @selector(setTranslucent:), (IMP)WC_Tab_setTranslucent);
+        gO_TabSnapshot = WCSwapOwn(c, @selector(snapshotViewAfterScreenUpdates:), (IMP)WC_Tab_snapshot);
+    }
+    Class ctlCls = NSClassFromString(@"WCTabBarController");
+    if (ctlCls && !gO_CtlPrepare) gO_CtlPrepare = WCSwapOwn(ctlCls, @selector(prepareTabBarForTransition:), (IMP)WC_Ctl_prepare);
 }
 
 #pragma mark - v6 底层色源（WCColorMgr 按名发色，在发色处换深色值）
@@ -1229,7 +1265,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.9 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.10 registered in plugin list");
             break;
         }
     }
@@ -1277,7 +1313,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.9 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.10 source hooks in");
             }
         }
     }
