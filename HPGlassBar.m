@@ -187,6 +187,8 @@ static void HPApplyCapsuleShadow(UIView *plate) {
 // 布局函数见 kLensFlashActiveKey 为真时不碰透镜的 hidden/alpha。
 static char kLensFlashGenKey;
 static char kLensFlashActiveKey;
+static char kHostKey;    // 原栏 -> 自建栏（强持）
+static char kOrigBarKey; // 自建栏 -> 原栏（强持，摘除后防原栏被释放）
 static void HPFlashLens(UIView *bar, CGRect lensFrame) {
     UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
     if (!lens) return;
@@ -274,7 +276,9 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
 }
 - (void)hpDown {
     self.iconView.alpha = 0.55;
-    if (self.bar) HPFlashLens(self.bar, CGRectInset(self.frame, 4, 5)); // 焦点只在点击时展示
+    // 焦点只在点击时展示；透镜挂在自建栏上，按下时去自建栏里闪
+    UIView *host = self.bar ? objc_getAssociatedObject(self.bar, &kHostKey) : nil;
+    if (host) HPFlashLens(host, CGRectInset(self.frame, 4, 5));
 }
 - (void)hpUp { self.iconView.alpha = 1.0; }
 - (void)hpTapped {
@@ -365,19 +369,67 @@ static void HPHideBarBackground(UIView *bar, NSArray *btns) {
     bar.backgroundColor = [UIColor clearColor];
 }
 
-static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
-    CGRect bounds = bar.bounds;
+static void HPLayoutSwiftCore(UIView *bar, UIView *canvas, Class btnCls);
+
+// 自建栏（v13 用户定，知乎 v3.3 同款做法）：原栏不再留在界面里——它一出现就被摘除，
+// 自建栏顶替到它原来的父视图、原来的位次；原栏由自建栏强持，只作数据源与路由令牌
+// （读它的按钮数据、点选时调它的 didClickedWithButton: 回 App 原链）。
+// 原栏若被 App 重新加回（didMoveToWindow 钩子），同一轮里再摘一次。
+@interface HPRebuiltBarView : UIView
+@property (nonatomic, assign) UIView *origBar;
+@property (nonatomic, assign) Class btnCls;
+@end
+@implementation HPRebuiltBarView
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    if (self.origBar) HPLayoutSwiftCore(self.origBar, self, self.btnCls);
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)prev {
+    [super traitCollectionDidChange:prev];
+    [self setNeedsLayout];
+}
+@end
+
+static UIView *HPHostForBar(UIView *bar, Class btnCls) {
+    UIView *host = objc_getAssociatedObject(bar, &kHostKey);
+    if (!host) {
+        HPRebuiltBarView *hv = [[HPRebuiltBarView alloc] initWithFrame:bar.frame];
+        hv.origBar = bar;
+        hv.btnCls = btnCls;
+        hv.backgroundColor = [UIColor clearColor];
+        host = hv;
+        objc_setAssociatedObject(bar, &kHostKey, host, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(host, &kOrigBarKey, bar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [hv release];
+    }
+    return host;
+}
+
+static void HPTakeoverBar(UIView *bar, UIView *host) {
+    UIView *parent = bar.superview;
+    if (!parent) return; // 原栏不在界面里就无须摘除（已摘或未上屏）
+    NSUInteger idx = [parent.subviews indexOfObject:bar];
+    host.frame = bar.frame;
+    if (host.superview) [host removeFromSuperview];
+    [parent insertSubview:host atIndex:idx];
+    [bar removeFromSuperview];
+    [host setNeedsLayout];
+}
+
+// 布局核心：数据与选中态读原栏（bar），胶囊/透镜/按钮全部挂在自建栏（canvas）上；
+// 两者同尺寸，bar 本地坐标与 canvas 本地坐标一致，几何沿用原算法。
+static void HPLayoutSwiftCore(UIView *bar, UIView *canvas, Class btnCls) {
+    CGRect bounds = canvas.bounds;
     if (bounds.size.width < 50 || bounds.size.height < 30) return;
     NSArray *btns = HPBarButtons(bar, btnCls);
     if (btns.count == 0) return;
-    HPEnsurePlates(bar);
-    HPHideBarBackground(bar, btns);
+    HPEnsurePlates(canvas);
 
     // 按钮集合签名（指针序列）变了才重建自建行
     NSMutableString *sig = [NSMutableString string];
     for (UIView *b in btns) [sig appendFormat:@"%p;", (void *)b];
-    NSString *oldSig = objc_getAssociatedObject(bar, &kRowSigKey);
-    NSMutableArray *row = objc_getAssociatedObject(bar, &kRowKey);
+    NSString *oldSig = objc_getAssociatedObject(canvas, &kRowSigKey);
+    NSMutableArray *row = objc_getAssociatedObject(canvas, &kRowKey);
     if (!row || ![sig isEqualToString:oldSig]) {
         if (row) for (HPGlassButton *gb in row) [gb removeFromSuperview];
         row = [NSMutableArray array];
@@ -385,23 +437,23 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
             HPGlassButton *gb = [[HPGlassButton alloc] initWithFrame:CGRectZero];
             gb.origButton = orig;
             gb.bar = bar;
-            [bar addSubview:gb];
+            [canvas addSubview:gb];
             [row addObject:gb];
             [gb release];
             objc_setAssociatedObject(orig, &kMyHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-        objc_setAssociatedObject(bar, &kRowKey, row, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(bar, &kRowSigKey, [sig copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(canvas, &kRowKey, row, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(canvas, &kRowSigKey, [sig copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    // 槽位几何：固定规格（槽宽 86、高 58、端部留白 12），只借原按钮行定纵向位置；宽度只随按钮数变
+    // 槽位几何：固定规格（槽宽 86、高 62[v13 按知乎定版高度]、端部留白 12），只借原按钮行定纵向位置
     CGRect rowRect = CGRectNull;
     for (UIView *orig in btns) {
         CGRect f = HPRectInBar(bar, orig);
         rowRect = CGRectIsNull(rowRect) ? f : CGRectUnion(rowRect, f);
     }
     CGFloat slotW = 86.0;
-    CGFloat capH = 58.0;
+    CGFloat capH = 62.0;
     CGFloat capW = slotW * (CGFloat)btns.count + 24;
     if (capW > bounds.size.width - 20) {
         capW = bounds.size.width - 20;
@@ -413,13 +465,12 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
     CGRect capRect = CGRectMake(capX, capY, capW, capH);
 
-    // 同步数据 + 隐藏原按钮
+    // 同步数据（原按钮留在被摘除的原栏里，不再需要隐藏）
     for (NSUInteger i = 0; i < btns.count; i++) {
         UIView *orig = btns[i];
         HPGlassButton *gb = row[i];
         gb.frame = CGRectMake(capX + 12 + (CGFloat)i * slotW, capY, slotW, capH);
         HPSyncGlassButton(gb, bar, orig);
-        orig.hidden = YES;
     }
 
     // 选中态：以 updateButton 钩子记录的原按钮为准
@@ -432,21 +483,28 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
         if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
     }
 
-    // 胶囊 + 透镜：透镜贴合整个槽位（横向内缩 4、纵向内缩 5），不再比按钮小一圈
-    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    // 胶囊 + 透镜：透镜贴合整个槽位（横向内缩 4、纵向内缩 5）
+    UIView *capsule = objc_getAssociatedObject(canvas, &kCapsuleKey);
+    UIView *lens = objc_getAssociatedObject(canvas, &kLensKey);
     HPSetPlateFrame(capsule, capRect);
     HPApplyCapsuleShadow(capsule);
     CGFloat lensH = capH - 10;
     HPSetPlateFrame(lens, CGRectMake(capX + 12 + (CGFloat)sel * slotW + 4,
                                      capY + (capH - lensH) / 2, slotW - 8, lensH));
     // 透镜不常驻：布局只管把它放到选中槽位，显隐由点击闪现控制（闪现中则不干预）
-    NSNumber *flashing = objc_getAssociatedObject(bar, &kLensFlashActiveKey);
+    NSNumber *flashing = objc_getAssociatedObject(canvas, &kLensFlashActiveKey);
     if (!flashing.boolValue) { lens.hidden = YES; lens.alpha = 0.0; }
 
     // 层级：胶囊 < 透镜 < 自建按钮
-    [bar bringSubviewToFront:lens];
-    for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
+    [canvas bringSubviewToFront:lens];
+    for (HPGlassButton *gb in row) [canvas bringSubviewToFront:gb];
+}
+
+static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
+    if (!bar) return;
+    UIView *host = HPHostForBar(bar, btnCls);
+    HPTakeoverBar(bar, host);
+    HPLayoutSwiftCore(bar, host, btnCls);
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -501,7 +559,8 @@ static void HPLayoutObjcBar(UIView *bar, Class btnCls) {
 
 #pragma mark - Hook
 
-static IMP gOrigSwiftLayout, gOrigSwiftUpdateBtn;
+static IMP gOrigSwiftLayout, gOrigSwiftUpdateBtn, gOrigSwiftDidMove;
+static IMP gOrigBundleInfo;
 static IMP gOrigObjcLayout, gOrigObjcSetSel, gOrigObjcSetupSel, gOrigObjcReload;
 static Class gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gObjcBtnCls;
 
@@ -517,6 +576,18 @@ static void HP_SwiftBar_updateButton(UIView *self, SEL _cmd, UIView *btn, BOOL s
             HPLayoutSwiftBar(self, gSwiftBtnCls);
         } completion:nil];
     }
+}
+// 原栏被 App 重新加进界面时，同一轮里再摘掉、自建栏顶回原位
+static void HP_SwiftBar_didMoveToWindow(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigSwiftDidMove)(self, _cmd);
+    if (self.window) HPLayoutSwiftBar(self, gSwiftBtnCls);
+}
+// 兼容键（知乎定案的总闸）：主包 Info.plist 里 UIDesignRequiresCompatibility 若被按「开」读到，
+// 玻璃就被降级。虎扑的 plist 里根本没有这个键，这里只兜一层：凡主包读这个键，一律答「关」。
+static id HP_Bundle_objectForInfoDictionaryKey(NSBundle *self, SEL _cmd, NSString *key) {
+    if (self == [NSBundle mainBundle] && [key isEqualToString:@"UIDesignRequiresCompatibility"])
+        return @NO;
+    return ((id (*)(id, SEL, id))gOrigBundleInfo)(self, _cmd, key);
 }
 static void HP_ObjcBar_layoutSubviews(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigObjcLayout)(self, _cmd);
@@ -552,9 +623,15 @@ static void HPInstall(void) {
     gObjcBarCls = NSClassFromString(@"HPTabBar");
     gObjcBtnCls = NSClassFromString(@"HPTabBarButton");
     BOOL any = NO;
+    static dispatch_once_t bundleOnce;
+    dispatch_once(&bundleOnce, ^{
+        gOrigBundleInfo = HPSwap([NSBundle class], @selector(objectForInfoDictionaryKey:),
+                                 (IMP)HP_Bundle_objectForInfoDictionaryKey);
+    });
     if (gSwiftBarCls) {
         gOrigSwiftLayout = HPSwap(gSwiftBarCls, @selector(layoutSubviews), (IMP)HP_SwiftBar_layoutSubviews);
         gOrigSwiftUpdateBtn = HPSwap(gSwiftBarCls, @selector(updateButtonWithButton:selected:), (IMP)HP_SwiftBar_updateButton);
+        gOrigSwiftDidMove = HPSwap(gSwiftBarCls, @selector(didMoveToWindow), (IMP)HP_SwiftBar_didMoveToWindow);
         any = (gOrigSwiftLayout != NULL);
     }
     if (gObjcBarCls) {
@@ -564,7 +641,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v12 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v13 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
