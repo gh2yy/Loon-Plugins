@@ -1,6 +1,7 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.11 (2026-11-27)：保留 v8.10 的侧滑底栏
-// 赋值/快照点拦截；分割线按用户要求扩到全微信——静态普查 255 个带 separator
-// 视图 ivar 的类逐个钩排版、同帧藏线，表格系统分隔线全局拦截，冷启动不闪。
+// WCBlack.m — 微信深色模式纯黑背景 v8.12 (2026-11-27)：v8.11 的全局分割线
+// 上线即崩（07:28 .ips 定案：按名跨类取 ivar 取到同名 BOOL 槽，读出 0x1 后
+// isKindOfClass 崩在 WC_Sep_layout）。本版收 ivar 改为本类自有清单 + 类型
+// 编码验明视图/层/数组才收，读取再加指针合理性闸；余同 v8.11。
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -28,7 +29,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.11"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.12"); });
     return l;
 }
 
@@ -505,7 +506,7 @@ static IMP gOrigSetSepStyle, gOrigSetDelegate, gOrigSetDataSource;
 static NSMutableSet<NSString *> *gWDInstalled;
 static NSMutableDictionary<NSString *, NSValue *> *gWDOrigs;
 static void WC_TV_setSepStyle(UITableView *s, SEL c, UITableViewCellSeparatorStyle style) {
-    // v8.11：全局拦截，不再只限首页表
+    // v8.12：全局拦截，不再只限首页表
     if (style != UITableViewCellSeparatorStyleNone && WCHideSep()) {
         if (!objc_getAssociatedObject(s, &kWCSepOrigStyleKey))
             objc_setAssociatedObject(s, &kWCSepOrigStyleKey, @(style), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -571,7 +572,7 @@ static void WC_TV_setDataSource(UITableView *s, SEL c, id d) {
     WCSepOnDelegate(s, d);
 }
 
-// v8.11 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
+// v8.12 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
 // 静态普查完整二进制 46,673 个类，带 separator 视图 ivar 的类 255 个、301 条
 // ivar（名单内嵌于下）。给这些类逐个钩 layoutSubviews（控制器类钩
 // viewDidLayoutSubviews），原实现跑完就在同一次排版里按 ivar 把线藏掉——线
@@ -591,6 +592,19 @@ static NSMutableSet<NSString *> *gSepCensusDone;
 static NSMapTable *gSepPlans;
 static NSUInteger gSepGen = 0;
 static void WCSepHideIvars(id obj, Class regCls, NSArray<NSString *> *names);
+
+static BOOL WCSepIvarIsViewLike(Ivar iv) {
+    const char *te = ivar_getTypeEncoding(iv);
+    if (!te || te[0] != '@' || te[1] != '"') return NO;
+    const char *p = te + 2;
+    const char *q = strchr(p, '"');
+    if (!q || q == p) return NO;
+    NSString *cn = [[NSString alloc] initWithBytes:p length:(NSUInteger)(q - p) encoding:NSUTF8StringEncoding];
+    Class tc = cn ? NSClassFromString(cn) : Nil;
+    [cn release];
+    if (!tc) return NO;
+    return [tc isSubclassOfClass:[UIView class]] || [tc isSubclassOfClass:[CALayer class]] || [tc isSubclassOfClass:[NSArray class]];
+}
 static WCSepPlan *WCBuildSepPlan(id s, SEL c) {
     WCSepPlan *plan = [[WCSepPlan alloc] init];
     plan.gen = gSepGen;
@@ -601,10 +615,18 @@ static WCSepPlan *WCBuildSepPlan(id s, SEL c) {
         NSString *kn = NSStringFromClass(k);
         NSArray<NSString *> *names = gSepCensusIvars[kn];
         if (names) {
-            for (NSString *n in names) {
-                Ivar iv = class_getInstanceVariable(k, n.UTF8String);
-                if (iv) [ivs addObject:[NSValue valueWithPointer:iv]];
+            // 只认本类自己声明的 ivar、且类型编码验明是视图/层/数组才收：
+            // v8.11 按名跨类取 ivar，同名类/同名异类 ivar 会取到 BOOL 槽，
+            // object_getIvar 读出 0x1 再 isKindOfClass 直接崩（07:28 崩溃定案）。
+            unsigned int ic = 0;
+            Ivar *list = class_copyIvarList(k, &ic);
+            for (unsigned int j = 0; j < ic; j++) {
+                const char *inm = ivar_getName(list[j]);
+                if (!inm) continue;
+                if ([names containsObject:[NSString stringWithUTF8String:inm]] && WCSepIvarIsViewLike(list[j]))
+                    [ivs addObject:[NSValue valueWithPointer:list[j]]];
             }
+            if (list) free(list);
             if (!origToCall) {
                 NSValue *v = gSepCensusOrigs[kn];
                 if (v && v != (id)[NSNull null]) origToCall = [v pointerValue];
@@ -627,6 +649,7 @@ static void WC_Sep_layout(id s, SEL c) {
     BOOL hide = WCHideSep();
     for (NSValue *v in plan.ivars) {
         id val = object_getIvar(s, (Ivar)[v pointerValue]);
+        if (!val || (uintptr_t)val < 0x10000 || ((uintptr_t)val & 0x7) != 0) continue;
         if ([val isKindOfClass:[UIView class]]) ((UIView *)val).hidden = hide;
         else if ([val isKindOfClass:[CALayer class]]) ((CALayer *)val).hidden = hide;
         else if ([val isKindOfClass:[NSArray class]])
@@ -1631,7 +1654,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.11 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.12 registered in plugin list");
             break;
         }
     }
@@ -1679,7 +1702,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.11 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.12 source hooks in");
             }
         }
     }
