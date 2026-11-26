@@ -117,8 +117,18 @@ static UIColor *HPPlateFillColor(void) {
         return [UIColor colorWithWhite:1.0 alpha:0.50];
     }];
 }
+// 透镜填充：无填充的玻璃盘在深色下只剩一块黑（采样的是身后胶囊的深色填充），浅色下又几乎看不见；
+// 给透镜一层轻动态填充（浅 黑8% / 深 白18%），让它在两种模式下都读得出是高亮
+static UIColor *HPLensFillColor(void) {
+    return [UIColor colorWithDynamicProvider:^UIColor * _Nonnull(UITraitCollection * _Nonnull traits) {
+        if (traits.userInterfaceStyle == UIUserInterfaceStyleDark)
+            return [UIColor colorWithWhite:1.0 alpha:0.18];
+        return [UIColor colorWithWhite:0.0 alpha:0.08];
+    }];
+}
 
-static UIVisualEffectView *HPMakePlate(BOOL withFill) {
+// fillKind: 0 无填充 / 1 胶囊填充（XHS 底栏配方）/ 2 透镜填充
+static UIVisualEffectView *HPMakePlate(int fillKind) {
     UIVisualEffect *fx = nil;
     Class glassCls = NSClassFromString(@"UIGlassEffect");
     if (glassCls && [glassCls respondsToSelector:@selector(effectWithStyle:)])
@@ -133,13 +143,25 @@ static UIVisualEffectView *HPMakePlate(BOOL withFill) {
     }
     v.userInteractionEnabled = NO;
     v.contentView.layer.masksToBounds = YES;
-    if (withFill) v.contentView.backgroundColor = HPPlateFillColor();
+    if (fillKind == 1) v.contentView.backgroundColor = HPPlateFillColor();
+    else if (fillKind == 2) v.contentView.backgroundColor = HPLensFillColor();
     return v;
 }
 
 static void HPSetPlateFrame(UIVisualEffectView *plate, CGRect f) {
     plate.frame = f;
     plate.contentView.layer.cornerRadius = f.size.height / 2;
+}
+
+// 胶囊投影：白底上玻璃胶囊几乎无边可辨，靠投影把轮廓定出来（shadowPath 显式给胶囊形，不依赖内容 alpha）
+static void HPApplyCapsuleShadow(UIVisualEffectView *plate) {
+    CALayer *l = plate.layer;
+    l.shadowColor = [UIColor blackColor].CGColor;
+    l.shadowOpacity = 0.22;
+    l.shadowRadius = 14;
+    l.shadowOffset = CGSizeMake(0, 5);
+    l.shadowPath = [UIBezierPath bezierPathWithRoundedRect:plate.bounds
+                                              cornerRadius:plate.bounds.size.height / 2].CGPath;
 }
 
 #pragma mark - 自建按钮
@@ -269,10 +291,10 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
 
 static void HPEnsurePlates(UIView *bar) {
     if (objc_getAssociatedObject(bar, &kCapsuleKey)) return;
-    UIVisualEffectView *capsule = HPMakePlate(YES);
+    UIVisualEffectView *capsule = HPMakePlate(1);
     [bar insertSubview:capsule atIndex:0];
     objc_setAssociatedObject(bar, &kCapsuleKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIVisualEffectView *lens = HPMakePlate(NO);
+    UIVisualEffectView *lens = HPMakePlate(2);
     [bar insertSubview:lens atIndex:1];
     objc_setAssociatedObject(bar, &kLensKey, lens, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -358,6 +380,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
     CGRect capRect = CGRectMake(capX, capY, capR - capX, capH);
     HPSetPlateFrame(capsule, capRect);
+    HPApplyCapsuleShadow(capsule);
 
     // 透镜：贴选中按钮的内容中心
     CGRect cr = HPButtonContentRect(bar, btns[sel]);
@@ -398,6 +421,7 @@ static void HPLayoutObjcBar(UIView *bar, Class btnCls) {
     if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
     CGRect capRect = CGRectMake(capX, capY, capR - capX, capH);
     HPSetPlateFrame(capsule, capRect);
+    HPApplyCapsuleShadow(capsule);
     UIView *selBtn = objc_getAssociatedObject(bar, &kSelBtnKey);
     NSUInteger sel = selBtn ? [btns indexOfObject:selBtn] : NSNotFound;
     if (sel == NSNotFound) {
@@ -486,7 +510,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v5 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v6 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
