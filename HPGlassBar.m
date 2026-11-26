@@ -47,9 +47,25 @@ static void HPCollectButtons(UIView *root, Class btnCls, NSMutableArray *out) {
         else HPCollectButtons(v, btnCls, out);
     }
 }
+// 底栏里有隐藏 button（虎扑可配置底栏，隐藏项仍是子视图）：自身或任一中间层隐藏/全透明、
+// 尺寸为零、中心落在底栏可视范围之外的，一律不算——否则按钮行范围与选中映射被它们带偏，点击焦点错位
+static BOOL HPButtonVisible(UIView *bar, UIView *b) {
+    if (b.hidden || b.alpha < 0.01) return NO;
+    UIView *p = b.superview;
+    while (p && p != bar) {
+        if (p.hidden || p.alpha < 0.01) return NO;
+        p = p.superview;
+    }
+    CGRect f = [bar convertRect:b.bounds fromView:b];
+    if (f.size.width < 1 || f.size.height < 1) return NO;
+    CGPoint c = CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f));
+    return CGRectContainsPoint(CGRectInset(bar.bounds, -20, -20), c);
+}
 static NSArray *HPBarButtons(UIView *bar, Class btnCls) {
+    NSMutableArray *all = [NSMutableArray array];
+    HPCollectButtons(bar, btnCls, all);
     NSMutableArray *out = [NSMutableArray array];
-    HPCollectButtons(bar, btnCls, out);
+    for (UIView *b in all) if (HPButtonVisible(bar, b)) [out addObject:b];
     [out sortUsingComparator:^NSComparisonResult(UIView *a, UIView *b) {
         CGFloat ax = CGRectGetMidX([bar convertRect:a.bounds fromView:a]);
         CGFloat bx = CGRectGetMidX([bar convertRect:b.bounds fromView:b]);
