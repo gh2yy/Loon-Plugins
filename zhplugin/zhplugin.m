@@ -787,13 +787,13 @@ static void ZPInstallThemeHook(void) {
 // 段2：玻璃底栏 hook（ZHTabBarNew）
 static void ZPInstallBarHooks(void) {
     if (gInstalled) return;
+    NSLog(@"[zhplugin] variant noselect");
     Class cls = NSClassFromString(@"ZHTabBarNew");
     if (!cls) { NSLog(@"[zhplugin] install segment bar: ZHTabBarNew missing, skip"); return; }
     gOrigSetupUI = ZHSwap(cls, @selector(setupUI), (IMP)ZH_Bar_setupUI);
     gOrigLayoutItems = ZHSwap(cls, @selector(layoutItems), (IMP)ZH_Bar_layoutItems);
     gOrigSetItems = ZHSwap(cls, @selector(setItems:), (IMP)ZH_Bar_setItems);
-    gOrigSelect = ZHSwap(cls, @selector(selectItem:), (IMP)ZH_Bar_selectItem);
-    gOrigUnselect = ZHSwap(cls, @selector(unselectItem:), (IMP)ZH_Bar_unselectItem);
+    // 变体 A（二分定位点 tab 闪退）：跳过 selectItem:/unselectItem: 两处 swizzle，透镜不随点选滑动，其余底栏钩保留
     gOrigNotifyTheme = ZHSwap(cls, @selector(notifyThemeSwitch), (IMP)ZH_Bar_notifyThemeSwitch);
     gOrigUpdateTheme = ZHSwap(cls, @selector(updateTheme:tabBarAppearance:), (IMP)ZH_Bar_updateTheme);
     BOOL addedLayout = class_addMethod(cls, @selector(layoutSubviews),
