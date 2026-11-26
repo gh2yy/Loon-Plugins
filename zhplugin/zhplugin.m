@@ -109,6 +109,10 @@
 //   v3.7（真机反馈单修）：底边距 15→23（整栏再往上抬 8）。栏高
 //     62、透镜 74×50、按钮排布全不变，自建栏 frame y =
 //     956−23−62 = 871。其余逐字未动。
+//   v3.8（真机反馈单修）：按钮内图标与文字间隔 7→3（微博式收
+//     紧排布）：图标 y 10→11、标题 y 41→38，整组在 62 高内垂直
+//     居中（上下边距同为 11）。栏高、底边距 23、透镜全不变。
+//     其余逐字未动。
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
 //   录（保留探针时代的取证字段）。
@@ -524,8 +528,8 @@ static BOOL gNavUserTapped = NO;
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat w = self.bounds.size.width;
-    _iconView.frame = CGRectMake((w - 24) / 2, 10, 24, 24);
-    _titleLabel.frame = CGRectMake(0, 41, w, 13);
+    _iconView.frame = CGRectMake((w - 24) / 2, 11, 24, 24);
+    _titleLabel.frame = CGRectMake(0, 38, w, 13);
 }
 - (void)zpSetBar:(UIView *)bar model:(id)model {
     _bar = bar;
