@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v4.4 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v4.5 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.4"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.5"); });
     return l;
 }
 
@@ -208,6 +208,23 @@ static UIImage *WCSolidImage(UIColor *color) {
     return img;
 }
 
+// 不透明静态深灰（微信自家 #0F0F0F/#1E1E1E 这类）：不在令牌表里、也不是半透明蒙层，
+// 旧规则全漏。按深色解析判：不透明、近中性、亮度 <0.40。
+static BOOL WCIsOpaqueDarkNeutral(UIColor *c) {
+    if (!c) return NO;
+    UIColor *d = [c resolvedColorWithTraitCollection:WCDarkTrait()];
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (![d getRed:&r green:&g blue:&b alpha:&a]) {
+        CGFloat w = 0;
+        if (![d getWhite:&w alpha:&a]) return NO;
+        r = g = b = w;
+    }
+    if (a < 0.95) return NO;
+    CGFloat mx = MAX(r, MAX(g, b)), mn = MIN(r, MIN(g, b));
+    CGFloat lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return (mx - mn) < 0.05 && lum > 0.005 && lum < 0.40;
+}
+
 // 改色前存档原背景（只存第一次），供浅色恢复
 static void WCStoreOrigBG(UIView *v) {
     if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
@@ -339,6 +356,14 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
         if (nb.barTintColor != dyn) nb.barTintColor = dyn;
     }
     WCApplyStrong(bar, bar, dyn, depth);
+    // 直属子视图里的不透明静态深灰一并刷掉：MMInputToolView 直属的键盘占位视图
+    // （440×348、#1E1E1E）不在令牌表、不是蒙层，旧规则全漏——它在键盘面板四周露边，
+    // 正是「键盘背景还是灰」的一部分。只处理直属一层，输入框底板等嵌套内容不受影响。
+    for (UIView *v in bar.subviews) {
+        if ([v isKindOfClass:[UIVisualEffectView class]]) continue;
+        UIColor *bg = v.backgroundColor;
+        if (bg && bg != dyn && WCIsOpaqueDarkNeutral(bg)) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
+    }
 }
 
 static void WCScanAndForceTabs(UIView *root, int depth); // 前向声明：定义在下方兜底扫描一节
@@ -361,7 +386,10 @@ static void WCScanAllWindows(void) {
     for (UIWindow *w in wins) {
         NSString *cn = NSStringFromClass([w class]);
         if (![census containsObject:cn]) [census addObject:cn];
-        if ([cn containsString:@"Keyboard"]) { sawKeyboard = YES; WCForceKeyboardWindow(w); continue; }
+        // v4.4 真机普查：本包枚举里只有 iConsoleWindow 与 UITextEffectsWindow，根本没有
+        // UIRemoteKeyboardWindow——旧匹配只认类名含 Keyboard，永远找不到。UITextEffectsWindow
+        // 同属键盘/文本特效窗口族，一并按键盘窗口处理（存树+强刷），树里见分晓。
+        if ([cn containsString:@"Keyboard"] || [cn containsString:@"TextEffects"]) { sawKeyboard = YES; WCForceKeyboardWindow(w); continue; }
         WCScanAndForceTabs(w, 12);
         WCScanRegister(w, 16);
     }
@@ -509,6 +537,22 @@ static void WCScanRegister(UIView *root, int depth) {
     // 任何 UINavigationBar 子类都登记进 nav 表：首页那条 #0F0F0F 的顶栏不是 MMUINavigationBar
     // （钩子没挂上、注册表里那条不在当前窗口），类名对不上就永远漏刷；按基类兜底才稳。
     if ([root isKindOfClass:[UINavigationBar class]]) WCRegisterBar(gBarsNav, root);
+    // 首页顶栏的 #0F0F0F 终局定位：注册表里的栏从不在主窗口、命中链里也全是透明层——
+    // 真凶是布局容器里一块与内容视图同级的全宽背景条，命中链永远拍不到它。按特征兜底：
+    // 窗口顶部（y<70）、全宽、高 20–140 的不透明深灰视图（或带 effect 的同规格视图，
+    // 登记其父视图让强刷去摘 effect），一律登记进 nav 表强刷。
+    if (root.window && root.bounds.size.width >= root.window.bounds.size.width * 0.95 &&
+        root.bounds.size.height >= 20 && root.bounds.size.height <= 140) {
+        CGRect wf = [root convertRect:root.bounds toView:nil];
+        if (wf.origin.y < 70 && wf.origin.y > -70) {
+            if (WCIsOpaqueDarkNeutral(root.backgroundColor)) {
+                WCRegisterBar(gBarsNav, root);
+            } else if ([root isKindOfClass:[UIVisualEffectView class]] && ((UIVisualEffectView *)root).effect &&
+                       root.superview && [root.superview isKindOfClass:[UIView class]]) {
+                WCRegisterBar(gBarsNav, root.superview);
+            }
+        }
+    }
     for (UIView *s in root.subviews) WCScanRegister(s, depth - 1);
 }
 
@@ -988,7 +1032,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"4.4", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"4.5", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -996,7 +1040,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v4.4 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v4.5 registered in plugin list");
             break;
         }
     }
@@ -1053,7 +1097,7 @@ static void WCInstall(void) {
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v4.4 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v4.5 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1065,7 +1109,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v4.4 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v4.5 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     WCEnsureRegistered();
