@@ -1,41 +1,42 @@
 // zhplugin.m — 知乎 11.15.0 插件合集（2026-11-26）
 // 同一个 dylib 两项功能，各有独立开关（设置页 contactsCellInfo 行正上方连插行）：
-//   1) 玻璃探针 v3（本轮，三对照决战版）：三只悬浮胶囊全部直挂 keyWindow
-//      顶层，构造三对照（甲容器+玻璃 / 乙裸玻璃 / 丙裸材质），一次分开
-//      「容器 / 玻璃本体 / 背板采样」三个变量（自建底部导航仍待命、本轮
-//      不建；原底栏完全不动）
+//   1) 玻璃探针·照抄配方版（本轮）：一只悬浮胶囊直挂 keyWindow 顶层，按
+//      RECIPE_DIFF.md 第四节配方重做构造（ZPGlassView 子类吞 setEffect: +
+//      空身入树 + applyEffect: 后装、停写盘本体 bg、维护改两家式幂等），
+//      一只胶囊验真（自建底部导航仍待命、本轮不建；原底栏完全不动）
 //   2) 纯黑背景：夜间模式下整体画布背景改纯黑 #000000（仿 WCBlack 路线，但走知乎主题发色点）
 //
-// 玻璃探针口径（2026-11-26 探针 v3，三对照决战版；全栏自建导航仍待命、本轮不建）：
+// 玻璃探针口径（2026-11-26 照抄配方版；全栏自建导航仍待命、本轮不建）：
 //   v2 真机已定罪：两只胶囊（甲挂原栏父视图窗口锚定、乙直挂 keyWindow
-//   ZHRootWindow）诊断全绿——effect 类名实测 UIGlassEffect/
-//   UIGlassContainerEffect 真身、类查找全命中、窗口坐标分毫不差（落位三值
-//   全等）、bg 被外部写黑 2 次已被钉制压住（诊断时 bg=nil）、hidden=0/
-//   alpha=1/style 钉住——却双双渲染为实心黑药丸（乙压在照片上纯黑零折射、
-//   甲在「我的」页闪现过、同为黑底）。即构造、落位、层级、背景已全排除：
-//   真 UIGlassEffect 在知乎进程里就是渲染成实心黑。本轮不再验证这些，只
-//   回答「为什么」：三只胶囊全部直挂 keyWindow 顶层（沿用 v2 乙的承载
-//   口径，宿主视图链变量归零），x=90、宽 260、高 64、纵向错开不重叠
-//   （y 依次 210/300/390），一次分开剩余三个变量：
-//     甲（对照组）：与 v2 乙完全一致——UIGlassContainerEffect 容器
-//        （spacing 2.0）+ 内层 UIGlassEffect Regular 胶囊。
-//     乙（去容器）：裸 UIVisualEffectView + UIGlassEffect Regular，不进
-//        容器；塑形只用本体 capsule cornerConfiguration + contentView.layer
-//        圆角（XHSNative plateOn 原方——它与 DYKiller 底栏玻璃都不用容器，
-//        容器只出现在它们的多元素融合场景）。
-//     丙（材质对照）：裸 UIVisualEffectView + UIBlurEffect
-//        SystemUltraThinMaterial（style 6），塑形走本体 layer 圆角+裁剪。
-//   三只共同口径：bg 先记后钉（记录分甲/乙/丙三组）、overrideUserInterfaceStyle
-//   钉知乎主题、userInteractionEnabled=NO、玻璃开关同控显隐；探针的建/位
-//   仍由既有触发链（ZHRequestApply 下一拍 ZHApplyBar）驱动，主题切换经同一
-//   路径重钉风格。
-//   诊断本轮新增另一半：①UIAccessibility 三开关运行时实读——降低透明度
-//   （UIAccessibilityIsReduceTransparencyEnabled）/ 增强对比
-//   （UIAccessibilityDarkerSystemColorsEnabled，注意无 Is 前缀）/ 色彩反转
-//   （UIAccessibilityIsInvertColorsEnabled），各一行布尔；②三只胶囊各自的完整
-//   子树——列 effect view 的全部子视图（含 _UIVisualEffectBackdropView 等
-//   系统内部子视图、并附每视图的 layer 类），看玻璃与材质各自的背板子
-//   视图在不在。判读表见 PATCH_NOTES 探针 v3 段。原栏仍完全不动。
+//   ZHRootWindow）诊断全绿——effect 类名实测 UIGlassEffect 真身、类查找
+//   全命中、窗口坐标分毫不差、bg 被外部写黑 2 次已被钉制压住、hidden=0/
+//   alpha=1/style 钉住——却双双渲染为实心黑药丸（乙压在照片上纯黑零
+//   折射）。构造、落位、层级、背景已全排除。其后逐行对照两家成功样本
+//   （XHSNative / DYKiller）定案三条构造差异（RECIPE_DIFF.md），本轮同
+//   批落地、一只胶囊验真：
+//     ①停写盘本体 backgroundColor——两家对玻璃视图本体 bg 一指不碰；
+//       我们独有的每轮写 nil 钉制是在和外部写入方反复抢同一属性。本
+//       轮删 ZPCheckAndPinBg 的回写动作、只记录（ZPRecordBg）。
+//     ②删每轮 bringSubviewToFront 与全量重申——维护改两家式幂等：
+//       hidden 同步、位置核查（不在当前 keyWindow 才重插一次、已在位
+//       永不重排）、frame 变更才写、contentView 圆角每轮重设、风格钉
+//       住变更才写。
+//     ③DYKiller 防线整套：ZPGlassView（UIVisualEffectView 子类）覆写
+//       setEffect: 为空实现+计数（外部调用一律吞掉、只记次数与最近传
+//       入类名）；真装走自有 applyEffect:（[super setEffect:] 直调父
+//       类原实现、计数安装数）；视图 initWithFrame: 空身先入树，随后
+//       才 applyEffect: 装入 UIGlassEffect Regular（interactive 装入
+//       前在 effect 上设 YES，Regular 无 tint）。
+//   胶囊规格：一只，keyWindow 顶层，frame {90,300,260,64} 窗口坐标；
+//   不用容器（两家单元素均不用）；塑形仅创建时一次（本体 capsule
+//   cornerConfiguration + contentView.layer masksToBounds +
+//   cornerRadius=高/2）；装入前 overrideUserInterfaceStyle 钉知乎主题；
+//   userInteractionEnabled=NO；玻璃开关同控显隐；触发链仍走
+//   ZHRequestApply 下一拍 ZHApplyBar。
+//   诊断新增三计数：setEffect: 外部调用次数 + 最近一次传入类名、
+//   applyEffect: 安装次数、bg 外部写入次数（只记不钉，既有记录口径）；
+//   UIAccessibility 三开关实读行保留。判读表见 PATCH_NOTES 照抄配方版
+//   段。原栏仍完全不动。
 //
 // 纯黑背景口径（本轮静态定案，详见 PATCH_NOTES v3 段）：
 //   知乎颜色总发色点是 ZHThemeManage（ZHCoreTheme）：
@@ -91,12 +92,7 @@
 #import <objc/message.h>
 #import <math.h>
 
-static char kCapsuleKey;   // 探针甲胶囊（UIVisualEffectView + UIGlassEffect 本体）
-static char kGlassBoxKey;  // 探针甲容器（UIVisualEffectView + UIGlassContainerEffect，直挂 keyWindow 顶层）
-static char kCapsuleBKey;  // 探针乙胶囊（v3：裸玻璃，直挂 keyWindow）
-static char kGlassBoxBKey; // 探针乙容器键（v3 乙不用容器，此键恒空，仅作参数对称）
-static char kCapsuleCKey;  // 探针丙胶囊（v3：裸材质 UIBlurEffect style 6，直挂 keyWindow）
-static char kGlassBoxCKey; // 探针丙容器键（同乙，恒空）
+static char kCapsuleKey;   // 配方探针胶囊（ZPGlassView + UIGlassEffect，直挂 keyWindow 顶层）
 static char kSchedKey;     // 已排队布局标记
 static char kLayoutLockKey; // layoutSubviews 重入锁（per-instance）
 static char kGestureKey;   // 长按兜底手势（RETAIN）
@@ -256,18 +252,17 @@ static void ZPSetBlackEnabled(BOOL on) {
     NSLog(@"[zhplugin] blackbg switch -> %@", on ? @"ON" : @"OFF");
 }
 
-#pragma mark - 玻璃盘构造（原生 UIGlassEffect 本体：XHSNative 配方 + DYKiller 纪律）
+#pragma mark - 玻璃盘构造（照抄配方版：ZPGlassView 防线 + 空身入树 + applyEffect: 后装）
 
-// 本轮（探针 v3）：三只胶囊的本体构造——甲/乙共用玻璃胶囊工厂（单只
-// UIVisualEffectView + UIGlassEffect Regular，XHSNative plateOn 配方逐项
-// 对齐），甲另套玻璃容器（与 v2 乙同构造、作对照组），乙裸视图不用容器，
-// 丙用材质工厂（UIBlurEffect style 6）。风格钉住 overrideUserInterfaceStyle
-// 钉知乎主题（DYKiller 对其 Regular 槽位的做法）。承载与落位在布局节
-// （ZHEnsureProbePair 按 kind 分派 / ZHLayoutProbeOnWindow 三只共用）。
+// 本轮（照抄配方版）：按 RECIPE_DIFF.md 第四节配方重做构造。核心三条
+// 同批落地：①停写盘本体 bg（只记录、不回写，见 ZPRecordBg）；②维护改
+// 两家式幂等（在布局节 ZHLayoutRecipeProbe）；③DYKiller 防线——
+// ZPGlassView 子类吞 setEffect:、空身入树、applyEffect: 后装。承载与
+// 落位在布局节。
 //
 // iOS 26 玻璃类全部运行时取类、无硬链接（构建 SDK 不含其头文件）：
-// UIGlassEffect / UIGlassContainerEffect / UICornerConfiguration。
-// 取类失败（<iOS 26）时 ZHMakeProbeCapsule 返回 nil，布局节据此静默不建探针。
+// UIGlassEffect / UICornerConfiguration。
+// 取类失败（<iOS 26）时工厂返回 nil，布局节据此静默不建探针。
 
 static id ZHMakeGlassEffect(BOOL interactive) {
     Class cls = NSClassFromString(@"UIGlassEffect");
@@ -279,65 +274,74 @@ static id ZHMakeGlassEffect(BOOL interactive) {
     return fx; // 工厂方法返回值按惯例 autorelease，MRC 下调用方在池内即用，安全
 }
 
-static id ZHMakeGlassContainerEffect(void) {
-    Class cls = NSClassFromString(@"UIGlassContainerEffect");
-    if (!cls) return nil;
-    id fx = [[cls alloc] init];
-    if (fx && [fx respondsToSelector:@selector(setSpacing:)])
-        ((void (*)(id, SEL, double))objc_msgSend)(fx, @selector(setSpacing:), 2.0); // DYKiller 实测常量
-    return [fx autorelease];
-}
-
 static id ZHCapsuleCornerConfiguration(void) {
     Class cls = NSClassFromString(@"UICornerConfiguration");
     if (!cls || ![cls respondsToSelector:@selector(capsuleConfiguration)]) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(cls, @selector(capsuleConfiguration));
 }
 
-// 探针胶囊本体：单只 UIVisualEffectView + UIGlassEffect Regular。
-// tintColor 不设（nil）；cornerConfiguration=capsule 设在 effect view 本体；
-// contentView.layer 的 masksToBounds 在此开、cornerRadius 在 ZPSetProbeFrame
-// 每轮按高/2 重设。无外壳、无 shadow、无任何装饰层。effect 设 interactive:YES
-// （DYKiller 主元素口径）。userInteractionEnabled=NO：探针永不吃点击。
-static UIVisualEffectView *ZHMakeProbeCapsule(void) {
-    id fx = ZHMakeGlassEffect(YES);
-    if (!fx) return nil;
-    UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:fx];
-    v.userInteractionEnabled = NO; // 探针永不吃点击
+// effect 通道三计数之一/之二（诊断取证，本轮新增）：
+//   gSetEffectExtCount —— ZPGlassView 的 setEffect: 被外部调用的次数（覆写
+//     吞掉并计数；applyEffect: 走 super 通道、不经覆写，不计入此数）。
+//   gSetEffectLastClass —— 最近一次外部传入 effect 的类名（RETAIN；从未
+//     发生时为 nil，诊断显示「-」）。
+//   gApplyEffectCount —— applyEffect: 真正安装 effect 的次数。
+static NSUInteger gSetEffectExtCount = 0;
+static NSString *gSetEffectLastClass = nil; // RETAIN
+static NSUInteger gApplyEffectCount = 0;
+
+// ZPGlassView（DYKiller 的 DKChatGlassView 防线同构）：把公开的
+// setEffect: 覆写成空实现——任何外部代码（宿主或 UIKit）给这只视图赋
+// effect 都被吞掉并计数，effect 只能经自有 applyEffect: 安装。知乎进程
+// 已实测存在对外来 effect view 的外部写入（bg 写黑），此类干扰非假想。
+@interface ZPGlassView : UIVisualEffectView
+- (void)applyEffect:(UIVisualEffect *)effect;
+@end
+
+@implementation ZPGlassView
+- (void)setEffect:(UIVisualEffect *)effect {
+    // 空实现 + 计数：不调 super、不写任何状态，只记下这次外部调用。
+    gSetEffectExtCount++;
+    NSString *cls = effect ? NSStringFromClass(object_getClass(effect)) : @"nil";
+    if (![cls isEqualToString:gSetEffectLastClass]) {
+        [gSetEffectLastClass release];
+        gSetEffectLastClass = [cls retain];
+    }
+}
+- (void)applyEffect:(UIVisualEffect *)effect {
+    gApplyEffectCount++;
+    // [super setEffect:] 由编译器生成 objc_msgSendSuper2 直调父类原实现
+    // （DYKiller 手写 msgSendSuper2 达同一通道），绕开上面的吞噬覆写。
+    [super setEffect:effect];
+}
+@end
+
+// 配方胶囊工厂：只负责「取或建 + 空身创建 + 一次性塑形」，不入树、不装
+// effect（入树与后装在布局节 ZHLayoutRecipeProbe 按配方次序完成）。
+// 空身：initWithFrame: 创建、出生无 effect。塑形仅此一次：本体 capsule
+// cornerConfiguration + contentView.layer masksToBounds + cornerRadius
+// =高/2。无外壳、无 shadow、无任何装饰层。UIGlassEffect 类取不到
+// （<iOS 26）返回 nil，布局节据此静默不建探针。
+static ZPGlassView *ZHRecipeCapsuleForBar(UIView *bar) {
+    ZPGlassView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    if (capsule) return capsule;
+    if (!NSClassFromString(@"UIGlassEffect")) return nil;
+    capsule = [[ZPGlassView alloc] initWithFrame:CGRectMake(90, 300, 260, 64)];
+    capsule.userInteractionEnabled = NO; // 探针永不吃点击
     id cc = ZHCapsuleCornerConfiguration();
-    if (cc && [v respondsToSelector:@selector(setCornerConfiguration:)])
-        ((void (*)(id, SEL, id))objc_msgSend)(v, @selector(setCornerConfiguration:), cc);
-    v.contentView.layer.masksToBounds = YES;
-    return v;
-}
-
-// 容器：UIVisualEffectView + UIGlassContainerEffect，探针胶囊放进其 contentView，
-// 由系统做玻璃融合渲染（官方多玻璃元素口径；本轮容器内只有胶囊一只）。
-// 类取不到返回 nil，布局节降级为胶囊直接进父视图。
-static UIVisualEffectView *ZHMakeGlassContainer(void) {
-    id fx = ZHMakeGlassContainerEffect();
-    if (!fx) return nil;
-    UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:fx];
-    v.userInteractionEnabled = NO;
-    return v;
-}
-
-// 探针丙本体：裸 UIVisualEffectView + UIBlurEffect SystemUltraThinMaterial
-// （style 6，iOS 13 老通道——WCTabBarGlass 的采样核心）。UIBlurEffect 是
-// 长期公开 API、直接硬链接调用，不走运行时取类。塑形不在此处做：材质的
-// 背板子视图是 effect view 的直接子视图（不在 contentView 内），靠
-// ZPSetMaterialFrame 每轮给本体 layer 设圆角+裁剪。userInteractionEnabled=NO。
-static UIVisualEffectView *ZHMakeMaterialCapsule(void) {
-    UIBlurEffect *fx = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
-    UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:fx];
-    v.userInteractionEnabled = NO; // 探针永不吃点击
-    return v;
+    if (cc && [capsule respondsToSelector:@selector(setCornerConfiguration:)])
+        ((void (*)(id, SEL, id))objc_msgSend)(capsule, @selector(setCornerConfiguration:), cc);
+    capsule.contentView.layer.masksToBounds = YES;
+    capsule.contentView.layer.cornerRadius = capsule.frame.size.height / 2;
+    objc_setAssociatedObject(bar, &kCapsuleKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [capsule release];
+    return capsule;
 }
 
 // 风格钉住：overrideUserInterfaceStyle 钉知乎主题（ZPAppIsNight 口径——优先
 // ZHThemeManage isNightMode，与发色点同源）。知乎主题与系统外观不一致时，
 // 玻璃的明暗必须跟知乎走（DYKiller 对其 Regular 槽位 setOverrideUserInterfaceStyle:
-// 同款动作）。ZPSetProbeFrame 每轮都会调用，主题切换经既有 apply 路径自动同步；
+// 同款动作）。ZHLayoutRecipeProbe 每轮都会调用，主题切换经既有 apply 路径自动同步；
 // 先比对现值再写，保持幂等。
 static void ZHGlassApplyTheme(UIView *v) {
     if (!v) return;
@@ -345,64 +349,35 @@ static void ZHGlassApplyTheme(UIView *v) {
     if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
 }
 
-// bg 写入侦测（核心取证）：探针 v1 真机诊断实证胶囊的 backgroundColor 被
-// 外部写成 rgba(0,0,0,1) 共 2 次（容器 0 次），均被钉回 nil——写入只在建盘/
-// 入树期发生、钉制已压住（本插件源码无任何对玻璃视图 backgroundColor 的
-// 赋值，定性为外部写入）。v3 甲乙丙各持一组记录（首次值/末次值/累计次数），
-// 每轮布局先读后钉，互不串扰。
-static NSString *gBgCapFirst = nil, *gBgCapLast = nil; // 探针甲胶囊被写入记录（RETAIN）
+// bg 写入侦测（核心取证）：探针 v1 起实证胶囊的 backgroundColor 被外部
+// 写成 rgba(0,0,0,1)（本插件源码无任何对玻璃视图 backgroundColor 的赋
+// 值，定性为外部写入）。旧版每轮读到非 nil 就写 nil 钉制——逐行对照定
+// 案（RECIPE_DIFF 嫌疑 1）：两家成功样本对玻璃视图本体 bg 一指不碰，我
+// 们独有的回写是在和写入方反复抢同一属性。本轮删回写、只记录：每轮观
+// 察 bg，非 nil 且与上轮观察值不同（或上轮为 nil）才计数一次（同值持
+// 续存在不重复计——不回写后同一次写入会一直留存，按轮计数必然虚增）；
+// 观察到 nil 时清上轮标记，下一次非 nil 重新计数。首次值/末次值/累计
+// 次数进诊断（计数口径为「观察到的相异写入」，与旧版按轮钉制计数不可
+// 直接比大小，在此标注）。
+static NSString *gBgCapFirst = nil, *gBgCapLast = nil; // 配方胶囊被写入记录（RETAIN）
 static NSUInteger gBgCapCount = 0;
-static NSString *gBgBoxFirst = nil, *gBgBoxLast = nil; // 探针甲容器被写入记录（RETAIN）
-static NSUInteger gBgBoxCount = 0;
-static NSString *gBgCapBFirst = nil, *gBgCapBLast = nil; // 探针乙胶囊被写入记录（RETAIN）
-static NSUInteger gBgCapBCount = 0;
-static NSString *gBgBoxBFirst = nil, *gBgBoxBLast = nil; // 探针乙容器被写入记录（RETAIN，乙无容器、恒 0）
-static NSUInteger gBgBoxBCount = 0;
-static NSString *gBgCapCFirst = nil, *gBgCapCLast = nil; // 探针丙胶囊被写入记录（RETAIN）
-static NSUInteger gBgCapCCount = 0;
-static NSString *gBgBoxCFirst = nil, *gBgBoxCLast = nil; // 探针丙容器被写入记录（RETAIN，丙无容器、恒 0）
-static NSUInteger gBgBoxCCount = 0;
-static void ZPCheckAndPinBg(UIView *v, NSString **first, NSString **last, NSUInteger *count) {
+static NSString *gBgCapSeen = nil; // 上轮观察到的 bg 描述（RETAIN；nil=上轮为 nil 或未观察）
+static void ZPRecordBg(UIView *v) {
     if (!v) return;
     UIColor *bg = v.backgroundColor;
-    if (!bg) return;
+    if (!bg) {
+        if (gBgCapSeen) { [gBgCapSeen release]; gBgCapSeen = nil; }
+        return;
+    }
     NSString *d = ZPColorDesc(bg);
-    if (!*first) *first = [d retain];
-    [*last release];
-    *last = [d retain];
-    (*count)++;
-    v.backgroundColor = nil; // 钉制：玻璃视图本体 bg 必须为 nil
-}
-
-// 探针落位：空 frame ⇒ 隐藏；非空 ⇒ 显示、变了才 setFrame；contentView.layer
-// 圆角每轮按高/2 重设（先比对后写，保持幂等）；风格每轮钉知乎主题。
-static void ZPSetProbeFrame(UIVisualEffectView *v, CGRect f) {
-    if (!v) return;
-    if (CGRectIsEmpty(f)) { v.hidden = YES; return; }
-    v.hidden = NO;
-    if (!CGRectEqualToRect(v.frame, f)) v.frame = f;
-    CGFloat r = f.size.height / 2;
-    if (!v.contentView.layer.masksToBounds) v.contentView.layer.masksToBounds = YES;
-    if (v.contentView.layer.cornerRadius != r) v.contentView.layer.cornerRadius = r;
-    ZHGlassApplyTheme(v);
-}
-
-// 探针丙（材质）落位：与 ZPSetProbeFrame 同口径（空 frame 隐藏、变了才写、
-// 每轮钉风格），塑形改走本体 layer：材质的背板子视图
-// （_UIVisualEffectBackdropView）是 effect view 的直接子视图、不在
-// contentView 内，只有本体 layer 的 cornerRadius + masksToBounds 能把背板
-// 与内容一起裁成胶囊形；contentView.layer 圆角同步设上，保持内层口径一致。
-static void ZPSetMaterialFrame(UIVisualEffectView *v, CGRect f) {
-    if (!v) return;
-    if (CGRectIsEmpty(f)) { v.hidden = YES; return; }
-    v.hidden = NO;
-    if (!CGRectEqualToRect(v.frame, f)) v.frame = f;
-    CGFloat r = f.size.height / 2;
-    if (v.layer.cornerRadius != r) v.layer.cornerRadius = r;
-    if (!v.layer.masksToBounds) v.layer.masksToBounds = YES;
-    if (!v.contentView.layer.masksToBounds) v.contentView.layer.masksToBounds = YES;
-    if (v.contentView.layer.cornerRadius != r) v.contentView.layer.cornerRadius = r;
-    ZHGlassApplyTheme(v);
+    if ([d isEqualToString:gBgCapSeen]) return; // 同值持续存在：同一次写入，不重复计
+    [gBgCapSeen release];
+    gBgCapSeen = [d retain];
+    if (!gBgCapFirst) gBgCapFirst = [d retain];
+    [gBgCapLast release];
+    gBgCapLast = [d retain];
+    gBgCapCount++;
+    // 只记录，绝不回写 v.backgroundColor（配方第 1 条）
 }
 
 #pragma mark - 开关回调（单例 handler，静态 RETAIN）
@@ -471,100 +446,46 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
 }
 @end
 
-#pragma mark - 布局（探针 v3：apply 幂等：开 -> 三只探针落位；关 -> 全隐藏）
+#pragma mark - 布局（照抄配方版：apply 幂等：开 -> 配方胶囊落位；关 -> 隐藏）
 
-// 探针构造 kind（ZHEnsureProbePair / ZHLayoutProbeOnWindow 共用分派口径）
-enum {
-    ZPProbeKindContainerGlass = 0, // 甲：容器 + 玻璃胶囊（与 v2 乙同构造，对照组）
-    ZPProbeKindBareGlass = 1,      // 乙：裸玻璃胶囊，不进容器
-    ZPProbeKindBareMaterial = 2,   // 丙：裸材质胶囊（UIBlurEffect style 6）
-};
-
-// 探针承载（v3 三对照）：三只探针全部直挂 keyWindow 顶层、frame 即窗口
-// 坐标，区别只在构造 kind：甲套容器（box），乙/丙裸视图（carrier 即胶囊
-// 本人、box 恒 nil）。三只探针的视图都以 bar 为登记锚关联持有（bar 是
-// 触发链的天然锚点，与承载视图无关）。原栏本身完全不动——不隐藏、不
-// 清场、不改背景。结构：甲 = carrier(box) └ contentView └ 胶囊；乙/丙 =
-// 胶囊本人。返回 NO 的情形：承载窗口未就绪（等下一轮触发）、或该 kind
-// 的 effect 不可用（如 UIGlassEffect 取类失败）——调用方据此不建该只探针。
-static BOOL ZHEnsureProbePair(UIView *bar, UIView *parent, const void *capKey, const void *boxKey, int kind) {
-    if (!parent) return NO;
-    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, capKey);
-    if (!capsule) {
-        capsule = (kind == ZPProbeKindBareMaterial) ? ZHMakeMaterialCapsule() : ZHMakeProbeCapsule();
-        if (capsule) {
-            objc_setAssociatedObject(bar, capKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [capsule release];
-        }
-    }
-    if (!capsule) return NO; // 该 kind 的 effect 不可用：静默不建探针
-    UIVisualEffectView *box = objc_getAssociatedObject(bar, boxKey);
-    if (!box && kind == ZPProbeKindContainerGlass) { // 只有甲（对照组）套容器
-        box = ZHMakeGlassContainer();
-        if (box) {
-            objc_setAssociatedObject(bar, boxKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [box release];
-        }
-    }
-    UIView *carrier = box ? (UIView *)box : (UIView *)capsule;
-    if (box && capsule.superview != box.contentView) [box.contentView addSubview:capsule];
-    if (carrier.superview != parent) [parent addSubview:carrier];
-    // 顶层重申：宿主后入的视图可能盖到探针之上，每轮把 carrier 提到承载视图最前
-    if (parent.subviews.lastObject != carrier) [parent bringSubviewToFront:carrier];
-    return YES;
-}
-
-// 单只探针的隐藏（未就绪与关玻璃共用，关联对象为空时安全空转）
-static void ZHHideProbePair(UIView *bar, const void *capKey, const void *boxKey) {
-    UIView *box = objc_getAssociatedObject(bar, boxKey);
-    UIView *capsule = objc_getAssociatedObject(bar, capKey);
-    if (box) box.hidden = YES;
-    if (capsule) capsule.hidden = YES;
-}
-static void ZHHideProbe(UIView *bar) {
-    ZHHideProbePair(bar, &kCapsuleKey, &kGlassBoxKey);
-    ZHHideProbePair(bar, &kCapsuleBKey, &kGlassBoxBKey);
-    ZHHideProbePair(bar, &kCapsuleCKey, &kGlassBoxCKey);
-}
-
-// 单只探针落位：bg 侦测+钉制（每轮布局必达，先于落位；记录组由参数指定、
-// 甲乙丙互不串扰）→ 有容器时 carrier 落 f（窗口坐标）、胶囊在容器内归零；
-// 裸视图时胶囊本人落 f（材质走 ZPSetMaterialFrame 的 layer 塑形、玻璃走
-// ZPSetProbeFrame）。落位函数内含风格钉住，每轮都达。
-static void ZPApplyProbeFrames(UIView *bar, CGRect f, const void *capKey, const void *boxKey, BOOL material,
-                               NSString **capFirst, NSString **capLast, NSUInteger *capCount,
-                               NSString **boxFirst, NSString **boxLast, NSUInteger *boxCount) {
-    UIVisualEffectView *box = objc_getAssociatedObject(bar, boxKey);
-    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, capKey);
-    ZPCheckAndPinBg(capsule, capFirst, capLast, capCount);
-    ZPCheckAndPinBg(box, boxFirst, boxLast, boxCount);
-    if (box) {
-        ZPSetProbeFrame(box, f);
-        ZPSetProbeFrame(capsule, CGRectMake(0, 0, f.size.width, f.size.height));
-    } else if (material) {
-        ZPSetMaterialFrame(capsule, f);
-    } else {
-        ZPSetProbeFrame(capsule, f);
-    }
-}
-
-// 三只探针共用落位（v3）：全部直挂 keyWindow 顶层（沿用 v2 乙的承载
-// 口径——宿主视图链变量归零），frame 即窗口坐标、不做任何换算。kind 与
-// 记录组由调用方按只传入；窗口未就绪或该 kind 建不出来时隐藏该只、等
-// 下一轮触发。
-static void ZHLayoutProbeOnWindow(UIView *bar, CGRect winFrame, int kind,
-                                  const void *capKey, const void *boxKey,
-                                  NSString **capFirst, NSString **capLast, NSUInteger *capCount,
-                                  NSString **boxFirst, NSString **boxLast, NSUInteger *boxCount) {
+// 配方胶囊落位（每轮 apply 走一遍，全程两家式幂等——RECIPE_DIFF 嫌疑 2）：
+//   位置核查——胶囊不在当前 keyWindow 才重插一次（addSubview 到窗口顶
+//   层）；已在位永不重排（删旧版每轮 bringSubviewToFront）。
+//   hidden 同步——开则置 NO（变更才写）。
+//   frame——与目标 {90,300,260,64} 不同才写（窗口直挂，frame 即窗口坐标）。
+//   圆角——contentView.layer.cornerRadius 每轮重设（XHS plateOn 每轮唯一
+//   必写项；塑形其余部分只在创建时做一次，见 ZHRecipeCapsuleForBar）。
+//   风格——ZHGlassApplyTheme 钉知乎主题（内含比对、变更才写）；装 effect
+//   前必须先钉好（配方次序），故排在后装之前。
+//   bg——ZPRecordBg 只记录、不回写（配方第 1 条）。
+//   effect 后装——胶囊已入树且 effect 尚为空时，才建 fx（Regular、
+//   interactive 装入前在 effect 上设 YES、无 tint）经 applyEffect: 装入
+//   一次；已装则永不重赋（DYKiller 只在参数真变时重建）。
+// 原栏本身完全不动——不隐藏、不清场、不改背景。窗口未就绪时本轮不施工
+// （不入树、不隐藏），等下一轮触发。
+static void ZHLayoutRecipeProbe(UIView *bar) {
     ZHRegisterBar(bar);
+    ZPGlassView *capsule = ZHRecipeCapsuleForBar(bar);
+    if (!capsule) return; // 玻璃类不可用：静默不建探针
     UIWindow *win = ZPProbeKeyWindow();
-    if (!win) { ZHHideProbePair(bar, capKey, boxKey); return; }
-    if (!ZHEnsureProbePair(bar, win, capKey, boxKey, kind)) {
-        ZHHideProbePair(bar, capKey, boxKey);
-        return;
+    if (!win) return;
+    if (capsule.superview != win) [win addSubview:capsule]; // 只插一次、永不重排
+    if (capsule.hidden) capsule.hidden = NO;
+    CGRect target = CGRectMake(90, 300, 260, 64);
+    if (!CGRectEqualToRect(capsule.frame, target)) capsule.frame = target;
+    capsule.contentView.layer.cornerRadius = target.size.height / 2; // 每轮重设（XHS 口径）
+    ZHGlassApplyTheme(capsule);
+    ZPRecordBg(capsule);
+    if (!capsule.effect) {
+        id fx = ZHMakeGlassEffect(YES);
+        if (fx) [capsule applyEffect:fx];
     }
-    ZPApplyProbeFrames(bar, winFrame, capKey, boxKey, kind == ZPProbeKindBareMaterial,
-                       capFirst, capLast, capCount, boxFirst, boxLast, boxCount);
+}
+
+// 玻璃关：只隐藏胶囊（视图留树上、effect 不卸，下次开直接恢复显形）
+static void ZHHideRecipeProbe(UIView *bar) {
+    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    if (capsule) capsule.hidden = YES;
 }
 
 // keyWindow 选取（与 ZPAppIsNight 同口径：windows 里找 isKeyWindow，回落第一只）
@@ -588,23 +509,8 @@ static void ZHApplyBar(UIView *bar) {
         objc_setAssociatedObject(bar, &kGestureKey, lp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [lp release];
     }
-    if (ZHGlassEnabled()) {
-        // 探针 v3 三对照（全直挂 keyWindow 顶层、x=90、260×64、纵向错开不重叠）：
-        // 甲（容器+玻璃，对照组）y=210 / 乙（裸玻璃）y=300 / 丙（裸材质）y=390
-        ZHLayoutProbeOnWindow(bar, CGRectMake(90, 210, 260, 64), ZPProbeKindContainerGlass,
-                              &kCapsuleKey, &kGlassBoxKey,
-                              &gBgCapFirst, &gBgCapLast, &gBgCapCount,
-                              &gBgBoxFirst, &gBgBoxLast, &gBgBoxCount);
-        ZHLayoutProbeOnWindow(bar, CGRectMake(90, 300, 260, 64), ZPProbeKindBareGlass,
-                              &kCapsuleBKey, &kGlassBoxBKey,
-                              &gBgCapBFirst, &gBgCapBLast, &gBgCapBCount,
-                              &gBgBoxBFirst, &gBgBoxBLast, &gBgBoxBCount);
-        ZHLayoutProbeOnWindow(bar, CGRectMake(90, 390, 260, 64), ZPProbeKindBareMaterial,
-                              &kCapsuleCKey, &kGlassBoxCKey,
-                              &gBgCapCFirst, &gBgCapCLast, &gBgCapCCount,
-                              &gBgBoxCFirst, &gBgBoxCLast, &gBgBoxCCount);
-    }
-    else ZHHideProbe(bar);
+    if (ZHGlassEnabled()) ZHLayoutRecipeProbe(bar);
+    else ZHHideRecipeProbe(bar);
 }
 
 static void ZHRequestApply(UIView *bar) {
@@ -618,8 +524,8 @@ static void ZHRequestApply(UIView *bar) {
 
 // 触发链统一走 ZHRequestApply 的下一拍 apply：底栏各 hook（setupUI/
 // layoutItems/setItems/select/unselect/主题/layout/didMoveToWindow）只排队不
-// 施工；每轮 apply 重申探针落位、风格钉住与 bg 钉制——页面切换/主题切换/
-// 选中变化都会带来新一轮侦测样本。
+// 施工；每轮 apply 按配方幂等清单维护探针（位置核查/frame/圆角/风格/bg
+// 只记录）——页面切换/主题切换/选中变化都会带来新一轮侦测样本。
 
 #pragma mark - 设置页插行（锚点：contactsCellInfo 行模型对象本身，连插三行）
 
@@ -788,45 +694,40 @@ static NSString *ZPSuperviewChain(UIView *v) {
     return parts.count ? [parts componentsJoinedByString:@" < "] : @"(无父视图)";
 }
 
-// 单只探针的诊断块（甲/乙/丙共用）：胶囊与承载的本值 frame + 窗口 frame
-// 实测（convertRect:toView:nil）、superview 类名链、window 是否非空、容器
-// 与胶囊的 effect 对象类名、该只的 bg 写入记录（胶囊+容器两组）、完整
-// 子树（全部子视图含系统内部背板，见 ZPDiagWalk）。bareDesc 是该只无容器
-// 时的形态说明（乙/丙为设计上的裸视图、甲为降级单只）。
-static void ZPAppendProbeDiag(NSMutableString *s, NSString *label, UIView *bar,
-                              const void *capKey, const void *boxKey, NSString *bareDesc,
-                              NSUInteger capCount, NSString *capFirst, NSString *capLast,
-                              NSUInteger boxCount, NSString *boxFirst, NSString *boxLast) {
-    UIVisualEffectView *box = objc_getAssociatedObject(bar, boxKey);
-    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, capKey);
-    [s appendFormat:@"%@:\n", label];
+// 配方胶囊的诊断块：胶囊本值 frame + 窗口 frame 实测
+// （convertRect:toView:nil）、superview 类名链、window 是否非空、effect
+// 对象类名、本轮新增三计数（setEffect: 外部调用次数 + 最近传入类名 /
+// applyEffect: 安装次数）、bg 写入记录（只记不钉）、完整子树（全部子
+// 视图含系统内部背板，见 ZPDiagWalk）。承载即胶囊本人（无容器）。
+static void ZPAppendRecipeDiag(NSMutableString *s, UIView *bar) {
+    ZPGlassView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    [s appendString:@"配方胶囊（keyWindow 直挂·裸玻璃·ZPGlassView 防线）:\n"];
     if (!capsule) {
-        [s appendString:@"  胶囊: 未创建（effect 不可用或尚未落位）\n"];
+        [s appendString:@"  胶囊: 未创建（玻璃类不可用或尚未落位）\n"];
         return;
     }
-    UIView *carrier = box ? (UIView *)box : (UIView *)capsule;
-    [s appendFormat:@"  胶囊 frame(本值)=%@ 窗口frame(实测)=%@ hidden=%d 容器=%@\n",
+    [s appendFormat:@"  胶囊 frame(本值)=%@ 窗口frame(实测)=%@ hidden=%d 容器=无（裸盘）\n",
          NSStringFromCGRect(capsule.frame),
          NSStringFromCGRect([capsule convertRect:capsule.bounds toView:nil]),
-         (int)capsule.hidden, box ? @"UIGlassContainerEffect" : bareDesc];
+         (int)capsule.hidden];
     [s appendFormat:@"  承载 frame(本值)=%@ 窗口frame(实测)=%@ superview链=%@ window=%@\n",
-         NSStringFromCGRect(carrier.frame),
-         NSStringFromCGRect([carrier convertRect:carrier.bounds toView:nil]),
-         ZPSuperviewChain(carrier), carrier.window ? @"非空" : @"nil"];
-    [s appendFormat:@"  effect类名 容器=%@ 胶囊=%@\n",
-         box ? ZPEffectClassName(box) : @"(无容器)", ZPEffectClassName(capsule)];
-    [s appendFormat:@"  bg 写入记录 胶囊: 次数=%lu 首次=%@ 末次=%@\n",
-         (unsigned long)capCount, capFirst ?: @"-", capLast ?: @"-"];
-    [s appendFormat:@"  bg 写入记录 容器: 次数=%lu 首次=%@ 末次=%@\n",
-         (unsigned long)boxCount, boxFirst ?: @"-", boxLast ?: @"-"];
-    [s appendFormat:@"  %@子树（承载起）:\n", label];
-    ZPDiagWalk(carrier, s, 1);
+         NSStringFromCGRect(capsule.frame),
+         NSStringFromCGRect([capsule convertRect:capsule.bounds toView:nil]),
+         ZPSuperviewChain(capsule), capsule.window ? @"非空" : @"nil"];
+    [s appendFormat:@"  effect类名 胶囊=%@\n", ZPEffectClassName(capsule)];
+    [s appendFormat:@"  effect通道计数 setEffect外部调用=%lu 最近传入=%@ applyEffect安装=%lu\n",
+         (unsigned long)gSetEffectExtCount, gSetEffectLastClass ?: @"-",
+         (unsigned long)gApplyEffectCount];
+    [s appendFormat:@"  bg 写入记录 胶囊: 次数=%lu 首次=%@ 末次=%@（只记不钉）\n",
+         (unsigned long)gBgCapCount, gBgCapFirst ?: @"-", gBgCapLast ?: @"-"];
+    [s appendString:@"  配方胶囊子树（胶囊起）:\n"];
+    ZPDiagWalk(capsule, s, 1);
 }
 
-// 诊断文本（探针 v3）：知乎主题值 / 系统 trait / 颜色钩已装 / 纯黑命中集解析
-// 数 / 原栏 hidden 状态（本插件不写此值）/ 三玻璃类 NSClassFromString 命中
-// 布尔 / UIAccessibility 三开关运行时实读 / 甲乙丙各自一份探针块（见
-// ZPAppendProbeDiag，含完整子树与背板子视图）。
+// 诊断文本（照抄配方版）：知乎主题值 / 系统 trait / 颜色钩已装 / 纯黑命中集
+// 解析数 / 原栏 hidden 状态（本插件不写此值）/ 三玻璃类 NSClassFromString
+// 命中布尔 / UIAccessibility 三开关运行时实读 / 配方胶囊探针块（见
+// ZPAppendRecipeDiag，含三计数与完整子树）。
 // 全程只读，不改任何状态；临时对象均为 autorelease，MRC 安全。
 static NSString *ZPBuildDiagnostics(void) {
     NSMutableString *s = [NSMutableString stringWithString:@"[zhplugin 诊断]\n"];
@@ -852,7 +753,7 @@ static NSString *ZPBuildDiagnostics(void) {
          NSStringFromCGRect(bar.frame), ZPColorDesc(bar.backgroundColor)];
     [s appendFormat:@"纯黑命中集: 已解析 %ld 个令牌（静态枚举全集 9）\n",
          (long)ZPCanvasResolvedCount()];
-    [s appendFormat:@"原栏 hidden=%d（探针 v3：原栏完全不动，本插件不写此值）\n", (int)bar.hidden];
+    [s appendFormat:@"原栏 hidden=%d（照抄配方版：原栏完全不动，本插件不写此值）\n", (int)bar.hidden];
     [s appendFormat:@"玻璃类命中 UIGlassEffect=%@ UIGlassContainerEffect=%@ UICornerConfiguration=%@\n",
          NSClassFromString(@"UIGlassEffect") ? @"YES" : @"NO",
          NSClassFromString(@"UIGlassContainerEffect") ? @"YES" : @"NO",
@@ -864,20 +765,9 @@ static NSString *ZPBuildDiagnostics(void) {
          UIAccessibilityIsReduceTransparencyEnabled() ? @"YES" : @"NO",
          UIAccessibilityDarkerSystemColorsEnabled() ? @"YES" : @"NO",
          UIAccessibilityIsInvertColorsEnabled() ? @"YES" : @"NO"];
-    ZPAppendProbeDiag(s, @"探针甲（keyWindow 直挂·容器+玻璃 对照组）", bar, &kCapsuleKey, &kGlassBoxKey,
-                      @"无容器（降级单只）",
-                      gBgCapCount, gBgCapFirst, gBgCapLast,
-                      gBgBoxCount, gBgBoxFirst, gBgBoxLast);
-    ZPAppendProbeDiag(s, @"探针乙（keyWindow 直挂·裸玻璃）", bar, &kCapsuleBKey, &kGlassBoxBKey,
-                      @"无容器（裸玻璃）",
-                      gBgCapBCount, gBgCapBFirst, gBgCapBLast,
-                      gBgBoxBCount, gBgBoxBFirst, gBgBoxBLast);
-    ZPAppendProbeDiag(s, @"探针丙（keyWindow 直挂·裸材质）", bar, &kCapsuleCKey, &kGlassBoxCKey,
-                      @"无容器（裸材质）",
-                      gBgCapCCount, gBgCapCFirst, gBgCapCLast,
-                      gBgBoxCCount, gBgBoxCFirst, gBgBoxCLast);
-    if (!gBgCapCount && !gBgBoxCount && !gBgCapBCount && !gBgBoxBCount && !gBgCapCCount && !gBgBoxCCount)
-        [s appendString:@"bg 写入记录: 甲乙丙均未观察到非 nil 写入（钉制未触发）\n"];
+    ZPAppendRecipeDiag(s, bar);
+    if (!gBgCapCount)
+        [s appendString:@"bg 写入记录: 未观察到非 nil 写入\n"];
 
     return s;
 }
@@ -932,7 +822,7 @@ static void ZHSettingsEnsureRows(id vc) {
         return;
     }
 
-    id glassInfo = ZPMakeSwitchInfo(infoCls, @"玻璃底栏", @"开启后，显示三只悬浮探针胶囊",
+    id glassInfo = ZPMakeSwitchInfo(infoCls, @"玻璃底栏", @"开启后，显示一只配方探针胶囊",
                                     ZHGlassEnabled(), YES, &gGlassBlock, &gGlassCellInfo);
     id blackInfo = ZPMakeSwitchInfo(infoCls, @"纯黑背景", @"开启后，夜间模式下背景使用纯黑",
                                     ZPBlackEnabled(), NO, &gBlackBlock, &gBlackCellInfo);
