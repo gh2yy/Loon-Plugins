@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.6 还原版 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v8.7 还原版 (2026-11-26)
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -26,7 +26,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.6"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.7"); });
     return l;
 }
 
@@ -1017,6 +1017,27 @@ static void WCApplyBarsState(void) {
     if (gBarsInput) for (UIView *b in gBarsInput.allObjects) if (b.window) WCForceBar(b, @"chatbar", 4);
 }
 
+// v8.7：从后台切回微信时玻璃底栏卡平灰（视频逐帧采样：全栏均匀约 37、透视感
+// 全无），点任意按钮即恢复。定性：玻璃插件的模糊状态在退后台后失效，它自己
+// 没在回前台时刷新；首页/通讯录回前台时页面本身会刷新一遍、顺带把它带活，
+// 发现/我两个静态页不会，所以只在这两页犯。修法：回前台事件一到，替它补那
+// 一下——它自带的 refresh/applyParameters 在就调，再强制走一遍它的布局（它
+// 的参数重申就挂在布局里），最后重申我方栏状态。一次性事件触发，无常驻开销。
+static void WCGlassResumeRefresh(void) {
+    if (gBarsTab) for (UIView *bar in gBarsTab.allObjects) {
+        if (!bar.window) continue;
+        if ([bar respondsToSelector:@selector(refresh)]) [bar performSelector:@selector(refresh)];
+        if ([bar respondsToSelector:@selector(applyParameters)]) [bar performSelector:@selector(applyParameters)];
+        [bar setNeedsLayout];
+        [bar layoutIfNeeded];
+    }
+    WCApplyBarsState();
+}
+static void WCOnDidBecomeActive(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCGlassResumeRefresh(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCGlassResumeRefresh(); });
+}
+
 static void WCRefreshDarkState(BOOL fresh) {
     BOOL d = fresh ? WCProbeWeChatDarkNow() : WCProbeWeChatDark();
     if (d == gWCWeChatDark) return;
@@ -1205,7 +1226,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.6 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.7 registered in plugin list");
             break;
         }
     }
@@ -1253,7 +1274,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.6 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.7 source hooks in");
             }
         }
     }
@@ -1270,6 +1291,10 @@ static void WCInstall(void) {
     WCInstallChatbarHooks();
     WCInstallSepGate();
     WCInstallTabHooks();
+    static id wcActiveToken = nil;
+    if (!wcActiveToken) {
+        wcActiveToken = [[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) { WCOnDidBecomeActive(); }] retain];
+    }
     WCEnsureRegistered();
     WCStartHousekeepingTimer();
     gInstalled = YES;
