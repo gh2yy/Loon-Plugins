@@ -1,4 +1,13 @@
-// WCBlack.m — 微信深色模式纯黑背景 v7.1 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v7.2 (2026-11-26)
+// v7.2（在 v7.1 事件驱动基础上加定案实验）：深挖三栏颜色到底能不能从源头改——
+//   底栏已定案不能：可见底栏是玻璃插件 WCTabBarGlass 的 WCTabBarView，它自己的
+//   二进制里没有任何微信色板名字、不调 WCColorMgr，颜色是它自带的 UIBlurEffect
+//   + 自有 tint，只跟 trait 走（钉制/强涂是仅有的杠杆）。顶栏待定案：它从不经
+//   getColor: 取背景色，但 WCColorMgr 内部有 colorDic 字典（loadColorFromXML
+//   灌入），内部代码可能绕过 getColor: 直读字典。本版把字典里 6 个栏色名的深色
+//   值换成模块色（浅色不动、逐条记入诊断 colorDic 段），且顶栏模块关掉时对顶栏
+//   不钉制不强涂——关掉顶栏模块切换深浅，顶栏还变黑=字典直读成立、源头可改；
+//   回原灰=字典也不读，顶栏与底栏一样只剩 trait+强涂，v7.1 的事件时序即最终形态。
 // v7.1：v7.0 普查定案——整场会话（冷启+四次深浅互切+点遍 tab+进出聊天）经
 //   getColor: 请求了 41 个色名，顶栏只请求了前景色（Title_FG/RightSide_FG/
 //   LeftSide_FG），三栏的背景名（TopNavigationBar_DefaultBG/Material_
@@ -948,6 +957,77 @@ static void WC_WCColorMgr_setCurrentType(id self, SEL _cmd, long type) {
     WCOnThemeFlip(@"setCurrentType");
 }
 
+// v7.2 定案实验：WCColorMgr 内部有一本 colorDic（loadColorFromXML 灌入），getColor:
+// 只是它的一个对外入口。三栏背景从没经 getColor: 被取过，但内部代码可能直接读
+// 这本字典。这里把字典里三栏色名的深色值换成模块色（浅色值不动），并在诊断里
+// 逐条记录换了什么。配合「顶栏模块关掉时不钉制不强涂」：关掉顶栏模块后切换深浅，
+// 顶栏若仍按模块色变，说明它读字典、源头可改；若回微信原灰，说明字典它也不读。
+static NSMutableString *gWCDictLog = nil;
+static BOOL gWCInDictProbe = NO;
+static void WCDictLog(NSString *line) {
+    if (!gWCDictLog) gWCDictLog = [[NSMutableString alloc] init];
+    [gWCDictLog appendFormat:@"%@\n", line];
+    if (gWCDictLog.length > 3000) [gWCDictLog deleteCharactersInRange:NSMakeRange(0, gWCDictLog.length - 3000)];
+}
+static NSString *WCDictLogSnapshot(void) { return gWCDictLog ?: @""; }
+static void WCProbeColorDic(void) {
+    if (gWCInDictProbe) return;
+    gWCInDictProbe = YES;
+    @try {
+        id mgr = gWCMgr;
+        Class mgrCls = NSClassFromString(@"WCColorMgr");
+        if (!mgr && mgrCls && [mgrCls respondsToSelector:@selector(sharedInstance)])
+            mgr = ((id (*)(id, SEL))objc_msgSend)(mgrCls, @selector(sharedInstance));
+        if (!mgr || ![mgr respondsToSelector:@selector(colorDic)]) {
+            WCDictLog(@"dict: mgr/dic unavailable");
+            gWCInDictProbe = NO;
+            return;
+        }
+        NSDictionary *dict = ((id (*)(id, SEL))objc_msgSend)(mgr, @selector(colorDic));
+        if (!dict) { WCDictLog(@"dict: nil"); gWCInDictProbe = NO; return; }
+        Class dynCls = NSClassFromString(@"MMDynamicColor");
+        NSArray *names = @[@"Material_NavigationBar", @"TopNavigationBar_DefaultBG", @"SearchBar_GreyBG",
+                           @"Material_Toolbar", @"TabBar_BG", @"Toolbar_BG"];
+        NSDictionary *mods = @{@"Material_NavigationBar": @"nav", @"TopNavigationBar_DefaultBG": @"nav",
+                               @"SearchBar_GreyBG": @"nav", @"Material_Toolbar": @"tab",
+                               @"TabBar_BG": @"tab", @"Toolbar_BG": @"chatbar"};
+        BOOL inPlace = [dict isKindOfClass:[NSMutableDictionary class]];
+        NSMutableDictionary *target = inPlace ? (NSMutableDictionary *)dict : [dict mutableCopy];
+        for (NSString *name in names) {
+            id val = dict[name];
+            if (!val) { WCDictLog([NSString stringWithFormat:@"dict: %@ MISSING", name]); continue; }
+            if (dynCls && [val isKindOfClass:dynCls]) {
+                UIColor *nrm = [val normalColor];
+                UIColor *drk = [val darkmodeColor];
+                UIColor *cfg = WCConfigColor(mods[name]) ?: [UIColor blackColor];
+                UIColor *newDark = [cfg resolvedColorWithTraitCollection:WCDarkTrait()];
+                WCDictLog([NSString stringWithFormat:@"dict: %@ dyn light=%@ dark=%@ -> %@",
+                           name, WCHexOfColorIn(nrm, WCLightTrait()), WCHexOfColorIn(drk, WCDarkTrait()), WCHexOfColor(newDark)]);
+                id repl = [dynCls DynamicColorWithNormalColor:nrm darkmodeColor:newDark];
+                if (repl) target[name] = repl;
+            } else {
+                WCDictLog([NSString stringWithFormat:@"dict: %@ class=%@ (not dynamic, skipped)", name, NSStringFromClass([val class])]);
+            }
+        }
+        if (!inPlace) {
+            ((void (*)(id, SEL, id))objc_msgSend)(mgr, @selector(setColorDic:), target);
+            [target release];
+            WCDictLog(@"dict: replaced whole dic (was immutable)");
+        } else {
+            WCDictLog(@"dict: mutated in place");
+        }
+        WCDictLog([NSString stringWithFormat:@"dict: total keys=%lu", (unsigned long)dict.count]);
+    } @catch (NSException *e) {
+        WCDictLog([NSString stringWithFormat:@"dict: exception %@", e.name]);
+    }
+    gWCInDictProbe = NO;
+}
+static IMP gOrigSetColorDic;
+static void WC_WCColorMgr_setColorDic(id self, SEL _cmd, id dic) {
+    ((void (*)(id, SEL, id))gOrigSetColorDic)(self, _cmd, dic);
+    WCProbeColorDic();
+}
+
 static void WCAppendSourceStats(NSMutableString *out) {
     [out appendString:@"== WCBlack v7 source ==\n"];
     @synchronized (gWCNameCache) {
@@ -998,6 +1078,17 @@ static void WCAppendSourceStats(NSMutableString *out) {
     }
     [out appendFormat:@"valueStr remaps: %ld | toColor remaps: %ld | proxy remaps: %ld\n", gWCValueStrHits, gWCToColorHits, gWCProxyHits];
     [out appendFormat:@"myColors: %lu | myImages: %lu\n", (unsigned long)WCMyColors().count, (unsigned long)WCMyImages().count];
+    if (!gWCDictLog) WCProbeColorDic();
+    NSString *dlog = WCDictLogSnapshot();
+    if (dlog.length) [out appendFormat:@"colorDic:\n%@", dlog];
+    if (gBarsNav) {
+        for (UIView *b in gBarsNav.allObjects) {
+            if (!b.window) continue;
+            [out appendFormat:@"navtrait: %@ trait=%ld override=%ld\n", NSStringFromClass([b class]),
+             (long)b.traitCollection.userInterfaceStyle, (long)b.overrideUserInterfaceStyle];
+            break;
+        }
+    }
 }
 
 #pragma mark - 设置页
@@ -1204,7 +1295,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"7.1", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"7.2", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1586,6 +1677,8 @@ static void WCBarTraitChanged(UIView *v, int kind, UITraitCollection *prev) {
             gWCWeChatDark = traitDark;
             WCThemeLog(@"trait %@ ->%@ @%.1f", NSStringFromClass([v class]), traitDark ? @"dark" : @"light", [NSDate timeIntervalSinceReferenceDate]);
         } else {
+            // v7.2 实验：顶栏模块关掉时不钉制，顶栏完全交回微信原生（配合 colorDic 改值定案）
+            if (kind == 0 && !WCConfigColor(@"nav")) return;
             UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
             if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
             return;
@@ -1601,6 +1694,7 @@ static void WCBarDidMoveToWindow(UIView *v, int kind) {
     if (!gBarsTab) gBarsTab = [[NSHashTable weakObjectsHashTable] retain];
     if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain];
     UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+    if (kind == 0 && !WCConfigColor(@"nav")) want = UIUserInterfaceStyleUnspecified; // v7.2 实验：顶栏关模块不钉制
     if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
     if (kind == 0) {
         WCRegisterBar(gBarsNav, v);
@@ -1621,9 +1715,10 @@ static void WCBarDidMoveToWindow(UIView *v, int kind) {
 // 顶部条带候选也在此入口一次性找齐并配色（它没有自己的 trait 钩子）。
 static void WCApplyThemeToBars(void) {
     UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+    UIUserInterfaceStyle wantNav = WCConfigColor(@"nav") ? want : UIUserInterfaceStyleUnspecified; // v7.2 实验
     if (gBarsNav) for (UIView *b in gBarsNav.allObjects) {
         if (!b.window) continue;
-        if (b.overrideUserInterfaceStyle != want) b.overrideUserInterfaceStyle = want;
+        if (b.overrideUserInterfaceStyle != wantNav) b.overrideUserInterfaceStyle = wantNav;
         WCApplyBarTrait(b, 0);
     }
     if (gBarsTab) for (UIView *b in gBarsTab.allObjects) {
@@ -1755,9 +1850,11 @@ static void WCInstall(void) {
             // v7：主题切换事件（WCColorMgr 的类型 setter，切换时调用；找不到也不影响，
             // getColor 钩里的代际/系统侧检测是第二道）
             if (!gOrigSetCurrentType) gOrigSetCurrentType = WCSwap(mgr, @selector(setCurrentType:), (IMP)WC_WCColorMgr_setCurrentType);
+            if (!gOrigSetColorDic) gOrigSetColorDic = WCSwap(mgr, @selector(setColorDic:), (IMP)WC_WCColorMgr_setColorDic);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v7.1 source hooks in");
+                os_log(WCLog(), "[WCBlack] v7.2 source hooks in");
+                WCProbeColorDic();
             }
         }
     }
