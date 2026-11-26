@@ -54,6 +54,9 @@ static char kCapsuleKey;   // 玻璃盘外壳
 static char kLensKey;      // 选中透镜
 static char kSelIdxKey;    // 上次选中序号（NSNumber, RETAIN）
 static char kSchedKey;     // 已排队布局标记
+static char kLayoutLockKey; // layoutSubviews 重入锁（per-instance）
+static char kRadiusKey;    // 盘上次已应用的圆角半径（NSNumber，幂等比对）
+static char kShadowSigKey; // 盘上次已应用的投影签名（NSString，幂等比对）
 static char kOrigBgKey;    // 原始 bar 背景色（RETAIN，关玻璃时恢复）
 static char kGestureKey;   // 长按兜底手势（RETAIN）
 
@@ -255,18 +258,36 @@ static UIView *ZHMakeLens(void) {
 }
 
 static void ZHSetPlateFrame(UIView *plate, CGRect f) {
-    plate.frame = f;
+    if (!plate) return;
     CGFloat r = f.size.height / 2;
+    NSNumber *appliedR = objc_getAssociatedObject(plate, &kRadiusKey);
+    BOOL radiusSame = (appliedR && appliedR.doubleValue == r);
+    if (CGRectEqualToRect(plate.frame, f)) {
+        if (radiusSame) return; // 几何与圆角都未变，整段跳过（幂等收敛）
+    } else {
+        plate.frame = f;
+    }
     if (plate.tag == 2001) {
         UIVisualEffectView *fx = (UIVisualEffectView *)plate.subviews.firstObject;
-        fx.frame = plate.bounds;
-        ZHApplyCapsuleCorner(fx, r);
+        if (fx && !CGRectEqualToRect(fx.frame, plate.bounds)) fx.frame = plate.bounds;
+        if (fx && !radiusSame) {
+            ZHApplyCapsuleCorner(fx, r);
+            objc_setAssociatedObject(plate, &kRadiusKey, @(r), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
     } else if ([plate isKindOfClass:[UIVisualEffectView class]]) {
-        ZHApplyCapsuleCorner((UIVisualEffectView *)plate, r);
+        if (!radiusSame) {
+            ZHApplyCapsuleCorner((UIVisualEffectView *)plate, r);
+            objc_setAssociatedObject(plate, &kRadiusKey, @(r), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
     }
 }
 
 static void ZHApplyCapsuleShadow(UIView *plate, BOOL dark) {
+    // 幂等：投影只取决于盘尺寸与明暗，签名未变整段跳过（shadowPath 每轮重建是无谓开销）
+    NSString *sig = [NSString stringWithFormat:@"%.1f,%.1f,%d",
+                     plate.bounds.size.width, plate.bounds.size.height, dark ? 1 : 0];
+    if ([(NSString *)objc_getAssociatedObject(plate, &kShadowSigKey) isEqualToString:sig]) return;
+    objc_setAssociatedObject(plate, &kShadowSigKey, sig, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     CALayer *l = plate.layer;
     l.shadowColor = [UIColor blackColor].CGColor;
     l.shadowOpacity = dark ? 0.35 : 0.22;
@@ -406,8 +427,8 @@ static void ZHLayoutBar(UIView *bar) {
     }
 
     ZHEnsurePlates(bar, stack);
-    bar.backgroundColor = [UIColor clearColor];
-    for (UIView *v in ZHBackgroundViews(bar)) v.hidden = YES;
+    if (![bar.backgroundColor isEqual:[UIColor clearColor]]) bar.backgroundColor = [UIColor clearColor];
+    for (UIView *v in ZHBackgroundViews(bar)) if (!v.hidden) v.hidden = YES;
     BOOL dark = ZHBarIsDark(bar);
 
     // 内容并集（定胶囊纵向中心）与选中序号（item 的 themeSelected 为准，取不到回落 0）
@@ -437,7 +458,7 @@ static void ZHLayoutBar(UIView *bar) {
 
     UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
     UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
-    capsule.hidden = NO;
+    if (capsule.hidden) capsule.hidden = NO;
     ZHSetPlateFrame(capsule, capRect);
     ZHApplyCapsuleShadow(capsule, dark);
 
@@ -447,15 +468,21 @@ static void ZHLayoutBar(UIView *bar) {
     CGRect lensRect = CGRectMake(itemF.origin.x + 4, capY + (capH - lensH) / 2,
                                  itemF.size.width - 8, lensH);
     ZHSetPlateFrame(lens, lensRect);
-    if ([lens isKindOfClass:[UIVisualEffectView class]])
-        ((UIVisualEffectView *)lens).contentView.backgroundColor =
-            dark ? [UIColor colorWithWhite:1.0 alpha:0.18]
-                 : [UIColor colorWithWhite:0.0 alpha:0.095];
-    lens.hidden = NO;
+    if ([lens isKindOfClass:[UIVisualEffectView class]]) {
+        UIColor *fill = dark ? [UIColor colorWithWhite:1.0 alpha:0.18]
+                             : [UIColor colorWithWhite:0.0 alpha:0.095];
+        UIView *cv = ((UIVisualEffectView *)lens).contentView;
+        if (![cv.backgroundColor isEqual:fill]) cv.backgroundColor = fill;
+    }
+    if (lens.hidden) lens.hidden = NO;
 
-    // 层级：胶囊在最底，透镜在胶囊之上、stack（items）之下
-    [bar sendSubviewToBack:capsule];
-    [bar insertSubview:lens aboveSubview:capsule];
+    // 层级：胶囊在最底，透镜在胶囊之上、stack（items）之下；
+    // 已就位就不动层级——每轮 apply 都重排 subviews 会白白触发同步布局
+    if (bar.subviews.firstObject != capsule) [bar sendSubviewToBack:capsule];
+    NSUInteger capIdx = [bar.subviews indexOfObject:capsule];
+    NSUInteger lensIdx = [bar.subviews indexOfObject:lens];
+    if (capIdx != NSNotFound && lensIdx != capIdx + 1)
+        [bar insertSubview:lens aboveSubview:capsule];
 
     NSNumber *prev = objc_getAssociatedObject(bar, &kSelIdxKey);
     if (!prev || prev.unsignedIntegerValue != sel)
@@ -723,19 +750,39 @@ static void ZH_Bar_updateTheme(UIView *self, SEL _cmd, BOOL dark, id appearance)
 }
 
 // ZHTabBarNew 自身方法表里没有 layoutSubviews / traitCollectionDidChange:，
-// 用 class_addMethod 给它加子类级覆盖（super 走 objc_msgSendSuper），不污染 UIView 全局。
+// 用 class_addMethod 给它加子类级覆盖，不污染 UIView 全局。
+// super 起点必须钉死在 ZHTabBarNew 的父类链上（安装时解析 IMP），绝不能在调用时用
+// class_getSuperclass(object_getClass(self)) 现算：真机日志定案（osee…-144302.ips）——
+// 底栏实例的动态类是 ZHTabBarNew 的子类（或 KVO 动态子类）时，现算出的 superclass 恰好
+// 等于 ZHTabBarNew，objc_msgSendSuper 的查找起点落回我们 class_addMethod 加的方法本身，
+// ZH_Bar_layoutSubviews 在同一调用栈内无条件自调用，栈溢出 EXC_BAD_ACCESS（点 tab 即崩）。
 static IMP gOrigLayoutSubviews = NULL;
+static Class gBarClass = nil;              // 安装时的 ZHTabBarNew 本尊
+static IMP gSuperLayoutSubviews = NULL;    // ZHTabBarNew 父类链真正的 layoutSubviews IMP（安装时解析）
 static void ZH_Bar_layoutSubviews(UIView *self, SEL _cmd) {
+    BOOL reentered = (objc_getAssociatedObject(self, &kLayoutLockKey) != nil);
+    if (!reentered)
+        objc_setAssociatedObject(self, &kLayoutLockKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // super：三个来源都保证是父类链的真 IMP，不存在回到自身 IMP 的路径
     if (gOrigLayoutSubviews) {
         ((void (*)(id, SEL))gOrigLayoutSubviews)(self, _cmd);
+    } else if (gSuperLayoutSubviews) {
+        ((void (*)(id, SEL))gSuperLayoutSubviews)(self, _cmd);
     } else {
-        struct objc_super sup = { self, class_getSuperclass(object_getClass(self)) };
+        struct objc_super sup = { self, gBarClass ? class_getSuperclass(gBarClass)
+                                                  : class_getSuperclass(object_getClass(self)) };
         ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, _cmd);
     }
-    ZHApplyBar(self);
+    if (reentered) return; // 重入：只走 super，不再登记、不施工
+    // 布局内不施工：只登记一次，ZHApplyBar 由 ZHRequestApply（kSchedKey 合并）
+    // 经 dispatch_async 在主队列下一拍执行，彻底脱离当前 layout 调用栈
+    ZHRequestApply(self);
+    objc_setAssociatedObject(self, &kLayoutLockKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 static void ZH_Bar_traitChanged(UIView *self, SEL _cmd, UITraitCollection *prev) {
-    struct objc_super sup = { self, class_getSuperclass(object_getClass(self)) };
+    // super 起点同 layoutSubviews：钉死 ZHTabBarNew 的父类，不用实例动态类现算
+    struct objc_super sup = { self, gBarClass ? class_getSuperclass(gBarClass)
+                                              : class_getSuperclass(object_getClass(self)) };
     ((void (*)(struct objc_super *, SEL, id))objc_msgSendSuper)(&sup, _cmd, prev);
     ZHRequestApply(self);
 }
@@ -787,13 +834,17 @@ static void ZPInstallThemeHook(void) {
 // 段2：玻璃底栏 hook（ZHTabBarNew）
 static void ZPInstallBarHooks(void) {
     if (gInstalled) return;
-    NSLog(@"[zhplugin] variant noselect");
     Class cls = NSClassFromString(@"ZHTabBarNew");
     if (!cls) { NSLog(@"[zhplugin] install segment bar: ZHTabBarNew missing, skip"); return; }
+    gBarClass = cls;
+    // 安装时一次性解析父类链的 layoutSubviews IMP，供钩子直调真 super（见 ZH_Bar_layoutSubviews 注释）
+    Method superLayout = class_getInstanceMethod(class_getSuperclass(cls), @selector(layoutSubviews));
+    gSuperLayoutSubviews = superLayout ? method_getImplementation(superLayout) : NULL;
     gOrigSetupUI = ZHSwap(cls, @selector(setupUI), (IMP)ZH_Bar_setupUI);
     gOrigLayoutItems = ZHSwap(cls, @selector(layoutItems), (IMP)ZH_Bar_layoutItems);
     gOrigSetItems = ZHSwap(cls, @selector(setItems:), (IMP)ZH_Bar_setItems);
-    // 变体 A（二分定位点 tab 闪退）：跳过 selectItem:/unselectItem: 两处 swizzle，透镜不随点选滑动，其余底栏钩保留
+    gOrigSelect = ZHSwap(cls, @selector(selectItem:), (IMP)ZH_Bar_selectItem);
+    gOrigUnselect = ZHSwap(cls, @selector(unselectItem:), (IMP)ZH_Bar_unselectItem);
     gOrigNotifyTheme = ZHSwap(cls, @selector(notifyThemeSwitch), (IMP)ZH_Bar_notifyThemeSwitch);
     gOrigUpdateTheme = ZHSwap(cls, @selector(updateTheme:tabBarAppearance:), (IMP)ZH_Bar_updateTheme);
     BOOL addedLayout = class_addMethod(cls, @selector(layoutSubviews),
