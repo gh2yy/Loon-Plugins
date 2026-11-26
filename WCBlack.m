@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v4.1 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v4.2 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.1"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.2"); });
     return l;
 }
 
@@ -319,7 +319,17 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
         }
         objc_setAssociatedObject(bar, &kWCForcedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (bar.backgroundColor != dyn) bar.backgroundColor = dyn;
+    // 全屏宿主（如 MMInputToolView 440×956）绝不能涂根视图背景：它本是透明覆盖层，横在
+    // 消息列表之上，根背景一旦不透明，整页消息被盖死——这就是 v3.4 起「聊天记录消失」的
+    // 真因（v3.3 时输入栏从未注册成功、没被强刷，所以只有底栏灰、没有盖页；v3.4 扫描注册
+    // 落地后根视图被涂黑，盖页与底栏变黑同时出现）。已涂上的按存档回退透明，实际条带
+    // 由子视图（InputToolContainerView 等）在 WCApplyStrong 里上色。
+    if (bar.bounds.size.height > 200) {
+        UIColor *fb = objc_getAssociatedObject(bar, &kWCFallbackKey);
+        if (fb && bar.backgroundColor == dyn) bar.backgroundColor = fb;
+    } else if (bar.backgroundColor != dyn) {
+        bar.backgroundColor = dyn;
+    }
     if ([bar isKindOfClass:[UINavigationBar class]]) {
         UIColor *cfg = WCConfigColor(module);
         UIImage *img = cfg ? WCSolidImage(cfg) : nil;
@@ -702,6 +712,18 @@ static void WC_InputTool_didMoveToWindow(UIView *self, SEL _cmd) {
         }
     }
 }
+// 输入条本体（InputToolContainerView，90pt 高的可见条带）：单独挂钩，布局/进窗口时以自己为
+// 根强刷（它不是全屏宿主，根可涂），把条带的颜色在绘制前定死，消掉进聊天时底部的闪灰。
+static IMP gOrigContainerLayout, gOrigContainerWindow;
+static void WC_Container_layoutSubviews(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigContainerLayout)(self, _cmd);
+    WCRegisterBar(gBarsInput, self);
+    WCForceBar(self, @"chatbar", 2);
+}
+static void WC_Container_didMoveToWindow(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigContainerWindow)(self, _cmd);
+    if (self.window) { WCRegisterBar(gBarsInput, self); WCForceBar(self, @"chatbar", 2); }
+}
 // 聊天顶栏（v3.1 真机：聊天页顶部仍 #0F0F0F，列表页已黑——聊天用的是自有 NavBar 视图，不是 UINavigationBar）
 static IMP gOrigMsgNavLayout, gOrigMsgNavWindow, gOrigNewMsgNavLayout, gOrigNewMsgNavWindow;
 static void WC_MsgNav_layoutSubviews(UIView *self, SEL _cmd) {
@@ -944,6 +966,11 @@ static void WCInstall(void) {
             gOrigInputLayout = WCSwapOwn(mmInput, @selector(layoutSubviews), (IMP)WC_InputTool_layoutSubviews);
             gOrigInputWindow = WCSwapOwn(mmInput, @selector(didMoveToWindow), (IMP)WC_InputTool_didMoveToWindow);
         }
+        Class inputContainer = NSClassFromString(@"InputToolContainerView");
+        if (inputContainer) {
+            gOrigContainerLayout = WCSwapOwn(inputContainer, @selector(layoutSubviews), (IMP)WC_Container_layoutSubviews);
+            gOrigContainerWindow = WCSwapOwn(inputContainer, @selector(didMoveToWindow), (IMP)WC_Container_didMoveToWindow);
+        }
         Class msgNav = NSClassFromString(@"MMMsgContentNavBar");
         if (msgNav) {
             gOrigMsgNavLayout = WCSwapOwn(msgNav, @selector(layoutSubviews), (IMP)WC_MsgNav_layoutSubviews);
@@ -970,7 +997,7 @@ static void WCInstall(void) {
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v4.1 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v4.2 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -982,7 +1009,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v4.1 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v4.2 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     if (!gRegistered) {
@@ -994,8 +1021,8 @@ static void WCInstall(void) {
             for (id p in existing) { if ([[p valueForKey:@"title"] containsString:@"WCBlack"]) { dup = YES; break; } }
             if (!dup && [inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
                 ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-                    @"WCBlack 纯黑背景", @"4.1", @"WCBlackSettingsViewController");
-                os_log(WCLog(), "[WCBlack] v4.1 registered in plugin list");
+                    @"WCBlack 纯黑背景", @"4.2", @"WCBlackSettingsViewController");
+                os_log(WCLog(), "[WCBlack] v4.2 registered in plugin list");
             }
             gRegistered = YES;
         }
