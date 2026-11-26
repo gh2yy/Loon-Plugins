@@ -1,4 +1,11 @@
-// WCBlack.m — 微信深色模式纯黑背景 v6.3 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v7.0 (2026-11-26)
+// v7.0：用户把包内全部 XML 重新核过——色板全集是 375 个名（weui_color_component.xml 等
+//   之前没解析全，旧 tokens.txt 只有 178）。三栏其实有色板色：顶栏 TopNavigationBar_
+//   DefaultBG / Material_NavigationBar（#EDEDEDF0,#121212E5）、底栏 TabBar_BG /
+//   Material_Toolbar（#F6F6F6D1,#232323ED）、聊天工具栏 Toolbar_BG（同 Material_Toolbar）。
+//   本版把这 6 个名加入 remap 表（nav/tab/chatbar），并给两个取色入口加全量普查计数：
+//   诊断会列出进程至今经 getColor:/getColorValueForName: 请求过的全部色名与次数，
+//   一次定案三栏到底走不走色板取色。表面层（强涂/回收/去抖）暂时原样保留，不回退现状。
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -798,13 +805,27 @@ static NSDictionary *WCNameModuleMap(void) {
             @"bg", @"Table_TextField_Card_GreyCard_BG",
             @"bg", @"Toolbar_Chat_Input_BG",
             @"bg", @"Toolbar_OfficialAccount_Input_BG",
+            @"nav", @"Material_NavigationBar",
+            @"nav", @"TopNavigationBar_DefaultBG",
+            @"nav", @"SearchBar_GreyBG",
+            @"tab", @"Material_Toolbar",
+            @"tab", @"TabBar_BG",
+            @"chatbar", @"Toolbar_BG",
             nil];
     }
     return map;
 }
 
 static NSMutableDictionary *gWCNameCache, *gWCNameHits;
+static NSMutableDictionary *gWCSeenNames, *gWCSeenValueNames;
 static long gWCToColorHits, gWCProxyHits, gWCValueStrHits;
+
+static void WCNoteSeen(NSMutableDictionary *dict, NSString *name) {
+    if (!dict || !name) return;
+    @synchronized (dict) {
+        dict[name] = @([dict[name] longValue] + 1);
+    }
+}
 
 static NSString *WCValueModuleForDark(UIColor *color) {
     if (!color) return nil;
@@ -841,6 +862,7 @@ static id gWCMgr = nil;
 
 static id WC_WCColorMgr_getColor(id self, SEL _cmd, NSString *name) {
     gWCMgr = self;
+    WCNoteSeen(gWCSeenNames, name);
     id orig = ((id (*)(id, SEL, id))gOrigGetColor)(self, _cmd, name);
     if (!orig || !name || !WCEnabled()) return orig;
     NSString *module = WCNameModuleMap()[name];
@@ -866,6 +888,7 @@ static id WC_WCColorMgr_getColor(id self, SEL _cmd, NSString *name) {
 }
 
 static id WC_WCColorMgr_getColorValue(id self, SEL _cmd, NSString *name) {
+    WCNoteSeen(gWCSeenValueNames, name);
     id orig = ((id (*)(id, SEL, id))gOrigGetColorValue)(self, _cmd, name);
     if (!orig || !name || !WCEnabled()) return orig;
     NSString *module = WCNameModuleMap()[name];
@@ -915,6 +938,39 @@ static void WCAppendSourceStats(NSMutableString *out) {
         for (NSString *n in names) {
             if ([names indexOfObject:n] >= 20) break;
             [out appendFormat:@"  %@ x%@ -> %@\n", n, gWCNameHits[n], WCNameModuleMap()[n]];
+        }
+    }
+    if (gWCSeenNames) {
+        NSArray *seen;
+        @synchronized (gWCSeenNames) {
+            seen = [gWCSeenNames.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+                return [gWCSeenNames[b] compare:gWCSeenNames[a]];
+            }];
+        }
+        [out appendFormat:@"getColor census: %lu names\n", (unsigned long)seen.count];
+        NSUInteger i = 0;
+        for (NSString *n in seen) {
+            if (i++ >= 40) break;
+            NSString *mod = WCNameModuleMap()[n];
+            NSNumber *cnt;
+            @synchronized (gWCSeenNames) { cnt = gWCSeenNames[n]; }
+            [out appendFormat:@"  %@ x%@%@\n", n, cnt, mod ? [NSString stringWithFormat:@" -> %@", mod] : @""];
+        }
+    }
+    if (gWCSeenValueNames) {
+        NSArray *seenV;
+        @synchronized (gWCSeenValueNames) {
+            seenV = [gWCSeenValueNames.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+                return [gWCSeenValueNames[b] compare:gWCSeenValueNames[a]];
+            }];
+        }
+        [out appendFormat:@"value census: %lu names\n", (unsigned long)seenV.count];
+        NSUInteger i = 0;
+        for (NSString *n in seenV) {
+            if (i++ >= 15) break;
+            NSNumber *cnt;
+            @synchronized (gWCSeenValueNames) { cnt = gWCSeenValueNames[n]; }
+            [out appendFormat:@"  %@ x%@\n", n, cnt];
         }
     }
     [out appendFormat:@"valueStr remaps: %ld | toColor remaps: %ld | proxy remaps: %ld\n", gWCValueStrHits, gWCToColorHits, gWCProxyHits];
@@ -1125,7 +1181,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"6.5", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"7.0", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1659,6 +1715,8 @@ static void WCInstall(void) {
     if (!gWCNameCache) {
         gWCNameCache = [[NSMutableDictionary alloc] init];
         gWCNameHits = [[NSMutableDictionary alloc] init];
+        gWCSeenNames = [[NSMutableDictionary alloc] init];
+        gWCSeenValueNames = [[NSMutableDictionary alloc] init];
     }
     if (!gSrcHooked) {
         Class mgr = NSClassFromString(@"WCColorMgr");
