@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v4.0 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v4.1 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.1"); });
     return l;
 }
 
@@ -336,7 +336,16 @@ static void WCScanRegister(UIView *root, int depth);     // 同上
 static void WCCollectDiag(NSString *scene);              // 前向声明：定义在诊断一节
 static void WCForceKeyboardWindow(UIWindow *win);        // 同上
 static void WCScanAllWindows(void) {
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+    // v4.1：键盘窗口不在 UIApplication.windows 里（v4.0 真机诊断里始终没有 kbd 段），
+    // 改为枚举全部场景的窗口合并去重，键盘窗口（独立场景）才捞得到。
+    NSMutableArray<UIWindow *> *wins = [NSMutableArray array];
+    for (UIWindow *w in [UIApplication sharedApplication].windows) [wins addObject:w];
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            for (UIWindow *w in [(UIWindowScene *)scene windows]) if (![wins containsObject:w]) [wins addObject:w];
+        }
+    }
+    for (UIWindow *w in wins) {
         if ([NSStringFromClass([w class]) containsString:@"Keyboard"]) { WCForceKeyboardWindow(w); continue; }
         WCScanAndForceTabs(w, 12);
         WCScanRegister(w, 16);
@@ -652,7 +661,7 @@ static void WC_MMTabBar_layoutSubviews(UIView *self, SEL _cmd) {
 }
 static void WC_MMTabBar_didMoveToWindow(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigMMTabWindow)(self, _cmd);
-    if (self.window) WCRegisterBar(gBarsTab, self);
+    if (self.window) { WCRegisterBar(gBarsTab, self); WCForceBar(self, @"tab", 3); }
 }
 static IMP gOrigNavWindow, gOrigInputWindow;
 static void WC_NavBar_layoutSubviews(UIView *self, SEL _cmd) {
@@ -662,7 +671,7 @@ static void WC_NavBar_layoutSubviews(UIView *self, SEL _cmd) {
 }
 static void WC_NavBar_didMoveToWindow(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigNavWindow)(self, _cmd);
-    if (self.window) WCRegisterBar(gBarsNav, self);
+    if (self.window) { WCRegisterBar(gBarsNav, self); WCForceBar(self, @"nav", 3); }
 }
 static void WC_InputTool_layoutSubviews(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigInputLayout)(self, _cmd);
@@ -684,6 +693,7 @@ static void WC_InputTool_didMoveToWindow(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigInputWindow)(self, _cmd);
     if (self.window) {
         WCRegisterBar(gBarsInput, self);
+        WCForceBar(self, @"chatbar", 4);
         static BOOL diagDone = NO;
         if (!diagDone) {
             diagDone = YES;
@@ -701,7 +711,7 @@ static void WC_MsgNav_layoutSubviews(UIView *self, SEL _cmd) {
 }
 static void WC_MsgNav_didMoveToWindow(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigMsgNavWindow)(self, _cmd);
-    if (self.window) WCRegisterBar(gBarsNav, self);
+    if (self.window) { WCRegisterBar(gBarsNav, self); WCForceBar(self, @"nav", 3); }
 }
 static void WC_NewMsgNav_layoutSubviews(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigNewMsgNavLayout)(self, _cmd);
@@ -710,7 +720,17 @@ static void WC_NewMsgNav_layoutSubviews(UIView *self, SEL _cmd) {
 }
 static void WC_NewMsgNav_didMoveToWindow(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigNewMsgNavWindow)(self, _cmd);
-    if (self.window) WCRegisterBar(gBarsNav, self);
+    if (self.window) { WCRegisterBar(gBarsNav, self); WCForceBar(self, @"nav", 3); }
+}
+// 玻璃插件底栏（WCTabBarView 宿主 / WCGNativeTabBar）：进窗口立即注册+强刷，消灭等扫描的闪灰
+static IMP gOrigGlassTabWindow, gOrigGlassNativeTabWindow;
+static void WC_GlassTab_didMoveToWindow(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigGlassTabWindow)(self, _cmd);
+    if (self.window) { WCRegisterBar(gBarsTab, self); WCForceBar(self, @"tab", 3); }
+}
+static void WC_GlassNativeTab_didMoveToWindow(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigGlassNativeTabWindow)(self, _cmd);
+    if (self.window) { WCRegisterBar(gBarsTab, self); WCForceBar(self, @"tab", 3); }
 }
 
 static IMP WCSwap(Class cls, SEL sel, IMP newImp) {
@@ -737,126 +757,11 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
     return inherited;
 }
 
-#pragma mark - DesignToken 令牌拦截（v4 底层路线）
-
-// 令牌名 -> 模块。值据包内 weui_color_new.xml 与真机采样对定：BG_0 深色 #111111 主背景、
-// BG_2 #191919 列表、BG_1 #1E1E1E 背景族、BG_3 #202020 置顶/卡片、Material_NavigationBar
-// #121212E5 导航材质、Material_Toolbar #232323ED / Material_Thick #222222E5 工具栏材质（聊天底栏）。
-static NSString *WCTokenModule(NSString *name) {
-    if ([name isEqualToString:@"BG_0"] || [name isEqualToString:@"BG_1"] || [name isEqualToString:@"BG_2"] ||
-        [name isEqualToString:@"BG_Overlay_0"] || [name isEqualToString:@"BG_Overlay_2"]) return @"bg";
-    if ([name isEqualToString:@"BG_3"] || [name isEqualToString:@"BG_Overlay_3"]) return @"cell";
-    if ([name isEqualToString:@"Material_NavigationBar"] || [name isEqualToString:@"Material_Overlay_NavigationBar"]) return @"nav";
-    if ([name isEqualToString:@"Material_Toolbar"] || [name isEqualToString:@"Material_Overlay_Toolbar"] ||
-        [name isEqualToString:@"Material_Thick"]) return @"chatbar";
-    return nil;
-}
-
-static NSMutableDictionary<NSString *, NSValue *> *gColorOrigs; // "类名/选择子/c|i" -> orig IMP
-static NSMutableDictionary<NSString *, NSString *> *gTokenLog;  // 令牌名 -> 原始深色值/模块（诊断用）
-
-static void WCRecordTokenQuery(NSString *name, UIColor *origColor) {
-    if (!gTokenLog) return;
-    @synchronized (gTokenLog) {
-        if (gTokenLog[name]) return;
-        NSString *module = WCTokenModule(name);
-        gTokenLog[name] = [NSString stringWithFormat:@"dark=%@ module=%@", WCHexOfColor(origColor), module ?: @"-"];
-    }
-}
-
-static IMP WCOrigForColorHook(id self, SEL _cmd) {
-    if (!gColorOrigs) return NULL;
-    NSString *sn = NSStringFromSelector(_cmd);
-    BOOL isCls = object_isClass(self);
-    Class c = object_getClass(self);
-    while (c) {
-        NSString *key = [NSString stringWithFormat:@"%@/%@/%@", NSStringFromClass(c), sn, isCls ? @"c" : @"i"];
-        NSValue *v = nil;
-        @synchronized (gColorOrigs) { v = gColorOrigs[key]; }
-        if (v) return (IMP)[v pointerValue];
-        c = class_getSuperclass(c);
-    }
-    return NULL;
-}
-
-// 命中令牌映射时，把原始令牌色（动态色，浅/深成对）换成「深色=配置色、浅色=原浅色值」的
-// 动态色返回——消费方在创建时拿到的就是目标色，第一帧即正确。非令牌名、非 UIColor 结果、
-// 模块关闭时一律原样透传。
-static id WC_ColorByName(id self, SEL _cmd, id name) {
-    IMP orig = WCOrigForColorHook(self, _cmd);
-    if (!orig) return nil;
-    id result = ((id (*)(id, SEL, id))orig)(self, _cmd, name);
-    if (![name isKindOfClass:[NSString class]]) return result;
-    if ([result isKindOfClass:[UIColor class]]) WCRecordTokenQuery(name, (UIColor *)result);
-    NSString *module = WCTokenModule(name);
-    if (!module || ![result isKindOfClass:[UIColor class]]) return result;
-    if (!WCConfigColor(module)) return result;
-    UIColor *light = [(UIColor *)result resolvedColorWithTraitCollection:WCLightTrait()];
-    return WCDynamicColor(module, light);
-}
-
-// 扫描全部类，只 hook 真正定义了 getColorByName:/colorByName: 的属主类（类方法查元类自有
-// 方法表、实例方法查类自有方法表）；继承来的不重复 hook，trampoline 按继承链找 orig。
-static void WCHookColorResolvers(void) {
-    if (!gColorOrigs) gColorOrigs = [[NSMutableDictionary alloc] init];
-    if (!gTokenLog) gTokenLog = [[NSMutableDictionary alloc] init];
-    NSArray<NSString *> *selNames = @[@"getColorByName:", @"colorByName:"];
-    unsigned int count = 0;
-    Class *classes = objc_copyClassList(&count);
-    for (unsigned int i = 0; i < count; i++) {
-        Class cls = classes[i];
-        for (NSString *sn in selNames) {
-            SEL sel = NSSelectorFromString(sn);
-            Class meta = object_getClass(cls);
-            unsigned int mc = 0;
-            Method *mlist = class_copyMethodList(meta, &mc);
-            for (unsigned int j = 0; j < mc; j++) {
-                if (method_getName(mlist[j]) == sel) {
-                    NSString *key = [NSString stringWithFormat:@"%@/%@/c", NSStringFromClass(cls), sn];
-                    @synchronized (gColorOrigs) {
-                        if (!gColorOrigs[key]) {
-                            gColorOrigs[key] = [NSValue valueWithPointer:method_getImplementation(mlist[j])];
-                            method_setImplementation(mlist[j], (IMP)WC_ColorByName);
-                            os_log(WCLog(), "[WCBlack] v4 hooked class method %{public}@ on %{public}@", sn, NSStringFromClass(cls));
-                        }
-                    }
-                    break;
-                }
-            }
-            if (mlist) free(mlist);
-            unsigned int ic = 0;
-            Method *ilist = class_copyMethodList(cls, &ic);
-            for (unsigned int j = 0; j < ic; j++) {
-                if (method_getName(ilist[j]) == sel) {
-                    NSString *key = [NSString stringWithFormat:@"%@/%@/i", NSStringFromClass(cls), sn];
-                    @synchronized (gColorOrigs) {
-                        if (!gColorOrigs[key]) {
-                            gColorOrigs[key] = [NSValue valueWithPointer:method_getImplementation(ilist[j])];
-                            method_setImplementation(ilist[j], (IMP)WC_ColorByName);
-                            os_log(WCLog(), "[WCBlack] v4 hooked instance method %{public}@ on %{public}@", sn, NSStringFromClass(cls));
-                        }
-                    }
-                    break;
-                }
-            }
-            if (ilist) free(ilist);
-        }
-    }
-    if (classes) free(classes);
-}
-
-static void WCFlushTokenLog(void) {
-    if (!gTokenLog) return;
-    NSMutableString *out = [NSMutableString stringWithString:@"== WCBlack tokens ==\n"];
-    NSArray<NSString *> *names = nil;
-    @synchronized (gTokenLog) { names = [gTokenLog.allKeys sortedArrayUsingSelector:@selector(compare:)]; }
-    for (NSString *n in names) {
-        NSString *info = nil;
-        @synchronized (gTokenLog) { info = gTokenLog[n]; }
-        [out appendFormat:@"%@ %@\n", n, info];
-    }
-    WCAppendDiagText(out);
-}
+// v4.1：v4.0 的 DesignToken 拦截已整体移除。真机诊断定案：运行时 hook 到的 getColorByName:
+// 是旧主题/十六进制色名解析（查到的名字全是 "#1C1C1C" 这类色值串与 navigator_btn_text_color
+// 等旧主题键，module 一项都没命中），微信原生界面的令牌色不走字符串查询这条路；且 v4.0
+// 真机进聊天页后聊天记录整页空白——该 hook 位于消息渲染的热路径上，是唯一新增的全局侵入点，
+// 收益为零、代价不可接受，故回退。v4.1 = v3.5 已验证基线 + 防闪与键盘捕获的非侵入改进。
 
 #pragma mark - 设置页
 
@@ -1062,18 +967,24 @@ static void WCInstall(void) {
         // 冷启早期多扫两次兜底（玻璃 tab 等非令牌体系的表面），把残余闪烁窗口压到最小
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCScanAllWindows(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCScanAllWindows(); });
-        // 令牌查询记录落盘到诊断，供核对映射覆盖面
-        static BOOL tokenFlushScheduled = NO;
-        if (!tokenFlushScheduled) {
-            tokenFlushScheduled = YES;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(9.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCFlushTokenLog(); });
-        }
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v4.0 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v4.1 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
-    WCHookColorResolvers(); // v4：每次安装都重扫（幂等），覆盖懒加载框架后注册的解析类
+    // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
+    // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
+    static BOOL glassTabHooked = NO;
+    if (!glassTabHooked) {
+        Class gt = NSClassFromString(@"WCTabBarView");
+        Class gn = NSClassFromString(@"WCGNativeTabBar");
+        if (gt) gOrigGlassTabWindow = WCSwapOwn(gt, @selector(didMoveToWindow), (IMP)WC_GlassTab_didMoveToWindow);
+        if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
+        if (gt || gn) {
+            glassTabHooked = YES;
+            os_log(WCLog(), "[WCBlack] v4.1 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+        }
+    }
     if (!gRegistered) {
         Class mgr = NSClassFromString(@"WCPluginsMgr");
         if (mgr && [mgr respondsToSelector:@selector(sharedInstance)]) {
@@ -1083,8 +994,8 @@ static void WCInstall(void) {
             for (id p in existing) { if ([[p valueForKey:@"title"] containsString:@"WCBlack"]) { dup = YES; break; } }
             if (!dup && [inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
                 ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-                    @"WCBlack 纯黑背景", @"4.0", @"WCBlackSettingsViewController");
-                os_log(WCLog(), "[WCBlack] v4.0 registered in plugin list");
+                    @"WCBlack 纯黑背景", @"4.1", @"WCBlackSettingsViewController");
+                os_log(WCLog(), "[WCBlack] v4.1 registered in plugin list");
             }
             gRegistered = YES;
         }
