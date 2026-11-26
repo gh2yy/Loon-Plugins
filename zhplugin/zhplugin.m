@@ -17,6 +17,10 @@
 //   胶囊横向 = 可见 item 槽位并集 ±8，纵向 = 图标+标题内容并集定高；透镜 = 选中 item
 //   槽位 ±4、胶囊内居中。不再读 stackView.frame 推导（旧版盘错位/压 feed 的根源），
 //   可见性过滤：hidden / alpha<0.01 / 零尺寸的 item 一律不算（v2 改包隐藏项残余同理）。
+//   坐标纪律（本轮加固）：item 的 .frame 是 stackView 坐标系，禁止直接拼到 bar 坐标系，
+//   一律 [bar convertRect:item.bounds fromView:item] 换算；换算结果逐项校验（空/越界/
+//   尺寸不合常理 → item 中心点换算兜底 → 仍不可信则整轮不画、有限次下一拍重试），
+//   胶囊/透镜落盘前再过一道 ZHClampRectToBounds 夹回 bar 内——任何路径都不许出界。
 //
 // 纯黑背景口径（本轮静态定案，详见 PATCH_NOTES v3 段）：
 //   知乎颜色总发色点是 ZHThemeManage（ZHCoreTheme）：
@@ -39,8 +43,13 @@
 //      kRNUpdateThemeNormalNotification，即 +setNightMode: 内部同款三连，不动 NIGHT_MODE_KEY、
 //      不调 +changeTheme——那是带快照动画的日夜翻转，误调会把日夜模式翻过去），
 //     让已在屏的页面按原渠道重新取色重绘。
-//   边界铁律（WCBlack v3.4 教训）：不整树刷色、不涂全屏覆盖层/透明宿主根背景；
-//     本功能只在发色点换返回值，一个视图都不碰。
+//   存量视图兜底（本轮新增，定案见下方清扫段注释）：发色点只拦后续取色，页面根视图/
+//     列表视图攥着启动时取走的存量画布色不重取（装后补发通知只黑了顶部 chrome、
+//     内容区仍灰）——故加窗口级清扫：仅在安装后/开关切换后/底栏 apply 三个时机，
+//     把背景色与夜间画布旧值精确相等的视图改纯黑并打标记、可按标记还原；
+//     cell 内部与卡片类整棵跳过。边界铁律仍在（WCBlack v3.4 教训）：不整树无差别
+//     刷色、不涂全屏覆盖层/透明宿主根背景、不挂定时器轮询——清扫只碰色值精确命中
+//     画布旧值的视图，且全程可逆。
 //
 // 开关与入口：
 //   玻璃：NSUserDefaults 键 ZHPlugin.GlassBar（新键不存在时回读旧键 ZHGlassBar.Enabled 迁移），默认开。
@@ -55,6 +64,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <math.h>
 
 static char kCapsuleKey;   // 玻璃胶囊盘（UIVisualEffectView 本体，无外壳）
 static char kLensKey;      // 选中透镜盘（同配方无填充玻璃盘）
@@ -62,6 +72,7 @@ static char kSelIdxKey;    // 上次选中序号（NSNumber, RETAIN）
 static char kSchedKey;     // 已排队布局标记
 static char kLayoutLockKey; // layoutSubviews 重入锁（per-instance）
 static char kOrigBgKey;    // 原始 bar 背景色（RETAIN，关玻璃时恢复）
+static char kGeoRetryKey;  // 几何不可信时的有限重试计数（NSNumber, RETAIN）
 static char kGestureKey;   // 长按兜底手势（RETAIN）
 
 #pragma mark - 工具
@@ -112,6 +123,7 @@ static void ZHRegisterBar(UIView *bar) {
 }
 
 static void ZHApplyBar(UIView *bar); // 前置声明，定义在布局节
+static void ZHRequestApply(UIView *bar); // 前置声明，定义在布局节
 
 static void ZHSetGlassEnabled(BOOL on) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -186,12 +198,117 @@ static void ZPPostThemeRefresh(void) {
                     userInfo:@{ @"isNight": @(night) }];
 }
 
+#pragma mark - 纯黑背景（窗口级清扫：存量视图兜底）
+
+// 为什么需要清扫（2026-11-26 静态排查定案）：发色点只拦「后续取色」，而页面画布色是
+// 在视图建成时一次性取走存量 UIColor 的——基类 ZHViewController 的 -viewDidLoad
+// （@0x1052376c0，函数内有 ZHColorModel 类引用）取画布色设到根视图后不再重取；
+// 首页容器 ZHFeedsContainerExploreAViewController 的 viewDidLoad 与
+// setUpFeed:andCollectionView: 均无背景设置，其内容区（feed 根视图/列表视图）的
+// #191B1F 同样是启动期存量。故装后补发主题通知只让顶部 chrome（自带主题监听）
+// 重取变黑，内容区纹丝不动（真机采样：状态栏区纯黑、feed 全域仍 (26,27,31)）。
+// 清扫口径：遍历 keyWindow 视图树，背景色与夜间画布旧值（99A #191B1F / 10A #212429，
+// 逐分量容差 ±2/255、alpha 近 1）精确相等的视图 → 改纯黑并打标记（记 token 与原色）；
+// cell 内部与类名含 Card 的卡片视图整棵跳过。还原（关开关/切日间）时按标记逐个
+// 经发色点现取对应画布色写回，现取失败才回落存档原色。
+// 时机仅限三处：主题段安装完成后下一拍、开关切换后下一拍、底栏 apply 同一拍
+// （涂黑方向 0.5s 节流）；不挂定时器、不轮询、不整树无差别刷色。
+
+static char kBlackMarkKey;  // NSNumber：1=MapUIFrame99A / 2=MapUIFrame10A（RETAIN）
+static char kBlackOrigKey;  // 涂黑前的原始 UIColor（RETAIN，现取失败时兜底还原）
+static NSHashTable *gBlackMarked = nil; // weak 持有被标记视图（表本身 alloc/init 持有）
+static NSTimeInterval gLastBlackenAt = 0;
+
+static BOOL ZPColorComponents(UIColor *c, CGFloat *r, CGFloat *g, CGFloat *b, CGFloat *a) {
+    if (!c) return NO;
+    if ([c getRed:r green:g blue:b alpha:a]) return YES;
+    CGFloat w = 0;
+    if ([c getWhite:&w alpha:a]) { *r = *g = *b = w; return YES; }
+    return NO;
+}
+
+// 命中夜间画布旧值则返回 token 序号（1=99A / 2=10A），否则 0
+static int ZPNightCanvasToken(UIColor *c) {
+    CGFloat r, g, b, a;
+    if (!ZPColorComponents(c, &r, &g, &b, &a)) return 0;
+    if (a < 0.99) return 0;
+    const CGFloat tol = 2.5 / 255.0;
+    if (fabs(r - 0x19 / 255.0) <= tol && fabs(g - 0x1B / 255.0) <= tol && fabs(b - 0x1F / 255.0) <= tol) return 1;
+    if (fabs(r - 0x21 / 255.0) <= tol && fabs(g - 0x24 / 255.0) <= tol && fabs(b - 0x29 / 255.0) <= tol) return 2;
+    return 0;
+}
+
+static BOOL ZPSweepShouldSkip(UIView *v) {
+    if ([v isKindOfClass:[UITableViewCell class]] || [v isKindOfClass:[UICollectionViewCell class]]) return YES;
+    NSString *cls = NSStringFromClass(object_getClass(v));
+    if ([cls rangeOfString:@"Card"].location != NSNotFound) return YES;
+    return NO;
+}
+
+static void ZPBlackenWalk(UIView *v) {
+    if (ZPSweepShouldSkip(v)) return; // cell/卡片整棵跳过，不下钻
+    UIColor *bg = v.backgroundColor;
+    if (bg && !objc_getAssociatedObject(v, &kBlackMarkKey)) {
+        int token = ZPNightCanvasToken(bg);
+        if (token) {
+            if (!gBlackMarked)
+                gBlackMarked = [[NSHashTable alloc] initWithOptions:NSPointerFunctionsWeakMemory capacity:0];
+            objc_setAssociatedObject(v, &kBlackMarkKey, @(token), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(v, &kBlackOrigKey, bg, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [gBlackMarked addObject:v];
+            v.backgroundColor = [UIColor blackColor];
+        }
+    }
+    for (UIView *s in v.subviews) ZPBlackenWalk(s);
+}
+
+static void ZPBlackRestore(void) {
+    if (!gBlackMarked) return;
+    ZPResolveCanvasModels();
+    Class tmCls = NSClassFromString(@"ZHThemeManage");
+    for (UIView *v in [gBlackMarked allObjects]) {
+        NSNumber *token = objc_getAssociatedObject(v, &kBlackMarkKey);
+        if (!token) continue;
+        id model = (token.intValue == 1) ? gCanvasMain : gCanvasSecondary;
+        UIColor *fresh = nil;
+        if (tmCls && model && [tmCls respondsToSelector:@selector(colorWithModel:ignoreNight:)])
+            fresh = ((id (*)(id, SEL, id, BOOL))objc_msgSend)(tmCls, @selector(colorWithModel:ignoreNight:), model, NO);
+        if (!fresh) fresh = objc_getAssociatedObject(v, &kBlackOrigKey);
+        if (fresh) v.backgroundColor = fresh;
+        objc_setAssociatedObject(v, &kBlackMarkKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(v, &kBlackOrigKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+// 清扫入口：夜间+开关开 → 涂黑（节流）；否则 → 还原已标记视图
+static void ZPBlackSweep(void) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ ZPBlackSweep(); });
+        return;
+    }
+    if (ZPBlackEnabled() && ZPAppIsNight()) {
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        if (now - gLastBlackenAt < 0.5) return;
+        gLastBlackenAt = now;
+        UIWindow *win = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow) { win = w; break; }
+        }
+        if (!win) win = [UIApplication sharedApplication].windows.firstObject;
+        if (win) ZPBlackenWalk(win);
+    } else {
+        ZPBlackRestore();
+    }
+}
+
 static void ZPSetBlackEnabled(BOOL on) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     [ud setBool:on forKey:kZPBlackKey];
     [ud synchronize];
     void (^apply)(void) = ^{
         ZPPostThemeRefresh();
+        // 存量视图不随通知重取色：下一拍再清扫一遍（开→涂黑存量，关→按标记还原）
+        dispatch_async(dispatch_get_main_queue(), ^{ ZPBlackSweep(); });
         for (UIView *bar in [gLiveBars allObjects]) ZHApplyBar(bar);
     };
     if ([NSThread isMainThread]) apply();
@@ -237,6 +354,19 @@ static void ZHSetPlateFrame(UIVisualEffectView *plate, CGRect f) {
     if (!CGRectEqualToRect(plate.frame, f)) plate.frame = f;
     CGFloat r = f.size.height / 2;
     if (plate.contentView.layer.cornerRadius != r) plate.contentView.layer.cornerRadius = r;
+}
+
+// 合法性夹取（最后一道闸）：rect 必须完整落在 bounds 内（四边各留 2pt），
+// 尺寸过大先收尺寸再夹原点——任何路径算出的 rect 都不许带出界值上盘。
+static CGRect ZHClampRectToBounds(CGRect r, CGRect bounds) {
+    CGFloat maxW = bounds.size.width - 4, maxH = bounds.size.height - 4;
+    if (r.size.width > maxW) r.size.width = maxW;
+    if (r.size.height > maxH) r.size.height = maxH;
+    if (r.origin.x < 2) r.origin.x = 2;
+    if (r.origin.y < 2) r.origin.y = 2;
+    if (CGRectGetMaxX(r) > bounds.size.width - 2) r.origin.x = bounds.size.width - 2 - r.size.width;
+    if (CGRectGetMaxY(r) > bounds.size.height - 2) r.origin.y = bounds.size.height - 2 - r.size.height;
+    return r;
 }
 
 #pragma mark - 开关回调（单例 handler，静态 RETAIN）
@@ -337,18 +467,21 @@ static void ZHRestoreBar(UIView *bar) {
     if (orig) bar.backgroundColor = orig;
 }
 
-// item 的内容并集（图标+标题）在 bar 坐标系中的矩形；取不到内容视图时回落 item 自身 frame
-static CGRect ZHItemContentRect(UIView *bar, UIView *item) {
+// item 的内容并集（图标+标题）在 bar 坐标系中的矩形；取不到内容视图时回落 item 自身槽位。
+// 坐标一律换算（[bar convertRect:… fromView:…]），绝不直接读 .frame 拼算——item 的
+// .frame 是其父视图（stackView）坐标系，与 bar 坐标系差一个 stack 原点偏移。
+static CGRect ZHItemContentRect(UIView *bar, UIView *item, CGRect slotFallback) {
     CGRect u = CGRectNull;
     for (NSString *name in @[@"iconImageView", @"titleLable"]) {
         UIView *v = ZHGetObj(item, name);
         if (v && [v isKindOfClass:[UIView class]] && [v isDescendantOfView:bar]) {
+            if (v.hidden || v.alpha < 0.01) continue; // 隐藏的内容视图（如被头像 customView 顶替的图标）不进几何
             CGRect r = [bar convertRect:v.bounds fromView:v];
             if (r.size.width > 0 && r.size.height > 0)
                 u = CGRectIsNull(u) ? r : CGRectUnion(u, r);
         }
     }
-    if (CGRectIsNull(u)) u = [bar convertRect:item.bounds fromView:item];
+    if (CGRectIsNull(u)) u = slotFallback;
     return u;
 }
 
@@ -393,24 +526,53 @@ static void ZHLayoutBar(UIView *bar) {
     if (![bar.backgroundColor isEqual:[UIColor clearColor]]) bar.backgroundColor = [UIColor clearColor];
     for (UIView *v in ZHBackgroundViews(bar)) if (!v.hidden) v.hidden = YES;
 
-    // 几何全部来自实测 frame（bar 坐标系）：横向认 item 槽位、纵向认图标+标题内容并集，
-    // 选中序号以 item 的 themeSelected 为准（取不到回落 0）。
+    // 几何全部来自实测 frame 的坐标换算（bar 坐标系）：横向认 item 槽位、纵向认图标+标题
+    // 内容并集，选中序号以 item 的 themeSelected 为准（取不到回落 0）。
+    // 坐标铁律：item 的 .frame 是父视图（stackView）坐标系，禁止直接拼到 bar 坐标系；
+    // 一律 [bar convertRect:item.bounds fromView:item] 换算。换算结果逐项做合法性校验：
+    // 槽位为空/宽高不合常理/越出 bar → 改用 item 中心点（同样换算）+ 实测尺寸重拼；
+    // 中心点也不可信 → 整轮几何作废：不画出界 rect，盘先隐藏、有限次（≤3）下一拍重试，
+    // 等布局落定后再算（旧版把某一时刻的错位 rect 直接画上盘，是盘出界的成因之一）。
     CGRect slotU = CGRectNull;    // 可见 item 槽位并集（横向）
     CGRect contentU = CGRectNull; // 可见 item 内容并集（纵向）
     NSUInteger sel = NSNotFound;
     CGRect selSlot = CGRectNull;
+    NSMutableArray *slots = [NSMutableArray arrayWithCapacity:items.count];
+    BOOL geoOK = YES;
     for (NSUInteger i = 0; i < items.count; i++) {
         UIView *it = items[i];
         CGRect slot = [bar convertRect:it.bounds fromView:it];
+        if (CGRectIsEmpty(slot) || slot.size.width < 8 || slot.size.height < 8 ||
+            slot.origin.x < -1 || slot.origin.y < -1 ||
+            CGRectGetMaxX(slot) > bounds.size.width + 1 || CGRectGetMaxY(slot) > bounds.size.height + 1) {
+            CGPoint c = [bar convertPoint:CGPointMake(CGRectGetMidX(it.bounds), CGRectGetMidY(it.bounds))
+                                 fromView:it];
+            CGFloat w = it.bounds.size.width, h = it.bounds.size.height;
+            if (w < 8 || h < 8 || c.x < 0 || c.y < 0 ||
+                c.x > bounds.size.width || c.y > bounds.size.height) { geoOK = NO; break; }
+            slot = CGRectMake(c.x - w / 2, c.y - h / 2, w, h);
+        }
+        [slots addObject:[NSValue valueWithCGRect:slot]];
         slotU = CGRectIsNull(slotU) ? slot : CGRectUnion(slotU, slot);
-        CGRect cr = ZHItemContentRect(bar, it);
+        CGRect cr = ZHItemContentRect(bar, it, slot);
         contentU = CGRectIsNull(contentU) ? cr : CGRectUnion(contentU, cr);
         if (sel == NSNotFound && ZHGetBool(it, @"themeSelected", NO)) { sel = i; selSlot = slot; }
     }
+    if (!geoOK) {
+        NSNumber *retry = objc_getAssociatedObject(bar, &kGeoRetryKey);
+        ZHSetPlateFrame(capsule, CGRectZero);
+        ZHSetPlateFrame(lens, CGRectZero);
+        if (retry.unsignedIntegerValue < 3) {
+            objc_setAssociatedObject(bar, &kGeoRetryKey, @(retry.unsignedIntegerValue + 1),
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            ZHRequestApply(bar);
+        }
+        return;
+    }
+    objc_setAssociatedObject(bar, &kGeoRetryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (sel == NSNotFound) {
         sel = 0;
-        UIView *it = items[0];
-        selSlot = [bar convertRect:it.bounds fromView:it];
+        selSlot = [slots[0] CGRectValue];
     }
 
     // 胶囊：横向 = 槽位并集左右各扩 8；高 = 内容并集高 + 14，纵向以内容并集中心对齐；全程夹回栏内
@@ -425,7 +587,7 @@ static void ZHLayoutBar(UIView *bar) {
     CGFloat maxY = bounds.size.height - 4 - capH;
     if (capY < 2) capY = 2;
     if (capY > maxY) capY = maxY < 2 ? 2 : maxY;
-    CGRect capRect = CGRectMake(capX, capY, capW, capH);
+    CGRect capRect = ZHClampRectToBounds(CGRectMake(capX, capY, capW, capH), bounds);
     ZHSetPlateFrame(capsule, capRect);
 
     // 透镜：锚定选中 item 本人——横向 = 其槽位左右各扩 4（XHS 主页透镜 = item 宽+16 同路数，
@@ -436,7 +598,8 @@ static void ZHLayoutBar(UIView *bar) {
     CGFloat lensX = CGRectGetMidX(selSlot) - lensW / 2;
     if (lensX < capX + 2) lensX = capX + 2;
     if (lensX + lensW > capX + capW - 2) lensX = capX + capW - 2 - lensW;
-    CGRect lensRect = CGRectMake(lensX, capY + (capH - lensH) / 2, lensW, lensH);
+    CGRect lensRect = ZHClampRectToBounds(
+        CGRectMake(lensX, capY + (capH - lensH) / 2, lensW, lensH), bounds);
 
     NSNumber *prev = objc_getAssociatedObject(bar, &kSelIdxKey);
     BOOL selChanged = (!prev || prev.unsignedIntegerValue != sel);
@@ -466,6 +629,9 @@ static void ZHApplyBar(UIView *bar) {
     }
     if (ZHGlassEnabled()) ZHLayoutBar(bar);
     else ZHRestoreBar(bar);
+    // 纯黑清扫第三个时机点：与底栏 apply 同一拍（内部 0.5s 节流；切页/主题变化时
+    // 新在屏的存量画布视图在这里被补涂，日间/关开关时同一入口按标记还原）
+    ZPBlackSweep();
 }
 
 static void ZHRequestApply(UIView *bar) {
@@ -812,7 +978,9 @@ static void ZPInstallThemeHook(void) {
     // 切换同款），让已在屏页面按原渠道重取色；之后新建页面走钩子天然命中。
     if (gThemeHookInstalled && ZPBlackEnabled()) {
         ZPPostThemeRefresh();
-        NSLog(@"[zhplugin] install segment theme: posted theme refresh for already-built views");
+        // 通知只救自带主题监听的视图（顶部 chrome）；内容区存量画布色靠下一拍清扫兜底
+        dispatch_async(dispatch_get_main_queue(), ^{ ZPBlackSweep(); });
+        NSLog(@"[zhplugin] install segment theme: posted theme refresh + sweep for already-built views");
     }
 }
 
