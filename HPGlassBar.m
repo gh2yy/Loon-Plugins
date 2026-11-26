@@ -127,19 +127,19 @@ static UIColor *HPLensFillColor(void) {
     }];
 }
 
-// 玻璃盘构造（v8 改回 v2 已在真机验证会采样背景的构造）：Clear 玻璃 + 效果视图自身 layer 圆角裁剪。
-// 教训：v4 起照 XHS 用 UICornerConfiguration + contentView 掩角，在虎扑里渲染成不透明（v7 浅色截图：
-// 压在深色照片上仍是纯白 255、无任何透过）——XHS 的盘活在它自家 App 的玻璃体系里，虎扑没有这层环境。
-// fillKind: 0 无填充 / 2 透镜填充。胶囊（kind 0）返回带投影的外壳视图（tag 1001），内嵌效果视图。
+// 玻璃盘构造（v10 毛玻璃近似版）：液态玻璃在 8.1.9（iOS 17.5 SDK 构建）里被兼容模式降级为不透明
+// （v7/v9 像素定案：压深色图仍纯白 255、零采样，两种玻璃构造同败）。改用 iOS 26 之前的系统毛玻璃
+// 材质——老设计体系自带的效果，不吃兼容门禁：胶囊 UltraThin（最透）、透镜 Thin（稍强以分层），
+// 各加 0.5pt 发丝边定轮廓。注意：毛玻璃只有磨砂半透，没有液态玻璃的折射与边缘高光，是近似。
+// fillKind: 0 胶囊 / 2 透镜。胶囊返回带投影的外壳视图（tag 1001），内嵌效果视图。
 static UIView *HPMakePlate(int fillKind) {
-    UIVisualEffect *fx = nil;
-    Class glassCls = NSClassFromString(@"UIGlassEffect");
-    if (glassCls && [glassCls respondsToSelector:@selector(effectWithStyle:)])
-        fx = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassCls, @selector(effectWithStyle:), 1); // Clear
-    if (!fx) fx = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
+    UIVisualEffect *fx = (fillKind == 2)
+        ? [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]
+        : [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
     UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:fx];
     v.userInteractionEnabled = NO;
     v.layer.masksToBounds = YES;
+    v.layer.borderWidth = 0.5;
     if (fillKind == 2) {
         v.contentView.backgroundColor = HPLensFillColor();
         return v;
@@ -155,12 +155,16 @@ static UIView *HPMakePlate(int fillKind) {
 
 static void HPSetPlateFrame(UIView *plate, CGRect f) {
     plate.frame = f;
+    BOOL dark = plate.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
+    UIColor *bc = dark ? [UIColor colorWithWhite:1.0 alpha:0.16] : [UIColor colorWithWhite:0.0 alpha:0.08];
     if (plate.tag == 1001) {
         UIView *fx = plate.subviews.firstObject;
         fx.frame = plate.bounds;
         fx.layer.cornerRadius = f.size.height / 2;
+        fx.layer.borderColor = bc.CGColor;
     } else {
         plate.layer.cornerRadius = f.size.height / 2;
+        plate.layer.borderColor = bc.CGColor;
     }
 }
 
@@ -521,7 +525,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v9 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v10 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
