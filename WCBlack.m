@@ -581,26 +581,30 @@ static void WC_TV_setDataSource(UITableView *s, SEL c, id d) {
 static NSMutableDictionary<NSString *, NSArray<NSString *> *> *gSepCensusIvars;
 static NSMutableDictionary<NSString *, NSValue *> *gSepCensusOrigs;
 static NSMutableSet<NSString *> *gSepCensusDone;
-static void WCSepHideIvars(id obj, Class regCls, NSArray<NSString *> *names) {
-    BOOL hide = WCHideSep();
-    for (NSString *name in names) {
-        Ivar iv = class_getInstanceVariable(regCls, name.UTF8String);
-        if (!iv) continue;
-        id v = object_getIvar(obj, iv);
-        if ([v isKindOfClass:[UIView class]]) ((UIView *)v).hidden = hide;
-        else if ([v isKindOfClass:[CALayer class]]) ((CALayer *)v).hidden = hide;
-        else if ([v isKindOfClass:[NSArray class]])
-            for (id el in (NSArray *)v) if ([el isKindOfClass:[UIView class]]) ((UIView *)el).hidden = hide;
-    }
-}
-static void WC_Sep_layout(id s, SEL c) {
-    NSMutableArray<NSString *> *chain = [NSMutableArray array];
+@interface WCSepPlan : NSObject
+@property (nonatomic, assign) IMP orig;
+@property (nonatomic, retain) NSArray<NSValue *> *ivars;
+@property (nonatomic, assign) NSUInteger gen;
+@end
+@implementation WCSepPlan
+@end
+static NSMapTable *gSepPlans;
+static NSUInteger gSepGen = 0;
+static void WCSepHideIvars(id obj, Class regCls, NSArray<NSString *> *names);
+static WCSepPlan *WCBuildSepPlan(id s, SEL c) {
+    WCSepPlan *plan = [[WCSepPlan alloc] init];
+    plan.gen = gSepGen;
+    NSMutableArray<NSValue *> *ivs = [NSMutableArray array];
     IMP origToCall = NULL;
     Class k = object_getClass(s);
     while (k) {
         NSString *kn = NSStringFromClass(k);
-        if (gSepCensusIvars[kn]) {
-            [chain addObject:kn];
+        NSArray<NSString *> *names = gSepCensusIvars[kn];
+        if (names) {
+            for (NSString *n in names) {
+                Ivar iv = class_getInstanceVariable(k, n.UTF8String);
+                if (iv) [ivs addObject:[NSValue valueWithPointer:iv]];
+            }
             if (!origToCall) {
                 NSValue *v = gSepCensusOrigs[kn];
                 if (v && v != (id)[NSNull null]) origToCall = [v pointerValue];
@@ -608,10 +612,26 @@ static void WC_Sep_layout(id s, SEL c) {
         }
         k = class_getSuperclass(k);
     }
-    if (!origToCall && [s isKindOfClass:[UIView class]])
-        origToCall = class_getMethodImplementation([UIView class], @selector(layoutSubviews));
-    if (origToCall) ((void (*)(id, SEL))origToCall)(s, c);
-    for (NSString *kn in chain) WCSepHideIvars(s, NSClassFromString(kn), gSepCensusIvars[kn]);
+    if (!origToCall) origToCall = class_getMethodImplementation(object_getClass(s), c);
+    plan.orig = origToCall;
+    plan.ivars = ivs;
+    if (!gSepPlans) gSepPlans = [[NSMapTable mapTableWithKeyOptions:(NSPointerFunctionsOpaqueMemory | NSPointerFunctionsOpaquePersonality) valueOptions:NSPointerFunctionsStrongMemory] retain];
+    [gSepPlans setObject:plan forKey:object_getClass(s)];
+    [plan release];
+    return plan;
+}
+static void WC_Sep_layout(id s, SEL c) {
+    WCSepPlan *plan = [gSepPlans objectForKey:object_getClass(s)];
+    if (!plan || plan.gen != gSepGen) plan = WCBuildSepPlan(s, c);
+    if (plan.orig) ((void (*)(id, SEL))plan.orig)(s, c);
+    BOOL hide = WCHideSep();
+    for (NSValue *v in plan.ivars) {
+        id val = object_getIvar(s, (Ivar)[v pointerValue]);
+        if ([val isKindOfClass:[UIView class]]) ((UIView *)val).hidden = hide;
+        else if ([val isKindOfClass:[CALayer class]]) ((CALayer *)val).hidden = hide;
+        else if ([val isKindOfClass:[NSArray class]])
+            for (id el in (NSArray *)val) if ([el isKindOfClass:[UIView class]]) ((UIView *)el).hidden = hide;
+    }
 }
 static IMP gOrigTVLayout;
 static void WC_TV_layout(UITableView *s, SEL c) {
@@ -903,12 +923,14 @@ static void WCInstallSepCensus(void) {
         if (m && method_getImplementation(m) == (IMP)WC_Sep_layout) {
             gSepCensusIvars[clsName] = ivars;
             gSepCensusOrigs[clsName] = (id)[NSNull null];
+            gSepGen++;
             continue;
         }
         IMP orig = WCSwapOwn(cls, sel, (IMP)WC_Sep_layout);
         if (orig) {
             gSepCensusIvars[clsName] = ivars;
             gSepCensusOrigs[clsName] = [NSValue valueWithPointer:orig];
+            gSepGen++;
         }
     }
 }
