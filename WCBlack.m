@@ -169,15 +169,33 @@ static UIColor *WCSanitizeLightFallback(UIColor *fb) {
     return fb;
 }
 
+// 我方造过的动态色 / 纯色图登记（弱引用）：微信在明暗切换时会重建主框架并把旧栏的
+// backgroundImage 等属性拷到新栏上，新栏从没被强涂过、还原无从下手；靠登记认出
+// 「这是我的东西」，在浅色下直接回收（v6.4）。
+static NSHashTable *WCMyColors(void) {
+    static NSHashTable *t;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ t = [[NSHashTable hashTableWithOptions:NSPointerFunctionsWeakMemory] retain]; });
+    return t;
+}
+static NSHashTable *WCMyImages(void) {
+    static NSHashTable *t;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ t = [[NSHashTable hashTableWithOptions:NSPointerFunctionsWeakMemory] retain]; });
+    return t;
+}
+
 static UIColor *WCDynamicColor(NSString *module, UIColor *lightFallback) {
     UIColor *fb = WCSanitizeLightFallback(lightFallback);
-    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
+    UIColor *dyn = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
         if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
             UIColor *c = WCConfigColor(module);
             return c ?: fb;
         }
         return fb;
     }];
+    [WCMyColors() addObject:dyn];
+    return dyn;
 }
 
 // setter 路径的替换：命中模块 -> 动态色（浅色回退为原色浅色解析值）
@@ -896,6 +914,7 @@ static void WCAppendSourceStats(NSMutableString *out) {
         }
     }
     [out appendFormat:@"valueStr remaps: %ld | toColor remaps: %ld | proxy remaps: %ld\n", gWCValueStrHits, gWCToColorHits, gWCProxyHits];
+    [out appendFormat:@"myColors: %lu | myImages: %lu\n", (unsigned long)WCMyColors().count, (unsigned long)WCMyImages().count];
 }
 
 #pragma mark - 设置页
@@ -1102,7 +1121,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"6.3", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"6.4", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1167,6 +1186,7 @@ static UIImage *WCSolidImage(UIColor *color) {
     img = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     if (img) cache[key] = img;
+    if (img) [WCMyImages() addObject:img];
     return img;
 }
 
@@ -1282,6 +1302,19 @@ static void WCRestoreBar(UIView *bar) {
         [(UINavigationBar *)bar setBarTintColor:tint];
     }
     objc_setAssociatedObject(bar, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// v6.4 回收：浅色下若栏身上还挂着我方登记过的图/色（多半是微信切模式重建时从旧栏
+// 拷过来的、或还原没够到的），直接摘掉。与存档还原互补，只认我自己的东西、不动微信的。
+static void WCReclaimArtifacts(UIView *bar) {
+    if (gWCWeChatDark || !bar) return;
+    if ([bar isKindOfClass:[UINavigationBar class]]) {
+        UINavigationBar *nb = (UINavigationBar *)bar;
+        UIImage *img = [nb backgroundImageForBarMetrics:UIBarMetricsDefault];
+        if (img && [WCMyImages() containsObject:img]) [nb setBackgroundImage:nil forBarMetrics:UIBarMetricsDefault];
+        if (nb.barTintColor && [WCMyColors() containsObject:nb.barTintColor]) nb.barTintColor = nil;
+    }
+    if (bar.backgroundColor && [WCMyColors() containsObject:bar.backgroundColor]) bar.backgroundColor = nil;
 }
 
 static void WCForceBar(UIView *bar, NSString *module, int depth) {
@@ -1533,6 +1566,13 @@ static void WCScanChrome(UIView *root, UIWindow *win, int depth) {
         if (root.overrideUserInterfaceStyle != want) root.overrideUserInterfaceStyle = want;
         WCRegisterBar(gBarsNav, root);
         WCForceBar(root, @"nav", 3);
+        if (!gWCWeChatDark) WCReclaimArtifacts(root);
+    } else if (!gWCWeChatDark && root.window && root.bounds.size.width >= root.window.bounds.size.width * 0.95 &&
+               root.bounds.size.height >= 20 && root.bounds.size.height <= 140 &&
+               root.backgroundColor && [WCMyColors() containsObject:root.backgroundColor]) {
+        // 浅色下顶部条带若还挂着我的动态色（重建拷贝残留），摘掉回透明
+        CGRect wf = [root convertRect:root.bounds toView:nil];
+        if (wf.origin.y < 70 && wf.origin.y > -70) root.backgroundColor = nil;
     } else if (gWCWeChatDark && root.window && root.bounds.size.width >= root.window.bounds.size.width * 0.95 &&
                root.bounds.size.height >= 20 && root.bounds.size.height <= 140) {
         CGRect wf = [root convertRect:root.bounds toView:nil];
@@ -1558,7 +1598,7 @@ static void WCSlimTick(void) {
     if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain];
     if (!gWCWeChatDark) {
         // 非深色（含关插件）：把登记过的顶栏背景条逐个还原（它只在深色时才被扫描命中）
-        for (UIView *b in gBarsNav.allObjects) WCRestoreBar(b);
+        for (UIView *b in gBarsNav.allObjects) { WCRestoreBar(b); WCReclaimArtifacts(b); }
     }
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
         if ([NSStringFromClass([w class]) containsString:@"TextEffects"]) { WCForceKeyboardWindow(w); continue; }
