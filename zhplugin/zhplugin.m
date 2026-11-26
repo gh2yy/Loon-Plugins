@@ -3,19 +3,39 @@
 //   1) 玻璃底栏：iOS 27 式清透玻璃悬浮底栏（原 ZHGlassBar v3 并入）
 //   2) 纯黑背景：夜间模式下整体画布背景改纯黑 #000000（仿 WCBlack 路线，但走知乎主题发色点）
 //
-// 玻璃底栏口径（2026-11-26 按 WCTabBarGlass 本体取证重做，废弃 UIGlassEffect 路线）：
+// 玻璃底栏口径（2026-11-26 本轮定案：换回原生 UIGlassEffect，按官方文档 +
+// DYKiller/XHSNative 动作清单重做；材质+装饰层路线废弃）：
 //   基线为 v2 改包（ZHTabBarNew 只剩首页/我的两项、stack 宽约束内收，两项中心 33.3%/66.7%）。
-//   只做视觉层：原底栏背景/顶线清掉，在 stackView 之下放两块玻璃盘（胶囊盘 + 选中透镜盘），
-//   按钮沿用原 ZHTabBarItemNormalView 与原点击路由，插件不新增任何拦截视图/手势到盘上。
-//   构造定案（WCTabBarGlass 本体取证）：三方玻璃不用 UIGlassEffect——知乎带
-//   UIDesignRequiresCompatibility 兼容标志，UIGlassEffect（Clear/Regular 两版）真机
-//   均为实心，已废弃。采样核心是 UIBlurEffect SystemUltraThinMaterial（style 6，
-//   iOS 13 经典材质通道、不受 SDK/兼容标志门控），液态感靠装饰层堆：
-//   baseFill 透色 / wash 渐变光泽 / rim 边缘高光 / shadow 投影 / selection 透镜。
-//   盘分层（阴影与裁剪分层）：外壳 wrapper 只承阴影、不裁剪、无背景色；内嵌裁剪
-//   容器（cornerRadius=盘高/2、cornerCurve=continuous、masksToBounds）依次垫
-//   材质效果视图、baseFill、wash（CAGradientLayer 对角渐变）；rim 描边叠最上。
-//   透镜同配方小胶囊（fill 略强于盘）。全链 userInteractionEnabled=NO。
+//   只做视觉层：按钮沿用原 ZHTabBarItemNormalView 与原点击路由，插件不新增任何拦截视图/手势。
+//   归因纠正（官方文档已证）：UIDesignRequiresCompatibility 与手动 UIGlassEffect
+//   无关，「兼容标志降级手动玻璃」作废；自定义控件用玻璃是官方支持路径。变实心
+//   的元凶是自加实心填充与宿主不透明背景干扰。此前两版原生实心的头号解释：盘垫
+//   在 ZHTabBarNew 内部、下方是栏自己的不透明背景，玻璃只能采样一整块纯色。
+//   本轮动作清单（逐项对着两个成功样本）：
+//     ① 本体：盘 = 单只 UIVisualEffectView + UIGlassEffect Regular（style 0）、
+//        tintColor 不设（nil）、cornerConfiguration=capsule 设在 effect view 本体、
+//        contentView.layer 圆角/裁剪照 XHSNative（masksToBounds、cornerRadius=
+//        高/2 每轮重设）；主盘 effect setInteractive:YES（DYKiller 主元素口径）。
+//        无外壳、无 shadow、无 fill/wash/rim 任何装饰层。
+//     ② 透镜：同为 UIGlassEffect Regular 小胶囊；盘与透镜同放进一只
+//        UIGlassContainerEffect 容器视图（官方多玻璃元素口径，避免玻璃叠玻璃；
+//        spacing=2.0，DYKiller 实测常量）。容器类运行时取不到时降级为两只
+//        独立 effect view 直接进父视图。
+//     ③ 承载位置（核心改动）：容器插到 ZHTabBarNew 的父视图内、紧贴 bar 之下
+//        （insertSubview:belowSubview:bar），不再插进 bar 内部——盘压在内容层
+//        上采样，与 XHSNative「锚点父视图内、锚点之下」同位。几何在 bar 坐标
+//        算出后 convertRect 换算到父视图坐标落盘，夹取边界为父视图内且不超出
+//        bar 的纵向带区 ±12pt。
+//     ④ 栏背景清场（DYKiller 存档纪律）：玻璃开时，bar 自身 backgroundColor 与
+//        其全宽背景类子视图（seperatorView/leftImageView/centerImageView/
+//        rightImageView，沿用既有识别口径）逐项存档（hidden/alpha/背景色）后
+//        清掉；玻璃关时按存档逐项还原。盘与内容层之间不许留知乎的不透明层。
+//     ⑤ 风格钉住：容器与透镜（及降级时的胶囊）overrideUserInterfaceStyle 钉
+//        知乎主题（ZPAppIsNight 口径），每轮布局同步。
+//   iOS 26 玻璃类（UIGlassEffect/UIGlassContainerEffect/UICornerConfiguration）
+//   全部运行时 NSClassFromString 取类、无硬链接（构建 SDK 不含其头文件）；
+//   UIGlassEffect 本身取不到（<iOS 26）时玻璃静默不建盘、栏保持原样。
+//   全链 userInteractionEnabled=NO。
 //   几何只认实测 frame（XHS 全部 plateOn 调用点均为真实内容视图 frame 的并集/内缩）：
 //   胶囊横向 = 可见 item 槽位并集 ±8，纵向 = 图标+标题内容并集定高；透镜 = 选中 item
 //   槽位 ±4、胶囊内居中。不再读 stackView.frame 推导（旧版盘错位/压 feed 的根源），
@@ -23,7 +43,8 @@
 //   坐标纪律（本轮加固）：item 的 .frame 是 stackView 坐标系，禁止直接拼到 bar 坐标系，
 //   一律 [bar convertRect:item.bounds fromView:item] 换算；换算结果逐项校验（空/越界/
 //   尺寸不合常理 → item 中心点换算兜底 → 仍不可信则整轮不画、有限次下一拍重试），
-//   胶囊/透镜落盘前再过一道 ZHClampRectToBounds 夹回 bar 内——任何路径都不许出界。
+//   胶囊/透镜在 bar 坐标内先过 ZHClampRectToBounds、换算到父视图坐标后再过
+//   一道带区夹取——任何路径都不许出界。
 //
 // 纯黑背景口径（本轮静态定案，详见 PATCH_NOTES v3 段）：
 //   知乎颜色总发色点是 ZHThemeManage（ZHCoreTheme）：
@@ -70,8 +91,10 @@
 #import <objc/message.h>
 #import <math.h>
 
-static char kCapsuleKey;   // 玻璃胶囊盘（分层构造的外壳 UIView）
-static char kLensKey;      // 选中透镜盘（同配方小胶囊外壳 UIView）
+static char kCapsuleKey;   // 玻璃胶囊盘（UIVisualEffectView + UIGlassEffect 本体）
+static char kLensKey;      // 选中透镜盘（同构造小胶囊 UIVisualEffectView）
+static char kGlassBoxKey;  // 玻璃容器（UIVisualEffectView + UIGlassContainerEffect，插在 bar 父视图内、bar 之下）
+static char kBgStateKey;   // 栏背景子视图逐项存档（NSMutableDictionary, RETAIN；清场/还原纪律）
 static char kSelIdxKey;    // 上次选中序号（NSNumber, RETAIN）
 static char kSchedKey;     // 已排队布局标记
 static char kLayoutLockKey; // layoutSubviews 重入锁（per-instance）
@@ -218,148 +241,97 @@ static void ZPSetBlackEnabled(BOOL on) {
     NSLog(@"[zhplugin] blackbg switch -> %@", on ? @"ON" : @"OFF");
 }
 
-#pragma mark - 玻璃盘构造（WCTabBarGlass 本体配方：系统材质采样 + 装饰层堆液态感）
+#pragma mark - 玻璃盘构造（原生 UIGlassEffect 本体：XHSNative 配方 + DYKiller 纪律）
 
-// 采样核心：UIBlurEffect SystemUltraThinMaterial（style 6）——iOS 13 经典材质
-// 通道，不申请 UIGlassEffect、不受知乎 UIDesignRequiresCompatibility 兼容标志
-// 门控（UIGlassEffect 路线已两版真机实心，废弃）。液态感靠装饰层堆出来：
-// baseFill 透色 / wash 渐变光泽 / rim 边缘高光 / shadow 投影 / selection 透镜。
-// 分层（阴影与裁剪必须分层，合在一层会互相杀）：
-//   外壳 wrapper UIView：只承阴影（黑 α0.25 / radius 16 / offset (0,6)），
-//     不裁剪、无背景色；
-//   裁剪容器 UIView（外壳内）：cornerRadius=盘高/2、cornerCurve=continuous、
-//     masksToBounds=YES，内依次垫 材质效果视图 → baseFill → wash；
-//   rim 描边 UIView（外壳内、裁剪容器之上）：同圆角、半透明白 1px 边。
-// 透镜同配方小胶囊，仅 fill 略强于盘。盘内部件以关联对象挂在外壳上（MRC 均 RETAIN 持有）。
-static char kPlateClipKey;  // 裁剪容器（RETAIN）
-static char kPlateFxKey;    // 材质效果视图 UIVisualEffectView（RETAIN）
-static char kPlateFillKey;  // baseFill 透色层（RETAIN）
-static char kPlateWashKey;  // wash 视图（RETAIN）
-static char kPlateGradKey;  // wash 内的 CAGradientLayer（RETAIN）
-static char kPlateRimKey;   // rim 描边层（RETAIN）
-static char kPlateLensKey;  // 是否透镜（NSNumber, RETAIN）——决定 fill 取值
+// 本轮定案：换回原生 UIGlassEffect。官方文档已证 UIDesignRequiresCompatibility
+// 与手动 UIGlassEffect 无关、自定义控件用玻璃是官方支持路径；变实心的元凶是
+// 自加实心填充与宿主不透明背景干扰。此前两版原生实心的头号解释是承载位置：
+// 盘垫在 ZHTabBarNew 内部、下方是栏自己的不透明背景，只能采样一整块纯色。
+// 本节只做三件事：本体构造（XHSNative plateOn 配方逐项对齐）、容器融合
+// （官方多玻璃元素口径）、风格钉住（DYKiller 对其 Regular 槽位的做法）。
+// 承载位置与栏背景清场在布局节（ZHEnsurePlates / ZHLayoutBar）。
+//
+// iOS 26 玻璃类全部运行时取类、无硬链接（构建 SDK 不含其头文件）：
+// UIGlassEffect / UIGlassContainerEffect / UICornerConfiguration。
+// 取类失败（<iOS 26）时 ZHMakeGlassView 返回 nil，布局节据此静默不建盘、栏保持原样。
 
-// 参数初值（均为真机微调项）：
-//   blur style = 6（SystemUltraThinMaterial）；
-//   盘 fill：夜间 白 α0.06、日间 白 α0.30；透镜 fill：夜间 白 α0.10、日间 白 α0.18；
-//   wash：白色对角渐变 α 0.10 → 0.02；rim：白 α0.15、宽 1/scale；
-//   shadow：黑、opacity 0.25、radius 16、offset (0,6)。
-static UIView *ZHMakePlate(BOOL lens) {
-    UIView *shell = [[UIView alloc] initWithFrame:CGRectZero];
-    shell.userInteractionEnabled = NO; // 盘永不吃点击（全链 NO，含所有子层）
-    shell.backgroundColor = nil;
-    shell.layer.shadowColor = [UIColor blackColor].CGColor;
-    shell.layer.shadowOpacity = 0.25;
-    shell.layer.shadowRadius = 16;
-    shell.layer.shadowOffset = CGSizeMake(0, 6);
-
-    UIView *clip = [[UIView alloc] initWithFrame:CGRectZero];
-    clip.userInteractionEnabled = NO;
-    clip.layer.cornerCurve = kCACornerCurveContinuous;
-    clip.layer.masksToBounds = YES;
-    [shell addSubview:clip];
-
-    UIVisualEffectView *fx = [[UIVisualEffectView alloc]
-        initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]];
-    fx.userInteractionEnabled = NO;
-    [clip addSubview:fx];
-
-    UIView *fill = [[UIView alloc] initWithFrame:CGRectZero];
-    fill.userInteractionEnabled = NO;
-    [clip addSubview:fill];
-
-    UIView *wash = [[UIView alloc] initWithFrame:CGRectZero];
-    wash.userInteractionEnabled = NO;
-    CAGradientLayer *grad = [CAGradientLayer layer];
-    grad.colors = @[ (id)[UIColor colorWithWhite:1.0 alpha:0.10].CGColor,
-                     (id)[UIColor colorWithWhite:1.0 alpha:0.02].CGColor ];
-    grad.startPoint = CGPointMake(0, 0);
-    grad.endPoint = CGPointMake(1, 1);
-    [wash.layer addSublayer:grad];
-    [clip addSubview:wash];
-
-    UIView *rim = [[UIView alloc] initWithFrame:CGRectZero];
-    rim.userInteractionEnabled = NO;
-    rim.layer.cornerCurve = kCACornerCurveContinuous;
-    rim.layer.borderWidth = 1.0 / [UIScreen mainScreen].scale;
-    [shell addSubview:rim];
-
-    objc_setAssociatedObject(shell, &kPlateClipKey, clip, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(shell, &kPlateFxKey, fx, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(shell, &kPlateFillKey, fill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(shell, &kPlateWashKey, wash, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(shell, &kPlateGradKey, grad, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(shell, &kPlateRimKey, rim, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(shell, &kPlateLensKey, @(lens), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [clip release]; [fx release]; [fill release]; [wash release]; [rim release];
-    return shell;
+static id ZHMakeGlassEffect(BOOL interactive) {
+    Class cls = NSClassFromString(@"UIGlassEffect");
+    if (!cls || ![cls respondsToSelector:@selector(effectWithStyle:)]) return nil;
+    // UIGlassEffectStyle: Regular = 0（本轮只用 Regular，XHSNative/DYKiller 主口径）
+    id fx = ((id (*)(id, SEL, long))objc_msgSend)(cls, @selector(effectWithStyle:), 0L);
+    if (fx && interactive && [fx respondsToSelector:@selector(setInteractive:)])
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(fx, @selector(setInteractive:), YES);
+    return fx; // 工厂方法返回值按惯例 autorelease，MRC 下调用方在池内即用，安全
 }
 
-// 明暗着色：fill/rim 按当前明暗重设（明暗判定走 ZPAppIsNight 既有口径）。
-// ZHSetPlateFrame 每轮布局都会调用本函数，而主题切换（notifyThemeSwitch /
-// updateTheme: / trait 变化）最终都经 ZHApplyBar→ZHLayoutBar→ZHSetPlateFrame
-// 走到这里，故主题切换自动跟随、无需另挂刷新点。逐项先比对现值再写，保持幂等。
-// 明暗数据源定案（本轮）：ZPAppIsNight 改前改后都是同一口径——优先 ZHThemeManage
-// +isNightMode（知乎自有主题权威），次选 ZHTabBarNewTheme.share.isDark，系统 trait
-// 仅末位兜底；fill 的明暗取值本来就走它、没脱节。真正脱节的是材质层本身：
-// UIBlurEffect 的明暗由效果视图的 traitCollection（系统外观）解析，知乎主题与
-// 系统外观不一致时（如知乎夜间+系统浅色），材质会按系统那侧渲染（真机暗色图里
-// 胶囊呈浅灰即此）。修法照 DYKiller 对其 Regular 槽位的做法：给盘/透镜外壳钉
-// overrideUserInterfaceStyle（夜→Dark、日→Light），外壳的 trait 覆盖会传给整棵
-// 子树（材质/fill/wash/rim 一并按知乎主题解析）；本函数每轮布局都会跑到，
-// 主题切换时在既有刷新路径里自然同步更新，无需另挂刷新点。
-static void ZHPlateApplyTheme(UIView *plate) {
-    BOOL lens = [objc_getAssociatedObject(plate, &kPlateLensKey) boolValue];
-    BOOL dark = ZPAppIsNight();
-    UIUserInterfaceStyle wantStyle = dark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
-    if (plate.overrideUserInterfaceStyle != wantStyle)
-        plate.overrideUserInterfaceStyle = wantStyle;
-    UIView *fill = objc_getAssociatedObject(plate, &kPlateFillKey);
-    // 透镜日间 fill：0.45 在浅色图里读作实心灰片（采样 (222,220,221)），降到 0.18；夜间 0.10 不动
-    CGFloat fa = lens ? (dark ? 0.10 : 0.18) : (dark ? 0.06 : 0.30);
-    UIColor *fc = [UIColor colorWithWhite:1.0 alpha:fa];
-    if (fill && ![fill.backgroundColor isEqual:fc]) fill.backgroundColor = fc;
-    UIView *rim = objc_getAssociatedObject(plate, &kPlateRimKey);
-    UIColor *rc = [UIColor colorWithWhite:1.0 alpha:0.15];
-    if (rim && !CGColorEqualToColor(rim.layer.borderColor, rc.CGColor))
-        rim.layer.borderColor = rc.CGColor;
+static id ZHMakeGlassContainerEffect(void) {
+    Class cls = NSClassFromString(@"UIGlassContainerEffect");
+    if (!cls) return nil;
+    id fx = [[cls alloc] init];
+    if (fx && [fx respondsToSelector:@selector(setSpacing:)])
+        ((void (*)(id, SEL, double))objc_msgSend)(fx, @selector(setSpacing:), 2.0); // DYKiller 实测常量
+    return [fx autorelease];
 }
 
-// frame 语义沿用旧版：空 frame ⇒ 整盘（含外壳与其阴影）隐藏；非空 ⇒ 显示、
-// frame 变了才 setFrame，并把内部各层 frame / 圆角 / shadowPath 同步到新
-// bounds（逐项比对现值后才写，保持 apply 幂等收敛）。
-static void ZHSetPlateFrame(UIView *plate, CGRect f) {
-    if (!plate) return;
-    if (CGRectIsEmpty(f)) { plate.hidden = YES; return; }
-    plate.hidden = NO;
-    if (!CGRectEqualToRect(plate.frame, f)) plate.frame = f;
-    CGRect b = plate.bounds;
+static id ZHCapsuleCornerConfiguration(void) {
+    Class cls = NSClassFromString(@"UICornerConfiguration");
+    if (!cls || ![cls respondsToSelector:@selector(capsuleConfiguration)]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(cls, @selector(capsuleConfiguration));
+}
+
+// 玻璃本体（盘与透镜共用）：单只 UIVisualEffectView + UIGlassEffect Regular。
+// tintColor 不设（nil）；cornerConfiguration=capsule 设在 effect view 本体；
+// contentView.layer 的 masksToBounds 在此开、cornerRadius 在 ZHSetGlassFrame
+// 每轮按高/2 重设（XHSNative plateOn 每轮重设同口径）。无外壳、无 shadow、
+// 无 fill/wash/rim 任何装饰层。主盘（!lens）的 effect 设 interactive:YES
+// （DYKiller 主元素口径）。
+static UIVisualEffectView *ZHMakeGlassView(BOOL lens) {
+    id fx = ZHMakeGlassEffect(!lens);
+    if (!fx) return nil;
+    UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:fx];
+    v.userInteractionEnabled = NO; // 盘永不吃点击
+    id cc = ZHCapsuleCornerConfiguration();
+    if (cc && [v respondsToSelector:@selector(setCornerConfiguration:)])
+        ((void (*)(id, SEL, id))objc_msgSend)(v, @selector(setCornerConfiguration:), cc);
+    v.contentView.layer.masksToBounds = YES;
+    return v;
+}
+
+// 容器：UIVisualEffectView + UIGlassContainerEffect，盘与透镜放进其 contentView，
+// 由系统做多玻璃元素融合（避免玻璃叠玻璃，官方口径）。类取不到返回 nil，
+// 布局节降级为两只独立 effect view 直接进父视图。
+static UIVisualEffectView *ZHMakeGlassContainer(void) {
+    id fx = ZHMakeGlassContainerEffect();
+    if (!fx) return nil;
+    UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:fx];
+    v.userInteractionEnabled = NO;
+    return v;
+}
+
+// 风格钉住：overrideUserInterfaceStyle 钉知乎主题（ZPAppIsNight 口径——优先
+// ZHThemeManage isNightMode，与发色点同源）。知乎主题与系统外观不一致时，
+// 玻璃的明暗必须跟知乎走（DYKiller 对其 Regular 槽位 setOverrideUserInterfaceStyle:
+// 同款动作）。ZHSetGlassFrame 每轮都会调用，主题切换经既有 apply 路径自动同步；
+// 先比对现值再写，保持幂等。
+static void ZHGlassApplyTheme(UIView *v) {
+    if (!v) return;
+    UIUserInterfaceStyle want = ZPAppIsNight() ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+    if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
+}
+
+// frame 语义沿用旧版：空 frame ⇒ 隐藏；非空 ⇒ 显示、变了才 setFrame；
+// contentView.layer 圆角每轮按高/2 重设（先比对后写，保持幂等收敛）。
+static void ZHSetGlassFrame(UIVisualEffectView *v, CGRect f) {
+    if (!v) return;
+    if (CGRectIsEmpty(f)) { v.hidden = YES; return; }
+    v.hidden = NO;
+    if (!CGRectEqualToRect(v.frame, f)) v.frame = f;
     CGFloat r = f.size.height / 2;
-    UIView *clip = objc_getAssociatedObject(plate, &kPlateClipKey);
-    if (clip) {
-        if (!CGRectEqualToRect(clip.frame, b)) clip.frame = b;
-        if (clip.layer.cornerRadius != r) clip.layer.cornerRadius = r;
-        CGRect cb = clip.bounds;
-        UIView *fx = objc_getAssociatedObject(plate, &kPlateFxKey);
-        UIView *fill = objc_getAssociatedObject(plate, &kPlateFillKey);
-        UIView *wash = objc_getAssociatedObject(plate, &kPlateWashKey);
-        if (fx && !CGRectEqualToRect(fx.frame, cb)) fx.frame = cb;
-        if (fill && !CGRectEqualToRect(fill.frame, cb)) fill.frame = cb;
-        if (wash && !CGRectEqualToRect(wash.frame, cb)) wash.frame = cb;
-        CAGradientLayer *grad = objc_getAssociatedObject(plate, &kPlateGradKey);
-        if (grad && wash && !CGRectEqualToRect(grad.frame, wash.bounds)) grad.frame = wash.bounds;
-    }
-    UIView *rim = objc_getAssociatedObject(plate, &kPlateRimKey);
-    if (rim) {
-        if (!CGRectEqualToRect(rim.frame, b)) rim.frame = b;
-        if (rim.layer.cornerRadius != r) rim.layer.cornerRadius = r;
-    }
-    CGPathRef path = [UIBezierPath bezierPathWithRoundedRect:b cornerRadius:r].CGPath;
-    if (!plate.layer.shadowPath || !CGPathEqualToPath(plate.layer.shadowPath, path))
-        plate.layer.shadowPath = path;
-    ZHPlateApplyTheme(plate);
+    if (!v.contentView.layer.masksToBounds) v.contentView.layer.masksToBounds = YES;
+    if (v.contentView.layer.cornerRadius != r) v.contentView.layer.cornerRadius = r;
+    ZHGlassApplyTheme(v);
 }
-
 // 合法性夹取（最后一道闸）：rect 必须完整落在 bounds 内（四边各留 2pt），
 // 尺寸过大先收尺寸再夹原点——任何路径算出的 rect 都不许带出界值上盘。
 static CGRect ZHClampRectToBounds(CGRect r, CGRect bounds) {
@@ -371,6 +343,16 @@ static CGRect ZHClampRectToBounds(CGRect r, CGRect bounds) {
     if (CGRectGetMaxX(r) > bounds.size.width - 2) r.origin.x = bounds.size.width - 2 - r.size.width;
     if (CGRectGetMaxY(r) > bounds.size.height - 2) r.origin.y = bounds.size.height - 2 - r.size.height;
     return r;
+}
+
+// 带原点偏移的夹取（父视图坐标用）：先平移到 band 局部坐标过 ZHClampRectToBounds
+// 再平移回来——band 是「父视图内 ∩ bar 纵向带区 ±12pt」，原点通常非零。
+static CGRect ZHClampRectToRect(CGRect r, CGRect band) {
+    CGRect local = CGRectMake(r.origin.x - band.origin.x, r.origin.y - band.origin.y,
+                              r.size.width, r.size.height);
+    local = ZHClampRectToBounds(local, CGRectMake(0, 0, band.size.width, band.size.height));
+    return CGRectMake(local.origin.x + band.origin.x, local.origin.y + band.origin.y,
+                      local.size.width, local.size.height);
 }
 
 #pragma mark - 开关回调（单例 handler，静态 RETAIN）
@@ -441,33 +423,75 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
 
 #pragma mark - 布局（apply 幂等：开 -> 玻璃布局；关 -> 恢复原样）
 
-static void ZHEnsurePlates(UIView *bar, UIView *stack) {
-    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+// 承载（本轮核心改动）：玻璃不再插进 bar 内部，而是插到 bar 的父视图内、
+// 紧贴 bar 之下（XHSNative 插盘位置：锚点父视图内、锚点之下，压在内容层上采样）。
+// 结构：父视图 └ 容器 box（frame = 胶囊的父坐标 rect）└ contentView ├ 胶囊 └ 透镜。
+// 容器类不可用时降级：胶囊/透镜两只独立 effect view 直接进父视图、同位置同层级。
+// 返回 NO 的情形：bar 尚无父视图（等下一轮布局）、或 UIGlassEffect 不可用
+// （<iOS 26）——调用方据此不建盘、不清场，保持栏原样。
+static BOOL ZHEnsurePlates(UIView *bar) {
+    UIView *parent = bar.superview;
+    if (!parent) return NO;
+    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
     if (!capsule) {
-        capsule = ZHMakePlate(NO);
-        [bar insertSubview:capsule belowSubview:stack];
-        objc_setAssociatedObject(bar, &kCapsuleKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [capsule release];
+        capsule = ZHMakeGlassView(NO);
+        if (capsule) {
+            objc_setAssociatedObject(bar, &kCapsuleKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [capsule release];
+        }
     }
-    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
     if (!lens) {
-        lens = ZHMakePlate(YES);
-        [bar insertSubview:lens belowSubview:stack];
-        objc_setAssociatedObject(bar, &kLensKey, lens, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [lens release];
+        lens = ZHMakeGlassView(YES);
+        if (lens) {
+            objc_setAssociatedObject(bar, &kLensKey, lens, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [lens release];
+        }
     }
-    // 层级（盘是内容的同层兄弟、压在内容之下）：
-    // bar 内自下而上须为 capsule < lens < stack(items)；顺序不对才重排，就位时不动层级。
-    NSArray *subs = bar.subviews;
-    NSUInteger ci = [subs indexOfObject:capsule];
-    NSUInteger li = [subs indexOfObject:lens];
-    NSUInteger si = [subs indexOfObject:stack];
-    if (ci != NSNotFound && li != NSNotFound && si != NSNotFound && !(ci < li && li < si)) {
-        [capsule removeFromSuperview];
-        [lens removeFromSuperview];
-        [bar insertSubview:capsule belowSubview:stack];
-        [bar insertSubview:lens belowSubview:stack];
+    if (!capsule || !lens) return NO; // 原生玻璃不可用：静默不建盘
+    UIVisualEffectView *box = objc_getAssociatedObject(bar, &kGlassBoxKey);
+    if (!box) {
+        box = ZHMakeGlassContainer();
+        if (box) {
+            objc_setAssociatedObject(bar, &kGlassBoxKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [box release];
+        }
     }
+    if (box) {
+        // 容器须在父视图内且紧贴 bar 之下；不在位才重排，就位时不动层级（幂等）
+        NSArray *subs = parent.subviews;
+        NSUInteger bi = [subs indexOfObject:bar];
+        NSUInteger xi = [subs indexOfObject:box];
+        if (box.superview != parent || bi == NSNotFound || xi == NSNotFound || xi + 1 != bi) {
+            [box removeFromSuperview];
+            [parent insertSubview:box belowSubview:bar];
+        }
+        if (capsule.superview != box.contentView) [box.contentView addSubview:capsule];
+        if (lens.superview != box.contentView) [box.contentView addSubview:lens];
+        NSArray *cs = box.contentView.subviews;
+        NSUInteger ci = [cs indexOfObject:capsule];
+        NSUInteger li = [cs indexOfObject:lens];
+        if (ci != NSNotFound && li != NSNotFound && ci > li)
+            [box.contentView bringSubviewToFront:lens];
+    } else {
+        // 降级路径：胶囊在下、透镜在上，同贴 bar 之下
+        if (capsule.superview != parent) {
+            [capsule removeFromSuperview];
+            [parent insertSubview:capsule belowSubview:bar];
+        }
+        if (lens.superview != parent) {
+            [lens removeFromSuperview];
+            [parent insertSubview:lens belowSubview:bar];
+        }
+    }
+    return YES;
+}
+
+// 玻璃整组隐藏（容器/胶囊/透镜；几何未就绪与关玻璃共用，关联对象为空时安全空转）
+static void ZHHidePlates(UIView *bar) {
+    ZHSetGlassFrame(objc_getAssociatedObject(bar, &kGlassBoxKey), CGRectZero);
+    ZHSetGlassFrame(objc_getAssociatedObject(bar, &kCapsuleKey), CGRectZero);
+    ZHSetGlassFrame(objc_getAssociatedObject(bar, &kLensKey), CGRectZero);
 }
 
 static NSArray *ZHBackgroundViews(UIView *bar) {
@@ -479,13 +503,36 @@ static NSArray *ZHBackgroundViews(UIView *bar) {
     return out;
 }
 
-// 关：盘与透镜隐藏、原背景/顶线/背景图恢复、背景色按存档原值恢复
+// 栏背景子视图逐项存档（DYKiller 存档纪律）：以视图指针为键，把 {hidden, alpha,
+// backgroundColor} 存进挂在 bar 上的字典（kBgStateKey）；只存第一次见到的原值，
+// 后续轮次不覆盖——清场前存档、还原时逐项写回，关玻璃后栏须与开之前一模一样。
+static void ZHArchiveBgView(UIView *bar, UIView *v) {
+    NSMutableDictionary *dict = objc_getAssociatedObject(bar, &kBgStateKey);
+    if (!dict) {
+        dict = [NSMutableDictionary dictionary];
+        objc_setAssociatedObject(bar, &kBgStateKey, dict, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSValue *key = [NSValue valueWithPointer:(const void *)v];
+    if (dict[key]) return;
+    dict[key] = @{ @"hidden": @(v.hidden),
+                   @"alpha": @(v.alpha),
+                   @"bg": v.backgroundColor ? (id)v.backgroundColor : (id)[NSNull null] };
+}
+
+static void ZHRestoreBgView(UIView *bar, UIView *v) {
+    NSDictionary *st = objc_getAssociatedObject(bar, &kBgStateKey)[[NSValue valueWithPointer:(const void *)v]];
+    if (!st) { v.hidden = NO; return; } // 无存档（本轮未清过场）时回落旧行为：取消隐藏
+    v.hidden = [st[@"hidden"] boolValue];
+    v.alpha = [st[@"alpha"] doubleValue];
+    id bg = st[@"bg"];
+    v.backgroundColor = (bg == [NSNull null]) ? nil : (UIColor *)bg;
+}
+
+// 关：玻璃整组（容器+胶囊+透镜）隐藏、原背景/顶线/背景图按存档逐项恢复、
+// 背景色按存档原值恢复
 static void ZHRestoreBar(UIView *bar) {
-    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
-    capsule.hidden = YES;
-    lens.hidden = YES;
-    for (UIView *v in ZHBackgroundViews(bar)) v.hidden = NO;
+    ZHHidePlates(bar);
+    for (UIView *v in ZHBackgroundViews(bar)) ZHRestoreBgView(bar, v);
     UIColor *orig = objc_getAssociatedObject(bar, &kOrigBgKey);
     if (orig) bar.backgroundColor = orig;
 }
@@ -524,15 +571,19 @@ static void ZHLayoutBar(UIView *bar) {
         [items addObject:v];
     }
 
-    ZHEnsurePlates(bar, stack);
-    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    if (!ZHEnsurePlates(bar)) {
+        // bar 尚无父视图（下一轮布局再来）或原生玻璃不可用：不建盘、不清场，
+        // 只把可能残留的玻璃整组隐藏，保持栏原样。
+        ZHHidePlates(bar);
+        return;
+    }
+    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
     if (items.count == 0 || bounds.size.width < 50 || bounds.size.height < 30) {
         // 暂无可见项/几何未就绪：盘先建好并隐藏（XHS 空 frame 即隐藏语义），
         // 等选中/页面切换后的下一轮 layout 再按实测 frame 亮出——不留旧 frame 残影，
         // 也不出现「盘从未创建、之后再也不补」的死状态（旧版图2 无盘的成因之一）。
-        ZHSetPlateFrame(capsule, CGRectZero);
-        ZHSetPlateFrame(lens, CGRectZero);
+        ZHHidePlates(bar);
         return;
     }
 
@@ -546,8 +597,14 @@ static void ZHLayoutBar(UIView *bar) {
             objc_setAssociatedObject(bar, &kOrigBgKey, bg, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
+    // 清场（存档可还原）：bar 自身背景色清透明（原值已在上方存进 kOrigBgKey），
+    // 全宽背景类子视图逐项先存档（hidden/alpha/背景色，只存第一次）再隐藏——
+    // 盘与内容层之间不许留知乎自己的不透明层（DYKiller 清场纪律）。
     if (![bar.backgroundColor isEqual:[UIColor clearColor]]) bar.backgroundColor = [UIColor clearColor];
-    for (UIView *v in ZHBackgroundViews(bar)) if (!v.hidden) v.hidden = YES;
+    for (UIView *v in ZHBackgroundViews(bar)) {
+        ZHArchiveBgView(bar, v);
+        if (!v.hidden) v.hidden = YES;
+    }
 
     // 几何全部来自实测 frame 的坐标换算（bar 坐标系）：横向认 item 槽位、纵向认图标+标题
     // 内容并集，选中序号以 item 的 themeSelected 为准（取不到回落 0）。
@@ -583,8 +640,7 @@ static void ZHLayoutBar(UIView *bar) {
     }
     if (!geoOK) {
         NSNumber *retry = objc_getAssociatedObject(bar, &kGeoRetryKey);
-        ZHSetPlateFrame(capsule, CGRectZero);
-        ZHSetPlateFrame(lens, CGRectZero);
+        ZHHidePlates(bar);
         if (retry.unsignedIntegerValue < 3) {
             objc_setAssociatedObject(bar, &kGeoRetryKey, @(retry.unsignedIntegerValue + 1),
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -611,10 +667,9 @@ static void ZHLayoutBar(UIView *bar) {
     if (capY < 2) capY = 2;
     if (capY > maxY) capY = maxY < 2 ? 2 : maxY;
     CGRect capRect = ZHClampRectToBounds(CGRectMake(capX, capY, capW, capH), bounds);
-    ZHSetPlateFrame(capsule, capRect);
 
     // 透镜：锚定选中 item 本人——横向 = 其槽位左右各扩 4（此处取 +8 并夹在
-    // 胶囊内），纵向在胶囊内居中、高 = 胶囊高 - 10；同配方材质盘、fill 略强于盘。
+    // 胶囊内），纵向在胶囊内居中、高 = 胶囊高 - 10；同为 UIGlassEffect 本体小胶囊。
     CGFloat lensH = capH - 10;
     if (lensH < 8) lensH = capH;
     CGFloat lensW = selSlot.size.width + 8;
@@ -624,14 +679,45 @@ static void ZHLayoutBar(UIView *bar) {
     CGRect lensRect = ZHClampRectToBounds(
         CGRectMake(lensX, capY + (capH - lensH) / 2, lensW, lensH), bounds);
 
+    // 落盘坐标换算：几何在 bar 坐标算出，盘实际挂在 bar 的父视图里——
+    // convertRect 到父视图坐标后再夹一道：必须落在父视图内、且不超出 bar 在
+    // 父坐标中的纵向带区 ±12pt（盘只许在底栏带区里活动，不许压 feed 正文）。
+    UIView *parent = bar.superview;
+    CGRect capP = [bar convertRect:capRect toView:parent];
+    CGRect lensP = [bar convertRect:lensRect toView:parent];
+    CGRect barInParent = [parent convertRect:bar.bounds fromView:bar];
+    CGRect band = CGRectMake(0, barInParent.origin.y - 12,
+                             parent.bounds.size.width, barInParent.size.height + 24);
+    band = CGRectIntersection(band, parent.bounds);
+    if (!CGRectIsNull(band) && !CGRectIsEmpty(band)) {
+        capP = ZHClampRectToRect(capP, band);
+        lensP = ZHClampRectToRect(lensP, band);
+    }
+    UIVisualEffectView *box = objc_getAssociatedObject(bar, &kGlassBoxKey);
+    CGRect lensFrame;
+    if (box) {
+        // 容器 frame = 胶囊的父坐标 rect；胶囊填满容器；透镜换算到容器局部
+        // 坐标并夹回容器内（融合渲染下透镜不许越出容器）。
+        ZHSetGlassFrame(box, capP);
+        ZHSetGlassFrame(capsule, CGRectMake(0, 0, capP.size.width, capP.size.height));
+        lensFrame = ZHClampRectToBounds(
+            CGRectMake(lensP.origin.x - capP.origin.x, lensP.origin.y - capP.origin.y,
+                       lensP.size.width, lensP.size.height),
+            CGRectMake(0, 0, capP.size.width, capP.size.height));
+    } else {
+        // 降级（容器类不可用）：两只独立 effect view 直接以父坐标落盘
+        ZHSetGlassFrame(capsule, capP);
+        lensFrame = lensP;
+    }
+
     NSNumber *prev = objc_getAssociatedObject(bar, &kSelIdxKey);
     BOOL selChanged = (!prev || prev.unsignedIntegerValue != sel);
     if (selChanged && !lens.hidden && lens.frame.size.width > 0) {
         // 选中切换：透镜滑到新选中项（0.25s，与知乎原切换动画同拍）
         [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut
-                         animations:^{ ZHSetPlateFrame(lens, lensRect); } completion:nil];
+                         animations:^{ ZHSetGlassFrame(lens, lensFrame); } completion:nil];
     } else {
-        ZHSetPlateFrame(lens, lensRect);
+        ZHSetGlassFrame(lens, lensFrame);
     }
     if (selChanged)
         objc_setAssociatedObject(bar, &kSelIdxKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -800,7 +886,7 @@ static NSString *ZPColorDesc(UIColor *c) {
 }
 
 static void ZPDiagWalk(UIView *v, NSMutableString *out, int depth) {
-    if (depth > 6) return;
+    if (depth > 8) return; // 玻璃改容器结构后子树变深（容器→contentView→盘→contentView），上限提到 8
     NSMutableString *indent = [NSMutableString string];
     for (int i = 0; i < depth; i++) [indent appendString:@"  "];
     [out appendFormat:@"%@%@ frame=%@ bg=%@ hidden=%d alpha=%.2f style=%ld\n",
@@ -810,7 +896,8 @@ static void ZPDiagWalk(UIView *v, NSMutableString *out, int depth) {
     for (UIView *s in v.subviews) ZPDiagWalk(s, out, depth + 1);
 }
 
-// 诊断文本：知乎主题值 / 系统 trait / 盘与透镜 frame（bar 坐标）/ 盘子树逐层
+// 诊断文本：知乎主题值 / 系统 trait / 容器与胶囊/透镜 frame（父视图坐标——盘已
+// 改挂 bar 的父视图，frame 经 convertRect 换算后报出并注明）/ 玻璃子树逐层
 // （类名+frame+背景色读数）/ 底栏 item 列表（类名/frame/hidden/alpha）/ 颜色钩已装。
 // 全程只读，不改任何状态；临时对象均为 autorelease，MRC 安全。
 static NSString *ZPBuildDiagnostics(void) {
@@ -835,18 +922,34 @@ static NSString *ZPBuildDiagnostics(void) {
     [s appendFormat:@"底栏 %@ bounds=%@ frame=%@ bg=%@\n",
          NSStringFromClass(object_getClass(bar)), NSStringFromCGRect(bar.bounds),
          NSStringFromCGRect(bar.frame), ZPColorDesc(bar.backgroundColor)];
+    UIView *parent = bar.superview;
+    UIVisualEffectView *box = objc_getAssociatedObject(bar, &kGlassBoxKey);
     UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
     UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    if (box)
+        [s appendFormat:@"容器 frame(父视图坐标)=%@ hidden=%d\n",
+             NSStringFromCGRect(box.frame), (int)box.hidden];
+    else
+        [s appendString:@"容器: 未创建（或已降级为独立 effect view）\n"];
     if (capsule)
-        [s appendFormat:@"胶囊 frame=%@ hidden=%d\n", NSStringFromCGRect(capsule.frame), (int)capsule.hidden];
+        [s appendFormat:@"胶囊 frame(父视图坐标)=%@ hidden=%d\n",
+             NSStringFromCGRect(parent ? [parent convertRect:capsule.bounds fromView:capsule]
+                                        : capsule.frame),
+             (int)capsule.hidden];
     else
         [s appendString:@"胶囊: 未创建\n"];
     if (lens)
-        [s appendFormat:@"透镜 frame=%@ hidden=%d\n", NSStringFromCGRect(lens.frame), (int)lens.hidden];
+        [s appendFormat:@"透镜 frame(父视图坐标)=%@ hidden=%d\n",
+             NSStringFromCGRect(parent ? [parent convertRect:lens.bounds fromView:lens]
+                                        : lens.frame),
+             (int)lens.hidden];
     else
         [s appendString:@"透镜: 未创建\n"];
-    if (capsule) { [s appendString:@"胶囊子树:\n"]; ZPDiagWalk(capsule, s, 1); }
-    if (lens) { [s appendString:@"透镜子树:\n"]; ZPDiagWalk(lens, s, 1); }
+    if (box) { [s appendString:@"玻璃子树（容器起）:\n"]; ZPDiagWalk(box, s, 1); }
+    else {
+        if (capsule) { [s appendString:@"胶囊子树:\n"]; ZPDiagWalk(capsule, s, 1); }
+        if (lens) { [s appendString:@"透镜子树:\n"]; ZPDiagWalk(lens, s, 1); }
+    }
     UIView *stack = ZHGetObj(bar, @"stackView");
     NSArray *arranged = ZHGetObj(stack, @"arrangedSubviews");
     [s appendFormat:@"items(%lu):\n", (unsigned long)arranged.count];
