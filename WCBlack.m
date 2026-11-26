@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v5.5 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v5.6 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.5"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.6"); });
     return l;
 }
 
@@ -1255,6 +1255,24 @@ static void WC_GlassNativeTab_didMoveToWindow(UIView *self, SEL _cmd) {
     if (self.window) { WCRegisterBar(gBarsTab, self); WCForceBar(self, @"tab", 3); }
 }
 
+static IMP gOrigDicSetHidden, gOrigDicWindow;
+static BOOL WCDicShouldHide(UIView *v) {
+    return WCConfigColor(@"field") != nil &&
+           v.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
+}
+static void WC_Dic_setHidden(UIView *self, SEL _cmd, BOOL hidden) {
+    // v5.6：话筒图标的显隐开关直接拦——深色+输入框模块开时，微信怎么设都按隐藏走，
+    // 不给它在状态切换瞬间闪现的机会（v5.5 靠 0.4 秒巡逻去藏，切换时总慢一拍，
+    // 视频末尾那一下闪跳就是这么来的）
+    if (!hidden && WCDicShouldHide(self)) hidden = YES;
+    ((void (*)(id, SEL, BOOL))gOrigDicSetHidden)(self, _cmd, hidden);
+}
+static void WC_Dic_didMoveToWindow(UIView *self, SEL _cmd) {
+    ((void (*)(id, SEL))gOrigDicWindow)(self, _cmd);
+    if (self.window && WCDicShouldHide(self) && !self.hidden)
+        ((void (*)(id, SEL, BOOL))gOrigDicSetHidden)(self, _cmd, YES);
+}
+
 static IMP WCSwap(Class cls, SEL sel, IMP newImp) {
     if (!cls) return NULL;
     Method m = class_getInstanceMethod(cls, sel);
@@ -1491,7 +1509,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"5.5", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"5.6", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1499,7 +1517,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v5.5 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v5.6 registered in plugin list");
             break;
         }
     }
@@ -1570,7 +1588,7 @@ static void WCInstall(void) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCCollectDiag(@"kbdup"); });
         }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v5.5 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v5.6 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1582,7 +1600,20 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v5.5 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v5.6 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+        }
+    }
+    // 话筒图标类可能懒加载，每次安装都尝试挂（挂上即止）
+    static BOOL dicHooked = NO;
+    if (!dicHooked) {
+        Class dic = NSClassFromString(@"MMGrowDictationIconView");
+        if (dic) {
+            gOrigDicSetHidden = WCSwapOwn(dic, @selector(setHidden:), (IMP)WC_Dic_setHidden);
+            gOrigDicWindow = WCSwapOwn(dic, @selector(didMoveToWindow), (IMP)WC_Dic_didMoveToWindow);
+            if (gOrigDicSetHidden && gOrigDicWindow) {
+                dicHooked = YES;
+                os_log(WCLog(), "[WCBlack] v5.6 dictation icon hooks in");
+            }
         }
     }
     WCEnsureRegistered();
