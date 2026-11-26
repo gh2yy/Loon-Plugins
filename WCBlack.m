@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v5.7 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v6.0 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.7"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v6.0"); });
     return l;
 }
 
@@ -123,8 +123,6 @@ static void WCSetConfigHex(NSString *module, NSString *hex) {
     [ud synchronize];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"WCBlackConfigChanged" object:nil];
 }
-
-#pragma mark - 颜色判定与动态替代
 
 static UITraitCollection *WCDarkTrait(void) { return [UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleDark]; }
 static UITraitCollection *WCLightTrait(void) { return [UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight]; }
@@ -183,152 +181,11 @@ static UIColor *WCDynamicColor(NSString *module, UIColor *lightFallback) {
 }
 
 // setter 路径的替换：命中模块 -> 动态色（浅色回退为原色浅色解析值）
-static UIColor *WCSubstituteForColor(UIColor *color) {
-    NSString *module = WCModuleForColor(color);
-    if (!module) return nil;
-    UIColor *lightResolved = [color resolvedColorWithTraitCollection:WCLightTrait()];
-    return WCDynamicColor(module, lightResolved);
-}
 
-#pragma mark - 靶向栏强制（注册表 + 定时强刷）
-
-static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey, kWCOrigBGKey, kWCOrigStdAppKey, kWCOrigEdgeAppKey, kWCSepOrigStyleKey, kWCSepOrigColorKey, kWCSepHiddenKey, kWCUnderlayKey, kWCPatchHiddenKey;
-
-static NSHashTable<UIView *> *gBarsTab, *gBarsNav, *gBarsInput;
-static void WCRegisterBar(NSHashTable<UIView *> *table, UIView *bar) {
-    if (table && bar) [table addObject:bar];
-}
-
-// 1x1 纯色图（导航背景图强制用），按 hex 缓存（MRC：必须 alloc 持有，见 v3.1 注）
-static UIImage *WCSolidImage(UIColor *color) {
-    static NSMutableDictionary<NSString *, UIImage *> *cache;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ cache = [[NSMutableDictionary alloc] init]; });
-    CGFloat r = 0, g = 0, b = 0, a = 0;
-    [color getRed:&r green:&g blue:&b alpha:&a];
-    NSString *key = [NSString stringWithFormat:@"%d-%d-%d", (int)lrint(r * 255), (int)lrint(g * 255), (int)lrint(b * 255)];
-    UIImage *img = cache[key];
-    if (img) return img;
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(2, 2), YES, 1);
-    [color setFill];
-    UIRectFill(CGRectMake(0, 0, 2, 2));
-    img = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    if (img) cache[key] = img;
-    return img;
-}
-
-// 不透明静态深灰（微信自家 #0F0F0F/#1E1E1E 这类）：不在令牌表里、也不是半透明蒙层，
-// 旧规则全漏。按深色解析判：不透明、近中性、亮度 <0.40。
-static BOOL WCIsOpaqueDarkNeutral(UIColor *c) {
-    if (!c) return NO;
-    UIColor *d = [c resolvedColorWithTraitCollection:WCDarkTrait()];
-    CGFloat r = 0, g = 0, b = 0, a = 0;
-    if (![d getRed:&r green:&g blue:&b alpha:&a]) {
-        CGFloat w = 0;
-        if (![d getWhite:&w alpha:&a]) return NO;
-        r = g = b = w;
-    }
-    if (a < 0.95) return NO;
-    CGFloat mx = MAX(r, MAX(g, b)), mn = MIN(r, MIN(g, b));
-    CGFloat lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    return (mx - mn) < 0.05 && lum > 0.005 && lum < 0.40;
-}
-
-// 改色前存档原背景（只存第一次），供浅色恢复
-static void WCStoreOrigBG(UIView *v) {
-    if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
-        objc_setAssociatedObject(v, &kWCOrigBGKey, v.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-static void WCApplyStrong(UIView *root, UIView *bar, UIColor *dyn, int depth) {
-    if (depth < 0) return;
-    for (UIView *v in root.subviews) {
-        if ([v isKindOfClass:[UIVisualEffectView class]]) {
-            UIVisualEffectView *ev = (UIVisualEffectView *)v;
-            if (ev.effect) {
-                if (!objc_getAssociatedObject(ev, &kWCOrigEffectKey))
-                    objc_setAssociatedObject(ev, &kWCOrigEffectKey, ev.effect, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                ev.effect = nil;
-            }
-            if (ev.contentView.backgroundColor != dyn) { WCStoreOrigBG(ev.contentView); ev.contentView.backgroundColor = dyn; }
-            if (v.backgroundColor != dyn) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
-        } else if ([v isKindOfClass:[UIImageView class]] &&
-                   v.frame.size.width >= bar.bounds.size.width * 0.9 &&
-                   v.frame.size.height >= bar.bounds.size.height * 0.85) {
-            // 全尺寸背景图视图：藏掉（恢复时按存档放回）
-            if (!v.hidden) {
-                NSMutableArray *hidden = objc_getAssociatedObject(bar, &kWCHiddenViewsKey);
-                if (!hidden) { hidden = [NSMutableArray array]; objc_setAssociatedObject(bar, &kWCHiddenViewsKey, hidden, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-                if (![hidden containsObject:v]) [hidden addObject:v];
-                v.hidden = YES;
-            }
-        } else {
-            UIColor *bg = v.backgroundColor;
-            if (bg && bg != dyn) {
-                NSString *m = WCModuleForColor(bg);
-                // 栏内子视图：命中任一模块灰阶、或半透明黑/白蒙层，都刷成该栏模块色
-                BOOL translucentOverlay = NO;
-                if (!m) {
-                    UIColor *d = [bg resolvedColorWithTraitCollection:WCDarkTrait()];
-                    CGFloat w = 0, al = 0;
-                    if ([d getWhite:&w alpha:&al] && al > 0.03 && al < 0.95) translucentOverlay = YES;
-                }
-                if (m || translucentOverlay) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
-            }
-        }
-        WCApplyStrong(v, bar, dyn, depth - 1);
-    }
-}
-
-// WCApplyStrong 的逆操作：按存档把子视图的 effect 与背景逐一还原（浅色恢复用）
-// gWCRestoreDepth：还原进行中计数——setter hook 见它 >0 时不许再替换，
-// 免得还原写入的原色又被当场换黑（v4.8 占位视图 set 时替换引入的配套守卫）。
+// ===== v6 瘦身声明（原注册表只供诊断查看，不再参与上色）=====
+static char kWCOrigBGKey, kWCSepOrigStyleKey, kWCSepOrigColorKey, kWCSepHiddenKey, kWCPatchHiddenKey;
 static int gWCRestoreDepth = 0;
-static void WCRestoreStrong(UIView *root, int depth) {
-    if (depth < 0 || !root) return;
-    gWCRestoreDepth++;
-    for (UIView *v in root.subviews) {
-        if ([v isKindOfClass:[UIVisualEffectView class]]) {
-            UIVisualEffectView *ev = (UIVisualEffectView *)v;
-            UIVisualEffect *orig = objc_getAssociatedObject(ev, &kWCOrigEffectKey);
-            if (orig) {
-                ev.effect = orig;
-                objc_setAssociatedObject(ev, &kWCOrigEffectKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            UIColor *cb = objc_getAssociatedObject(ev.contentView, &kWCOrigBGKey);
-            if (cb) {
-                ev.contentView.backgroundColor = cb;
-                objc_setAssociatedObject(ev.contentView, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-        }
-        UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
-        if (ob) {
-            v.backgroundColor = ob;
-            objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        WCRestoreStrong(v, depth - 1);
-    }
-    gWCRestoreDepth--;
-}
-
-static void WCRestoreBar(UIView *bar) {
-    NSNumber *forced = objc_getAssociatedObject(bar, &kWCForcedKey);
-    if (!forced.boolValue) return;
-    UIColor *fb = objc_getAssociatedObject(bar, &kWCFallbackKey);
-    UIColor *dyn = objc_getAssociatedObject(bar, &kWCDynKey);
-    if (fb && bar.backgroundColor == dyn) bar.backgroundColor = fb;
-    for (UIView *v in (NSMutableArray *)objc_getAssociatedObject(bar, &kWCHiddenViewsKey)) v.hidden = NO;
-    objc_setAssociatedObject(bar, &kWCHiddenViewsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    WCRestoreStrong(bar, 4);
-    if ([bar isKindOfClass:[UINavigationBar class]]) {
-        UIImage *orig = objc_getAssociatedObject(bar, &kWCOrigNavImageKey);
-        [(UINavigationBar *)bar setBackgroundImage:orig forBarMetrics:UIBarMetricsDefault];
-        UIColor *tint = objc_getAssociatedObject(bar, &kWCOrigTintKey);
-        [(UINavigationBar *)bar setBarTintColor:tint];
-    }
-    objc_setAssociatedObject(bar, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
+static NSHashTable<UIView *> *gBarsTab, *gBarsNav, *gBarsInput;
 
 static BOOL WCGrayInRange(UIColor *color, int lo, int hi); // 前向声明：定义在 Hooks 一节
 
@@ -578,95 +435,6 @@ static void WCFieldSweep(UIView *bar) {
 // 已经把自家背景写成新模式的值了，我们若按旧存档还原就会把它的新值盖掉（浅色顶部
 // 黑带的核心成因之一）。导航背景图、tint、被替换的 effect、被藏起来的视图与明暗
 // 无关，照常还原。清完后强刷会在新模式里重新存档。
-static void WCInvalidateStrong(UIView *root, int depth) {
-    if (!root || depth < 0) return;
-    for (UIView *v in root.subviews) {
-        if ([v isKindOfClass:[UIVisualEffectView class]]) {
-            UIVisualEffectView *ev = (UIVisualEffectView *)v;
-            UIVisualEffect *orig = objc_getAssociatedObject(ev, &kWCOrigEffectKey);
-            if (orig) {
-                ev.effect = orig;
-                objc_setAssociatedObject(ev, &kWCOrigEffectKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            objc_setAssociatedObject(ev.contentView, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        WCInvalidateStrong(v, depth - 1);
-    }
-}
-static void WCInvalidateBarForFlip(UIView *bar) {
-    for (UIView *v in (NSMutableArray *)objc_getAssociatedObject(bar, &kWCHiddenViewsKey)) v.hidden = NO;
-    objc_setAssociatedObject(bar, &kWCHiddenViewsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if ([bar isKindOfClass:[UINavigationBar class]]) {
-        UIImage *orig = objc_getAssociatedObject(bar, &kWCOrigNavImageKey);
-        [(UINavigationBar *)bar setBackgroundImage:orig forBarMetrics:UIBarMetricsDefault];
-        UIColor *tint = objc_getAssociatedObject(bar, &kWCOrigTintKey);
-        [(UINavigationBar *)bar setBarTintColor:tint];
-        objc_setAssociatedObject(bar, &kWCOrigNavImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(bar, &kWCOrigTintKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    WCInvalidateStrong(bar, 4);
-    objc_setAssociatedObject(bar, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(bar, &kWCDynKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(bar, &kWCFallbackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-// 深色+模块开启时把整栏刷成模块色；否则恢复。layout 与定时器都调用，幂等。
-static void WCForceBar(UIView *bar, NSString *module, int depth) {
-    if (!bar) return;
-    BOOL dark = (bar.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
-    // v5.1：输入框底色独立扫（深色刷静态色、浅色/关模块时还原），不随下面的早退跳过
-    if ([module isEqualToString:@"chatbar"]) WCFieldSweep(bar);
-    if (!dark || !WCConfigColor(module)) { WCRestoreBar(bar); return; }
-    NSNumber *forced = objc_getAssociatedObject(bar, &kWCForcedKey);
-    UIColor *dyn = objc_getAssociatedObject(bar, &kWCDynKey);
-    if (!forced.boolValue) {
-        UIColor *cur = bar.backgroundColor;
-        UIColor *fb = cur ? [cur resolvedColorWithTraitCollection:WCLightTrait()] : [UIColor clearColor];
-        objc_setAssociatedObject(bar, &kWCFallbackKey, fb, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        dyn = WCDynamicColor(module, fb);
-        objc_setAssociatedObject(bar, &kWCDynKey, dyn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if ([bar isKindOfClass:[UINavigationBar class]]) {
-            UIImage *orig = [(UINavigationBar *)bar backgroundImageForBarMetrics:UIBarMetricsDefault];
-            if (orig) objc_setAssociatedObject(bar, &kWCOrigNavImageKey, orig, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            UIColor *tint = [(UINavigationBar *)bar barTintColor];
-            if (tint) objc_setAssociatedObject(bar, &kWCOrigTintKey, tint, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        objc_setAssociatedObject(bar, &kWCForcedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    // 全屏宿主（如 MMInputToolView 440×956）绝不能涂根视图背景：它本是透明覆盖层，横在
-    // 消息列表之上，根背景一旦不透明，整页消息被盖死——这就是 v3.4 起「聊天记录消失」的
-    // 真因（v3.3 时输入栏从未注册成功、没被强刷，所以只有底栏灰、没有盖页；v3.4 扫描注册
-    // 落地后根视图被涂黑，盖页与底栏变黑同时出现）。已涂上的按存档回退透明，实际条带
-    // 由子视图（InputToolContainerView 等）在 WCApplyStrong 里上色。
-    if (bar.bounds.size.height > 200) {
-        UIColor *fb = objc_getAssociatedObject(bar, &kWCFallbackKey);
-        if (fb && bar.backgroundColor == dyn) bar.backgroundColor = fb;
-    } else if (bar.backgroundColor != dyn) {
-        bar.backgroundColor = dyn;
-    }
-    if ([bar isKindOfClass:[UINavigationBar class]]) {
-        UIColor *cfg = WCConfigColor(module);
-        UIImage *img = cfg ? WCSolidImage(cfg) : nil;
-        UINavigationBar *nb = (UINavigationBar *)bar;
-        if (img && [nb backgroundImageForBarMetrics:UIBarMetricsDefault] != img)
-            [nb setBackgroundImage:img forBarMetrics:UIBarMetricsDefault];
-        if (nb.barTintColor != dyn) nb.barTintColor = dyn;
-    }
-    WCApplyStrong(bar, bar, dyn, depth);
-    // 直属子视图里的不透明静态深灰一并刷掉：MMInputToolView 直属的键盘占位视图
-    // （440×348、#1E1E1E）不在令牌表、不是蒙层，旧规则全漏——它在键盘面板四周露边，
-    // 正是「键盘背景还是灰」的一部分。只处理直属一层，输入框底板等嵌套内容不受影响。
-    for (UIView *v in bar.subviews) {
-        if ([v isKindOfClass:[UIVisualEffectView class]]) continue;
-        UIColor *bg = v.backgroundColor;
-        if (bg && bg != dyn && WCIsOpaqueDarkNeutral(bg)) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
-    }
-}
-
-// v5.0 首页分割线：主列表（MainFrame）table 的系统分隔线关掉还不够时，微信 cell 多半
-// 还自绘了一条贴底发丝线——可见 cell 里逐个找：高 ≤1pt、宽 ≥60% cell 宽、贴在 cell
-// 底部的普通视图，藏起来并打标记；开关关闭/总开关关时按标记逐个恢复。
 static void WCHideCellLineIn(UIView *root, UITableViewCell *cell, BOOL hide, int depth) {
     if (!root || depth < 0) return;
     for (UIView *v in root.subviews) {
@@ -726,201 +494,10 @@ static void WCScanTablesInWindow(UIView *root, UIWindow *win, int depth) {
     for (UIView *s in root.subviews) WCScanTablesInWindow(s, win, depth - 1);
 }
 
-static void WCScanAndForceTabs(UIView *root, int depth); // 前向声明：定义在下方兜底扫描一节
-static void WCScanRegister(UIView *root, int depth);     // 同上
-static void WCCollectDiag(NSString *scene);              // 前向声明：定义在诊断一节
-static void WCForceKeyboardWindow(UIWindow *win);        // 同上
-static void WCEnsureRegistered(void);                    // 同上
-static void WCScanAllWindows(void) {
-    // v4.1：键盘窗口不在 UIApplication.windows 里（v4.0 真机诊断里始终没有 kbd 段），
-    // 改为枚举全部场景的窗口合并去重，键盘窗口（独立场景）才捞得到。
-    NSMutableArray<UIWindow *> *wins = [NSMutableArray array];
-    for (UIWindow *w in [UIApplication sharedApplication].windows) [wins addObject:w];
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]]) {
-            for (UIWindow *w in [(UIWindowScene *)scene windows]) if (![wins containsObject:w]) [wins addObject:w];
-        }
-    }
-    BOOL sawKeyboard = NO;
-    NSMutableArray<NSString *> *census = [NSMutableArray array];
-    for (UIWindow *w in wins) {
-        NSString *cn = NSStringFromClass([w class]);
-        if (![census containsObject:cn]) [census addObject:cn];
-        // v4.4 真机普查：本包枚举里只有 iConsoleWindow 与 UITextEffectsWindow，根本没有
-        // UIRemoteKeyboardWindow——旧匹配只认类名含 Keyboard，永远找不到。UITextEffectsWindow
-        // 同属键盘/文本特效窗口族，一并按键盘窗口处理（存树+强刷），树里见分晓。
-        if ([cn containsString:@"Keyboard"] || [cn containsString:@"TextEffects"]) { sawKeyboard = YES; WCForceKeyboardWindow(w); continue; }
-        WCScanAndForceTabs(w, 12);
-        WCScanRegister(w, 16);
-        WCScanTablesInWindow(w, w, 10);
-    }
-    // 键盘窗口始终没找到时，把见过的窗口类名存进独立键（供定性：是枚举不到还是树被挤掉）；
-    // 已存下真树时不覆盖。
-    if (!sawKeyboard) {
-        NSString *old = [[NSUserDefaults standardUserDefaults] stringForKey:@"WCBlack.kbd"];
-        if (![old hasPrefix:@"== WCBlack kbd window =="]) {
-            NSString *txt = [NSString stringWithFormat:@"keyboard window NOT found; windows seen: %@",
-                             [census componentsJoinedByString:@", "]];
-            if (![txt isEqualToString:old])
-                [[NSUserDefaults standardUserDefaults] setObject:txt forKey:@"WCBlack.kbd"];
-        }
-    }
-}
-static void WCEnforceRegistered(void) {
-    // v5.1：明暗切换先作废存档、再强刷（旧顺序先强刷，正是浅色黑带成因，见
-    // WCInvalidateBarForFlip 注释）。tab 栏的还原一直正常，切换时走完整还原；
-    // nav/input 只清存档。切换后 1.2 秒补采快照的安排保留。
-    static NSInteger lastStyle = -1;
-    UIWindow *kw = nil;
-    for (UIWindow *w in [UIApplication sharedApplication].windows) if (w.isKeyWindow) { kw = w; break; }
-    if (kw) {
-        NSInteger st = kw.traitCollection.userInterfaceStyle;
-        if (lastStyle >= 0 && st != lastStyle) {
-            for (id b in gBarsTab.allObjects) if ([b isKindOfClass:[UIView class]]) WCRestoreBar(b);
-            for (id b in gBarsNav.allObjects) if ([b isKindOfClass:[UIView class]]) WCInvalidateBarForFlip(b);
-            for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]]) WCInvalidateBarForFlip(b);
-            NSString *scene = (st == UIUserInterfaceStyleDark) ? @"trait-dark" : @"trait-light";
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ WCCollectDiag(scene); });
-        }
-        lastStyle = st;
-    }
-    // 类型守卫：表里只该有 UIView，混入异物直接跳过（v3 闪退教训）
-    for (id b in gBarsTab.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"tab", 3);
-    for (id b in gBarsNav.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"nav", 3);
-    for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"chatbar", 4);
-    // 每约 2 秒兜底扫一次：底部 tab（玻璃插件自有类）+ 输入栏/聊天顶栏扫描注册 + 键盘窗口
-    static int tick = 0;
-    if (++tick % 5 == 0) { WCScanAllWindows(); WCEnsureRegistered(); }
-}
-static dispatch_source_t gEnforcerTimer; // 必须静态持有，否则定时器被释放
-static void WCStartEnforcer(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        gEnforcerTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-        dispatch_source_set_timer(gEnforcerTimer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
-                                  (uint64_t)(0.4 * NSEC_PER_SEC), (uint64_t)(0.05 * NSEC_PER_SEC));
-        dispatch_source_set_event_handler(gEnforcerTimer, ^{ WCEnforceRegistered(); });
-        dispatch_resume(gEnforcerTimer);
-    });
-}
 
-#pragma mark - 底部 tab 兜底扫描（玻璃插件自有类）
-
-// v3.1 真机：导航已黑，但底部 tab 与聊天底栏纹丝不动。查 WCTabBarGlass.dylib 字符串定案：
-// 玻璃插件有自有类 WCGNativeTabBar（UITabBar 子类）/ WCTabBarView（宿主），可见底栏很可能
-// 根本不是 MMTabBar。所以兜底不认类名认几何+类族：扫窗口树找 UITabBar 族与上述两类、
-// 位于底部条带者，按 tab 模块强刷（含 UITabBarAppearance 路径，微信/玻璃可能走 appearance 上色）。
-static BOOL WCIsTabCandidate(UIView *v) {
-    if ([v isKindOfClass:[UITabBar class]]) return YES;
-    NSString *cls = NSStringFromClass([v class]);
-    return [cls isEqualToString:@"WCGNativeTabBar"] || [cls isEqualToString:@"WCTabBarView"] || [cls isEqualToString:@"MMTabBar"];
-}
-// tab 候选的浅色/关闭恢复：appearance、barTint、背景图、自身与子视图背景、特效全部按存档还原
-static void WCRestoreTabView(UIView *v) {
-    NSNumber *forced = objc_getAssociatedObject(v, &kWCForcedKey);
-    if (!forced.boolValue) return;
-    if ([v isKindOfClass:[UITabBar class]]) {
-        UITabBar *tb = (UITabBar *)v;
-        tb.standardAppearance = objc_getAssociatedObject(v, &kWCOrigStdAppKey);
-        tb.scrollEdgeAppearance = objc_getAssociatedObject(v, &kWCOrigEdgeAppKey);
-        tb.barTintColor = objc_getAssociatedObject(v, &kWCOrigTintKey);
-        tb.backgroundImage = objc_getAssociatedObject(v, &kWCOrigNavImageKey);
-    }
-    UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
-    if (ob) v.backgroundColor = ob;
-    for (UIView *hv in (NSMutableArray *)objc_getAssociatedObject(v, &kWCHiddenViewsKey)) hv.hidden = NO;
-    objc_setAssociatedObject(v, &kWCHiddenViewsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    WCRestoreStrong(v, 3);
-    objc_setAssociatedObject(v, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-static void WCForceTabView(UIView *v) {
-    UIColor *cfg = WCConfigColor(@"tab");
-    BOOL dark = (v.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
-    if (!cfg || !dark) { WCRestoreTabView(v); return; }
-    UIColor *dyn = WCDynamicColor(@"tab", [UIColor whiteColor]);
-    NSNumber *forced = objc_getAssociatedObject(v, &kWCForcedKey);
-    if (!forced.boolValue) {
-        // 首次强制前存档原件（自身背景 + UITabBar 的 appearance/tint/背景图），浅色时恢复
-        if (v.backgroundColor) objc_setAssociatedObject(v, &kWCOrigBGKey, v.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if ([v isKindOfClass:[UITabBar class]]) {
-            UITabBar *tb0 = (UITabBar *)v;
-            if (tb0.standardAppearance) objc_setAssociatedObject(v, &kWCOrigStdAppKey, tb0.standardAppearance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            if (tb0.scrollEdgeAppearance) objc_setAssociatedObject(v, &kWCOrigEdgeAppKey, tb0.scrollEdgeAppearance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            if (tb0.barTintColor) objc_setAssociatedObject(v, &kWCOrigTintKey, tb0.barTintColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            if (tb0.backgroundImage) objc_setAssociatedObject(v, &kWCOrigNavImageKey, tb0.backgroundImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        objc_setAssociatedObject(v, &kWCForcedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    if ([v isKindOfClass:[UITabBar class]]) {
-        UITabBar *tb = (UITabBar *)v;
-        UITabBarAppearance *ap = tb.standardAppearance;
-        if (ap && ![ap.backgroundColor isEqual:cfg]) {
-            UITabBarAppearance *cp = [ap copy];
-            cp.backgroundColor = cfg;
-            cp.backgroundEffect = nil;
-            cp.shadowColor = [UIColor clearColor];
-            tb.standardAppearance = cp;
-            tb.scrollEdgeAppearance = cp;
-            [cp release];
-        }
-        if (tb.barTintColor != dyn) tb.barTintColor = dyn;
-        UIImage *img = WCSolidImage(cfg);
-        if (img && tb.backgroundImage != img) tb.backgroundImage = img;
-    }
-    if (v.backgroundColor != dyn) v.backgroundColor = dyn;
-    WCApplyStrong(v, v, dyn, 3);
-}
-static void WCScanAndForceTabs(UIView *root, int depth) {
-    if (depth < 0 || !root) return;
-    if (WCIsTabCandidate(root)) {
-        CGRect f = [root convertRect:root.bounds toView:nil];
-        UIWindow *win = root.window;
-        if (win && f.origin.y > win.bounds.size.height * 0.7) { WCForceTabView(root); return; }
-    }
-    for (UIView *s in root.subviews) WCScanAndForceTabs(s, depth - 1);
-}
-
-// 扫描注册：v3.3 快照证实 MMInputToolView 的 didMoveToWindow 钩子从未触发（registry input 恒 0），
-// 聊天底栏改走扫描——类名含 InputTool 的视图登记进 input 表、含 MsgContentNavBar 的登记进 nav 表，
-// 之后由 0.4 秒强刷统一接管（深色强制、浅色恢复都在 WCForceBar 里按 trait 分流）。
-static BOOL gChatDiagScheduled = NO;
-static void WCScanRegister(UIView *root, int depth) {
-    if (!root || depth < 0) return;
-    NSString *cls = NSStringFromClass([root class]);
-    if ([cls containsString:@"InputTool"]) {
-        if (![gBarsInput containsObject:root]) {
-            WCRegisterBar(gBarsInput, root);
-            if (!gChatDiagScheduled) {
-                gChatDiagScheduled = YES;
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                               dispatch_get_main_queue(), ^{ WCCollectDiag(@"chat"); });
-            }
-        }
-    } else if ([cls containsString:@"MsgContentNavBar"]) {
-        WCRegisterBar(gBarsNav, root);
-    }
-    // 任何 UINavigationBar 子类都登记进 nav 表：首页那条 #0F0F0F 的顶栏不是 MMUINavigationBar
-    // （钩子没挂上、注册表里那条不在当前窗口），类名对不上就永远漏刷；按基类兜底才稳。
-    if ([root isKindOfClass:[UINavigationBar class]]) WCRegisterBar(gBarsNav, root);
-    // 首页顶栏的 #0F0F0F 终局定位：注册表里的栏从不在主窗口、命中链里也全是透明层——
-    // 真凶是布局容器里一块与内容视图同级的全宽背景条，命中链永远拍不到它。按特征兜底：
-    // 窗口顶部（y<70）、全宽、高 20–140 的不透明深灰视图（或带 effect 的同规格视图，
-    // 登记其父视图让强刷去摘 effect），一律登记进 nav 表强刷。
-    if (root.window && root.bounds.size.width >= root.window.bounds.size.width * 0.95 &&
-        root.bounds.size.height >= 20 && root.bounds.size.height <= 140) {
-        CGRect wf = [root convertRect:root.bounds toView:nil];
-        if (wf.origin.y < 70 && wf.origin.y > -70) {
-            if (WCIsOpaqueDarkNeutral(root.backgroundColor)) {
-                WCRegisterBar(gBarsNav, root);
-            } else if ([root isKindOfClass:[UIVisualEffectView class]] && ((UIVisualEffectView *)root).effect &&
-                       root.superview && [root.superview isKindOfClass:[UIView class]]) {
-                WCRegisterBar(gBarsNav, root.superview);
-            }
-        }
-    }
-    for (UIView *s in root.subviews) WCScanRegister(s, depth - 1);
-}
+static void WCCollectDiag(NSString *scene);
+static void WCEnsureRegistered(void);
+static void WCAppendSourceStats(NSMutableString *out);
 
 #pragma mark - 诊断快照（设置页展示，用户截图/复制即可，不用连电脑抓日志）
 
@@ -1017,6 +594,7 @@ static void WCForceKeyboardWindow(UIWindow *win) {
 
 static void WCCollectDiag(NSString *scene) {
     NSMutableString *out = [NSMutableString stringWithFormat:@"== WCBlack diag (%@) ==\n", scene];
+    WCAppendSourceStats(out);
     [out appendFormat:@"registry tab=%lu nav=%lu input=%lu\n",
         (unsigned long)gBarsTab.count, (unsigned long)gBarsNav.count, (unsigned long)gBarsInput.count];
     // 窗口按 key 优先排序，查找遍历全部窗口（v3.3 只查 keyWindow，输入栏在别的窗口就找不到）
@@ -1095,174 +673,6 @@ static void WCCollectDiag(NSString *scene) {
 }
 
 // 配置变更后：全窗重扫，动态色重新解析、栏重新强制
-static void WCSweep(void) {
-    for (UIWindow *win in [UIApplication sharedApplication].windows) {
-        [win setNeedsLayout];
-        NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:win];
-        while (stack.count) {
-            UIView *v = stack.lastObject; [stack removeLastObject];
-            UIColor *bg = v.backgroundColor;
-            if (bg) v.backgroundColor = bg; // 触发 hook/重解析
-            [stack addObjectsFromArray:v.subviews];
-        }
-    }
-}
-
-#pragma mark - Hooks
-
-static IMP gOrigSetBG, gOrigNavBarTint, gOrigTabBarTint;
-static IMP gOrigMMTabLayout, gOrigMMTabWindow, gOrigNavLayout, gOrigInputLayout;
-
-
-// 视图是否在 MMInputToolView 层级内（向上数 maxUp 层祖先，含直属父级）
-static BOOL WCInsideInputTool(UIView *v, int maxUp) {
-    static Class mmInputCls = nil;
-    if (!mmInputCls) mmInputCls = NSClassFromString(@"MMInputToolView");
-    if (!mmInputCls) return NO;
-    UIView *p = v.superview;
-    for (int i = 0; p && i < maxUp; i++, p = p.superview)
-        if ([p isKindOfClass:mmInputCls]) return YES;
-    return NO;
-}
-
-// 灰阶值（深色解析、单色）落在 [lo,hi] 且不透明时返回 YES
-static BOOL WCGrayInRange(UIColor *color, int lo, int hi) {
-    if (!color) return NO;
-    UIColor *d = [color resolvedColorWithTraitCollection:WCDarkTrait()];
-    CGFloat w = 0, a = 0;
-    if (![d getWhite:&w alpha:&a] || a < 0.95) return NO;
-    int v = (int)lrint(w * 255.0);
-    return v >= lo && v <= hi;
-}
-
-static void WC_View_setBackgroundColor(UIView *self, SEL _cmd, UIColor *color) {
-    // v4.8：键盘占位视图在「被赋值的那一刻」就换黑，不再等强刷。占位视图是
-    // MMInputToolView 的直属子视图（440×348、#1E1E1E），不在色值替换表里（0x1E 全局
-    // 通用、不能按色值全局换），此前靠 WCForceBar 每 0.4 秒补刷——键盘弹起时微信会
-    // 重设它的背景，补刷落地前那一拍就是用户看到的「四周先灰、然后消失」。
-    // 条件收窄到直属子视图 + 深色 + chatbar 开启 + 不透明深灰，还原中（计数>0）不拦。
-    // v4.9 追加第二条（输入框底色），v5.0 修正：底色改由「输入框」模块门控；祖先放宽
-    // 到 4 层（底色视图在 MMGrowTextView 之内时，向上数到 MMInputToolView 正好 4 层）；
-    // 类名含 Text 不再排除——v4.9 实测底色没动，这条排除是头号嫌疑。
-    if (color && gWCRestoreDepth == 0 && ![self isKindOfClass:[UIVisualEffectView class]] &&
-        self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
-        if (WCConfigColor(@"chatbar") && WCInsideInputTool(self, 1) && WCIsOpaqueDarkNeutral(color)) {
-            if (!objc_getAssociatedObject(self, &kWCOrigBGKey))
-                objc_setAssociatedObject(self, &kWCOrigBGKey, color, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            UIColor *dyn = WCDynamicColor(@"chatbar", [color resolvedColorWithTraitCollection:WCLightTrait()]);
-            ((void (*)(id, SEL, id))gOrigSetBG)(self, _cmd, dyn);
-            return;
-        }
-        if (WCConfigColor(@"field") && WCInsideInputTool(self, 4) && WCGrayInRange(color, 42, 46)) {
-            if (!objc_getAssociatedObject(self, &kWCOrigBGKey))
-                objc_setAssociatedObject(self, &kWCOrigBGKey, color, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [WCFieldViews() addObject:self];
-            ((void (*)(id, SEL, id))gOrigSetBG)(self, _cmd, WCConfigColor(@"field"));
-            return;
-        }
-    }
-    UIColor *sub = WCSubstituteForColor(color);
-    ((void (*)(id, SEL, id))gOrigSetBG)(self, _cmd, sub ?: color);
-}
-static void WC_NavBar_setBarTintColor(UINavigationBar *self, SEL _cmd, UIColor *color) {
-    UIColor *sub = WCSubstituteForColor(color);
-    ((void (*)(id, SEL, id))gOrigNavBarTint)(self, _cmd, sub ?: color);
-}
-static void WC_TabBar_setBarTintColor(UITabBar *self, SEL _cmd, UIColor *color) {
-    UIColor *sub = WCSubstituteForColor(color);
-    ((void (*)(id, SEL, id))gOrigTabBarTint)(self, _cmd, sub ?: color);
-}
-static void WC_MMTabBar_layoutSubviews(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigMMTabLayout)(self, _cmd);
-    WCRegisterBar(gBarsTab, self);
-    WCForceBar(self, @"tab", 3);
-}
-static void WC_MMTabBar_didMoveToWindow(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigMMTabWindow)(self, _cmd);
-    if (self.window) { WCRegisterBar(gBarsTab, self); WCForceBar(self, @"tab", 3); }
-}
-static IMP gOrigNavWindow, gOrigInputWindow;
-static void WC_NavBar_layoutSubviews(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigNavLayout)(self, _cmd);
-    WCRegisterBar(gBarsNav, self);
-    WCForceBar(self, @"nav", 3);
-}
-static void WC_NavBar_didMoveToWindow(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigNavWindow)(self, _cmd);
-    if (self.window) { WCRegisterBar(gBarsNav, self); WCForceBar(self, @"nav", 3); }
-}
-static void WC_InputTool_layoutSubviews(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigInputLayout)(self, _cmd);
-    WCRegisterBar(gBarsInput, self);
-    WCForceBar(self, @"chatbar", 2);
-    // 输入框本体（#2C2C2C 内容色）不在目标内不会被刷；这里只补刷全宽底板子视图
-    UIColor *dyn = objc_getAssociatedObject(self, &kWCDynKey);
-    NSNumber *forced = objc_getAssociatedObject(self, &kWCForcedKey);
-    if (dyn && forced.boolValue) {
-        for (UIView *v in self.subviews) {
-            if (v.frame.size.width >= self.bounds.size.width * 0.9 && v.backgroundColor && v.backgroundColor != dyn) {
-                NSString *cls = NSStringFromClass([v class]);
-                if (![cls containsString:@"Text"]) v.backgroundColor = dyn;
-            }
-        }
-    }
-}
-static void WC_InputTool_didMoveToWindow(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigInputWindow)(self, _cmd);
-    if (self.window) {
-        WCRegisterBar(gBarsInput, self);
-        WCForceBar(self, @"chatbar", 4);
-        static BOOL diagDone = NO;
-        if (!diagDone) {
-            diagDone = YES;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ WCCollectDiag(@"chat"); });
-        }
-    }
-}
-// 输入条本体（InputToolContainerView，90pt 高的可见条带）：单独挂钩，布局/进窗口时以自己为
-// 根强刷（它不是全屏宿主，根可涂），把条带的颜色在绘制前定死，消掉进聊天时底部的闪灰。
-static IMP gOrigContainerLayout, gOrigContainerWindow;
-static void WC_Container_layoutSubviews(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigContainerLayout)(self, _cmd);
-    WCRegisterBar(gBarsInput, self);
-    WCForceBar(self, @"chatbar", 2);
-}
-static void WC_Container_didMoveToWindow(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigContainerWindow)(self, _cmd);
-    if (self.window) { WCRegisterBar(gBarsInput, self); WCForceBar(self, @"chatbar", 2); }
-}
-// 聊天顶栏（v3.1 真机：聊天页顶部仍 #0F0F0F，列表页已黑——聊天用的是自有 NavBar 视图，不是 UINavigationBar）
-static IMP gOrigMsgNavLayout, gOrigMsgNavWindow, gOrigNewMsgNavLayout, gOrigNewMsgNavWindow;
-static void WC_MsgNav_layoutSubviews(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigMsgNavLayout)(self, _cmd);
-    WCRegisterBar(gBarsNav, self);
-    WCForceBar(self, @"nav", 3);
-}
-static void WC_MsgNav_didMoveToWindow(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigMsgNavWindow)(self, _cmd);
-    if (self.window) { WCRegisterBar(gBarsNav, self); WCForceBar(self, @"nav", 3); }
-}
-static void WC_NewMsgNav_layoutSubviews(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigNewMsgNavLayout)(self, _cmd);
-    WCRegisterBar(gBarsNav, self);
-    WCForceBar(self, @"nav", 3);
-}
-static void WC_NewMsgNav_didMoveToWindow(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigNewMsgNavWindow)(self, _cmd);
-    if (self.window) { WCRegisterBar(gBarsNav, self); WCForceBar(self, @"nav", 3); }
-}
-// 玻璃插件底栏（WCTabBarView 宿主 / WCGNativeTabBar）：进窗口立即注册+强刷，消灭等扫描的闪灰
-static IMP gOrigGlassTabWindow, gOrigGlassNativeTabWindow;
-static void WC_GlassTab_didMoveToWindow(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigGlassTabWindow)(self, _cmd);
-    if (self.window) { WCRegisterBar(gBarsTab, self); WCForceBar(self, @"tab", 3); }
-}
-static void WC_GlassNativeTab_didMoveToWindow(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigGlassNativeTabWindow)(self, _cmd);
-    if (self.window) { WCRegisterBar(gBarsTab, self); WCForceBar(self, @"tab", 3); }
-}
-
 static IMP gOrigDicSetHidden, gOrigDicWindow;
 static BOOL WCDicShouldHide(UIView *v) {
     // v5.7：话筒去掉不分深浅（用户要求白色下也没有）；只剩 field 模块这一道总闸，
@@ -1312,6 +722,164 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
 // 等旧主题键，module 一项都没命中），微信原生界面的令牌色不走字符串查询这条路；且 v4.0
 // 真机进聊天页后聊天记录整页空白——该 hook 位于消息渲染的热路径上，是唯一新增的全局侵入点，
 // 收益为零、代价不可接受，故回退。v4.1 = v3.5 已验证基线 + 防闪与键盘捕获的非侵入改进。
+
+
+#pragma mark - v6 底层色源（WCColorMgr 按名发色，在发色处换深色值）
+
+// 微信全 App 的深色出自包内 DesignToken 色板（weui_color*.xml，178 个色名），
+// 运行时由 WCColorMgr 按名发色：getColor: / getColorValueForName: 是仅有的两个
+// 按名取色入口，MMDynamicColor 是它发出的明暗对载体（toColor 解析当前模式），
+// WCColorProxy 是品牌色的按模式解析代理。v6 只钩这三处：按色名（或 BG 家族的
+// 深色值）把深色换成模块色，浅色原样。视图拿到手就是换好的动态色，深浅切换
+// 由系统自己重解析——不再有注册表、强刷定时器和设色拦截。
+static NSDictionary *WCNameModuleMap(void) {
+    static NSDictionary *map = nil;
+    if (!map) {
+        map = [[NSDictionary alloc] initWithObjectsAndKeys:
+            @"field", @"ActionSheet_BG",
+            @"bg", @"BG_0",
+            @"bg", @"BG_1",
+            @"bg", @"BG_2",
+            @"cell", @"BG_3",
+            @"field", @"BG_5",
+            @"field", @"Dialog_BG",
+            @"bg", @"Filter_DropDown_DarkerBG",
+            @"bg", @"Filter_DropDown_DefaultBG",
+            @"bg", @"Filter_Option_DarkerBG",
+            @"bg", @"Filter_Option_DefaultBG",
+            @"bg", @"Filter_Option_SelectedBG",
+            @"field", @"SearchBar_ForHomepage_SearchBox_BG",
+            @"bg", @"SearchBar_HomepageBG",
+            @"bg", @"SearchBar_WhiteBG",
+            @"field", @"Sheet_BG",
+            @"bg", @"TabGroup_BG",
+            @"bg", @"TabGroup_White_BG",
+            @"bg", @"Table_ButtonRow_BG",
+            @"bg", @"Table_ChatRow_BG",
+            @"bg", @"Table_ChatRow_Pinned_BG",
+            @"bg", @"Table_ProfileRow_BG",
+            @"bg", @"Table_Row_BG",
+            @"bg", @"Table_Row_Card_GreyCard_BG",
+            @"bg", @"Table_TextField_BG",
+            @"bg", @"Table_TextField_Card_GreyCard_BG",
+            @"bg", @"Toolbar_Chat_Input_BG",
+            @"bg", @"Toolbar_OfficialAccount_Input_BG",
+            nil];
+    }
+    return map;
+}
+
+static NSMutableDictionary *gWCNameCache, *gWCNameHits;
+static long gWCToColorHits, gWCProxyHits, gWCValueStrHits;
+
+static NSString *WCValueModuleForDark(UIColor *color) {
+    if (!color) return nil;
+    NSString *hex = WCHexOfColor(color); // 已按深色 trait 解析
+    if (hex.length < 7 || [hex characterAtIndex:0] != '#') return nil;
+    unsigned int v = 0;
+    [[NSScanner scannerWithString:[hex substringWithRange:NSMakeRange(1, 6)]] scanHexInt:&v];
+    int gray = (v >> 16) & 0xFF;
+    if (((v >> 8) & 0xFF) != gray || (v & 0xFF) != gray) return nil;
+    switch (gray) {
+        case 0x11: case 0x12: case 0x19: case 0x1E: return @"bg";   // BG_0/BG_2/BG_1
+        case 0x20: return @"cell";                                   // BG_3
+        case 0x2C: return @"field";                                  // BG_5
+        default: return nil;
+    }
+}
+
+// 换色包装：深色取当前模块配置（实时读，改设置即时生效），浅色与关模块时回原值
+static UIColor *WCSourceDynamic(NSString *module, UIColor *orig) {
+    UIColor *light = [orig resolvedColorWithTraitCollection:WCLightTrait()];
+    UIColor *darkOrig = [orig resolvedColorWithTraitCollection:WCDarkTrait()];
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
+        if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
+            UIColor *cfg = WCConfigColor(module);
+            if (cfg) return cfg;
+            return darkOrig;
+        }
+        return light;
+    }];
+}
+
+static IMP gOrigGetColor, gOrigGetColorValue, gOrigToColor, gOrigProxyResolve;
+
+static id WC_WCColorMgr_getColor(id self, SEL _cmd, NSString *name) {
+    id orig = ((id (*)(id, SEL, id))gOrigGetColor)(self, _cmd, name);
+    if (!orig || !name || !WCEnabled()) return orig;
+    NSString *module = WCNameModuleMap()[name];
+    if (!module || !WCConfigColor(module)) return orig;
+    @synchronized (gWCNameCache) {
+        id cached = gWCNameCache[name];
+        if (cached) return cached;
+    }
+    id remapped = nil;
+    Class dynCls = NSClassFromString(@"MMDynamicColor");
+    if (dynCls && [orig isKindOfClass:dynCls]) {
+        UIColor *newDark = WCSourceDynamic(module, [orig darkmodeColor]);
+        remapped = [dynCls DynamicColorWithNormalColor:[orig normalColor] darkmodeColor:newDark];
+    } else if ([orig isKindOfClass:[UIColor class]]) {
+        remapped = WCSourceDynamic(module, (UIColor *)orig);
+    }
+    if (!remapped) return orig;
+    @synchronized (gWCNameCache) {
+        gWCNameCache[name] = remapped;
+        gWCNameHits[name] = @([gWCNameHits[name] longValue] + 1);
+    }
+    return remapped;
+}
+
+static id WC_WCColorMgr_getColorValue(id self, SEL _cmd, NSString *name) {
+    id orig = ((id (*)(id, SEL, id))gOrigGetColorValue)(self, _cmd, name);
+    if (!orig || !name || !WCEnabled()) return orig;
+    NSString *module = WCNameModuleMap()[name];
+    UIColor *cfg = module ? WCConfigColor(module) : nil;
+    if (!cfg) return orig;
+    NSArray *parts = [(NSString *)orig componentsSeparatedByString:@","];
+    if (parts.count != 2) return orig;
+    NSString *dark = parts[1];
+    if (dark.length < 7 || [dark characterAtIndex:0] != '#') return orig;
+    NSString *hex = [WCHexOfColor(cfg) substringFromIndex:1]; // RRGGBB
+    NSString *newDark = [@"#" stringByAppendingString:(dark.length > 7 ? [hex stringByAppendingString:[dark substringFromIndex:7]] : hex)];
+    gWCValueStrHits++;
+    return [NSString stringWithFormat:@"%@,%@", parts[0], newDark];
+}
+
+static UIColor *WC_MMDynamicColor_toColor(id self, SEL _cmd) {
+    UIColor *orig = ((UIColor *(*)(id, SEL))gOrigToColor)(self, _cmd);
+    if (!orig || !WCEnabled()) return orig;
+    if ([UITraitCollection currentTraitCollection].userInterfaceStyle != UIUserInterfaceStyleDark) return orig;
+    NSString *module = WCValueModuleForDark(orig);
+    UIColor *cfg = module ? WCConfigColor(module) : nil;
+    if (!cfg) return orig;
+    gWCToColorHits++;
+    return cfg;
+}
+
+static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
+    UIColor *orig = ((UIColor *(*)(id, SEL, long))gOrigProxyResolve)(self, _cmd, style);
+    if (!orig || style != UIUserInterfaceStyleDark || !WCEnabled()) return orig;
+    NSString *module = WCValueModuleForDark(orig);
+    UIColor *cfg = module ? WCConfigColor(module) : nil;
+    if (!cfg) return orig;
+    gWCProxyHits++;
+    return cfg;
+}
+
+static void WCAppendSourceStats(NSMutableString *out) {
+    [out appendString:@"== WCBlack v6 source ==\n"];
+    @synchronized (gWCNameCache) {
+        NSArray *names = [gWCNameHits.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+            return [gWCNameHits[b] compare:gWCNameHits[a]];
+        }];
+        [out appendFormat:@"getColor remaps: %lu names\n", (unsigned long)names.count];
+        for (NSString *n in names) {
+            if ([names indexOfObject:n] >= 20) break;
+            [out appendFormat:@"  %@ x%@ -> %@\n", n, gWCNameHits[n], WCNameModuleMap()[n]];
+        }
+    }
+    [out appendFormat:@"valueStr remaps: %ld | toColor remaps: %ld | proxy remaps: %ld\n", gWCValueStrHits, gWCToColorHits, gWCProxyHits];
+}
 
 #pragma mark - 设置页
 
@@ -1497,8 +1065,6 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
 }
 @end
 
-#pragma mark - 安装与注册
-
 static BOOL gInstalled = NO, gRegistered = NO;
 // 插件列表注册改「在列确认制」：注册后回读管理器列表，确认有 WCBlack 条目才算数；
 // 没确认就由强刷每约 2 秒重试。旧写法只在启动 4 秒内试几次、且试一次就置 gRegistered，
@@ -1519,7 +1085,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"5.7", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"6.0", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1527,93 +1093,71 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v5.7 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v6.0 registered in plugin list");
             break;
         }
     }
 }
+#pragma mark - v6 瘦维护（只做三件与上色无关的事：注册重试、输入框色板/话筒维护、分割线）
+
+static void WCScanForSweep(UIView *root, int depth) {
+    if (!root || depth < 0) return;
+    NSString *cn = NSStringFromClass([root class]);
+    if ([cn isEqualToString:@"MMInputToolView"]) {
+        WCFieldSweep(root);
+        if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain];
+        [gBarsInput addObject:root];
+    } else if ([cn isEqualToString:@"WCTabBarView"]) {
+        if (!gBarsTab) gBarsTab = [[NSHashTable weakObjectsHashTable] retain];
+        [gBarsTab addObject:root];
+    }
+    for (UIView *s in root.subviews) WCScanForSweep(s, depth - 1);
+}
+
+static void WCSlimTick(void) {
+    WCEnsureRegistered();
+    if (!gBarsNav) gBarsNav = [[NSHashTable weakObjectsHashTable] retain];
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if ([NSStringFromClass([w class]) containsString:@"TextEffects"]) { WCForceKeyboardWindow(w); continue; }
+        WCScanForSweep(w, 16);
+        WCScanTablesInWindow(w, w, 16);
+    }
+}
+
+static dispatch_source_t gSlimTimer;
+static void WCStartSlimTimer(void) {
+    if (gSlimTimer) return;
+    gSlimTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(gSlimTimer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                              (uint64_t)(0.4 * NSEC_PER_SEC), (uint64_t)(0.05 * NSEC_PER_SEC));
+    dispatch_source_set_event_handler(gSlimTimer, ^{ WCSlimTick(); });
+    dispatch_resume(gSlimTimer);
+}
+
+#pragma mark - 安装与注册（v6）
+
+static BOOL gSrcHooked = NO;
 static void WCInstall(void) {
-    // v4.7：强刷定时器先起，再挂钩子。旧顺序里 setBackgroundColor 交换排在最前、
-    // 一旦返回空就整段 return——定时器没起来、注册重试也断了，表现就是插件整体
-    // 消失（v4.3、v4.6 各栽过一次，还都是偶发）。现在单个钩子失败只记一笔，
-    // 不许拖死全插件；定时器本身 dispatch_once，重复调无妨。
-    WCStartEnforcer();
-    if (!gInstalled) {
-        gOrigSetBG = WCSwap([UIView class], @selector(setBackgroundColor:), (IMP)WC_View_setBackgroundColor);
-        if (!gOrigSetBG) os_log(WCLog(), "[WCBlack] setBackgroundColor swap failed, continuing without it");
-        gOrigNavBarTint = WCSwap([UINavigationBar class], @selector(setBarTintColor:), (IMP)WC_NavBar_setBarTintColor);
-        gOrigTabBarTint = WCSwap([UITabBar class], @selector(setBarTintColor:), (IMP)WC_TabBar_setBarTintColor);
-        Class mmTab = NSClassFromString(@"MMTabBar");
-        if (mmTab) {
-            gOrigMMTabLayout = WCSwapOwn(mmTab, @selector(layoutSubviews), (IMP)WC_MMTabBar_layoutSubviews);
-            gOrigMMTabWindow = WCSwapOwn(mmTab, @selector(didMoveToWindow), (IMP)WC_MMTabBar_didMoveToWindow);
-        }
-        Class mmNav = NSClassFromString(@"MMUINavigationBar");
-        if (mmNav) {
-            gOrigNavLayout = WCSwapOwn(mmNav, @selector(layoutSubviews), (IMP)WC_NavBar_layoutSubviews);
-            gOrigNavWindow = WCSwapOwn(mmNav, @selector(didMoveToWindow), (IMP)WC_NavBar_didMoveToWindow);
-        }
-        Class mmInput = NSClassFromString(@"MMInputToolView");
-        if (mmInput) {
-            gOrigInputLayout = WCSwapOwn(mmInput, @selector(layoutSubviews), (IMP)WC_InputTool_layoutSubviews);
-            gOrigInputWindow = WCSwapOwn(mmInput, @selector(didMoveToWindow), (IMP)WC_InputTool_didMoveToWindow);
-        }
-        Class inputContainer = NSClassFromString(@"InputToolContainerView");
-        if (inputContainer) {
-            gOrigContainerLayout = WCSwapOwn(inputContainer, @selector(layoutSubviews), (IMP)WC_Container_layoutSubviews);
-            gOrigContainerWindow = WCSwapOwn(inputContainer, @selector(didMoveToWindow), (IMP)WC_Container_didMoveToWindow);
-        }
-        Class msgNav = NSClassFromString(@"MMMsgContentNavBar");
-        if (msgNav) {
-            gOrigMsgNavLayout = WCSwapOwn(msgNav, @selector(layoutSubviews), (IMP)WC_MsgNav_layoutSubviews);
-            gOrigMsgNavWindow = WCSwapOwn(msgNav, @selector(didMoveToWindow), (IMP)WC_MsgNav_didMoveToWindow);
-        }
-        Class newMsgNav = NSClassFromString(@"MMNewMsgContentNavBar");
-        if (newMsgNav) {
-            gOrigNewMsgNavLayout = WCSwapOwn(newMsgNav, @selector(layoutSubviews), (IMP)WC_NewMsgNav_layoutSubviews);
-            gOrigNewMsgNavWindow = WCSwapOwn(newMsgNav, @selector(didMoveToWindow), (IMP)WC_NewMsgNav_didMoveToWindow);
-        }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ WCCollectDiag(@"main"); });
-        if (!gBarsTab) {
-            // MRC：alloc/init 永久持有；weakObjectsHashTable 是 autorelease 的，直接赋全局会被释放（v3 闪退根因）
-            NSPointerFunctionsOptions opts = NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality;
-            gBarsTab = [[NSHashTable alloc] initWithOptions:opts capacity:0];
-            gBarsNav = [[NSHashTable alloc] initWithOptions:opts capacity:0];
-            gBarsInput = [[NSHashTable alloc] initWithOptions:opts capacity:0];
-        }
-        WCStartEnforcer();
-        // 冷启早期多扫两次兜底（玻璃 tab 等非令牌体系的表面），把残余闪烁窗口压到最小
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCScanAllWindows(); });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCScanAllWindows(); });
-        static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
-        cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
-        static id kbdObserver; // 同上，MRC 必须 retain
-        kbdObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:UIKeyboardWillShowNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
-            // v4.8：键盘将显先补刷一次输入栏——占位视图在动画开始前就是黑的，
-            // 不给灰色留出场机会（set 时替换是主防线，这里是兜底）
-            for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"chatbar", 4);
-            // v5.3：键盘弹起 0.8 秒后自动采一份诊断——话筒区残留只在这个状态出现，
-            // 树里它叫什么名字，这份能点名
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCCollectDiag(@"kbdup"); });
-        }] retain];
-        gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v5.7 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+    if (!gWCNameCache) {
+        gWCNameCache = [[NSMutableDictionary alloc] init];
+        gWCNameHits = [[NSMutableDictionary alloc] init];
     }
-    // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
-    // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
-    static BOOL glassTabHooked = NO;
-    if (!glassTabHooked) {
-        Class gt = NSClassFromString(@"WCTabBarView");
-        Class gn = NSClassFromString(@"WCGNativeTabBar");
-        if (gt) gOrigGlassTabWindow = WCSwapOwn(gt, @selector(didMoveToWindow), (IMP)WC_GlassTab_didMoveToWindow);
-        if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
-        if (gt || gn) {
-            glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v5.7 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+    if (!gSrcHooked) {
+        Class mgr = NSClassFromString(@"WCColorMgr");
+        Class dyn = NSClassFromString(@"MMDynamicColor");
+        Class proxy = NSClassFromString(@"WCColorProxy");
+        if (mgr && dyn && proxy) {
+            if (!gOrigGetColor) gOrigGetColor = WCSwap(mgr, @selector(getColor:), (IMP)WC_WCColorMgr_getColor);
+            if (!gOrigGetColorValue) gOrigGetColorValue = WCSwap(mgr, @selector(getColorValueForName:), (IMP)WC_WCColorMgr_getColorValue);
+            if (!gOrigToColor) gOrigToColor = WCSwap(dyn, @selector(toColor), (IMP)WC_MMDynamicColor_toColor);
+            if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
+            if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
+                gSrcHooked = YES;
+                os_log(WCLog(), "[WCBlack] v6 source hooks in");
+            }
         }
     }
-    // 话筒图标类可能懒加载，每次安装都尝试挂（挂上即止）
+    // 话筒钩子（与 v5.6/v5.7 相同）
     static BOOL dicHooked = NO;
     if (!dicHooked) {
         Class dic = NSClassFromString(@"MMGrowDictationIconView");
@@ -1622,11 +1166,13 @@ static void WCInstall(void) {
             gOrigDicWindow = WCSwapOwn(dic, @selector(didMoveToWindow), (IMP)WC_Dic_didMoveToWindow);
             if (gOrigDicSetHidden && gOrigDicWindow) {
                 dicHooked = YES;
-                os_log(WCLog(), "[WCBlack] v5.7 dictation icon hooks in");
+                os_log(WCLog(), "[WCBlack] v6 dictation icon hooks in");
             }
         }
     }
     WCEnsureRegistered();
+    WCStartSlimTimer();
+    gInstalled = YES;
 }
 
 @interface WCBlackLoader : NSObject
