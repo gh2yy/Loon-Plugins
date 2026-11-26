@@ -1,38 +1,26 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v3 (2026-11-26)
-// 沿革：v1 挂错类（ObjC 旧栏 HPTabBar）真机零反应；v2 改挂 Swift 真底栏 _TtC4HPUI10HPUITabBar 生效，
-//   但真机录屏逐帧量出：高亮胶囊停在自算的槽位中心，按钮图标却在 App 自己布局的位置（整行均匀右移约 34pt），
-//   两者对不齐、右 tab 差最多。v3 改法：绝不移动按钮，只读按钮的真实位置——
-//   胶囊按按钮行实际范围贴合，高亮按选中按钮内容（label + tabImageView 并集）的真实中心与宽度定位。
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v4 (2026-11-26)
+// 沿革：v1 挂错类（ObjC 旧栏）零反应；v2 改挂 Swift 真底栏 _TtC4HPUI10HPUITabBar 生效，但玻璃是自拼的
+//   （普通视图垫底 + 纯色半透明高亮），且自算槽位与 App 实际布局差约 34pt；v3 修位置（不动按钮、按真实
+//   位置贴合）；v4 按用户要求照小红书 XHSNative-1.4 的 plateOn:key:below:frame:bar: 实现重做玻璃本体。
+// XHS 玻璃盘配方（反汇编定案，逐项照搬）：
+//   UIVisualEffectView(initWithEffect: [UIGlassEffect effectWithStyle:Regular(0)])
+//   + cornerConfiguration = [UICornerConfiguration capsuleConfiguration]（设在效果视图上，不是 layer 圆角）
+//   + contentView.layer.masksToBounds = YES、contentView.layer.cornerRadius = 高/2
+//   + contentView 填充动态色（其主页底栏默认）：浅色 = 白 α0.50；深色 = RGB(0.13,0.13,0.15) α0.50
+//   选区高亮同样是一块玻璃盘（无填充），不是纯色块。
+// 位置沿用 v3：绝不移动按钮；胶囊按按钮行真实范围贴合，高亮按选中按钮内容（label+tabImageView 并集）定位。
 // 挂点：HPUITabBar layoutSubviews / updateButtonWithButton:selected:；ObjC 旧栏 HPTabBar 挂点保留兼容。
-// 玻璃：UIGlassEffectStyleClear 清透款（用户指定，不要可调设置）；日/夜按底栏原背景色明度推断。
-// 纯运行时 swizzle + +load 安装，无 substrate 依赖；UIGlassEffect 走 NSClassFromString 动态解析。
+// 纯运行时 swizzle + +load 安装，无 substrate 依赖；玻璃类全部 NSClassFromString 动态解析。
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-static BOOL gNightKnown = NO;
-static BOOL gNight = NO;
-
-static char kGlassBoxKey;
-static char kGlassFxKey;
-static char kPillKey;
+static char kCapsuleKey;
+static char kLensKey;
 static char kSelBtnKey;
 
 #pragma mark - 工具
-
-static UIVisualEffect *HPMakeGlassEffect(void) {
-    Class glassCls = NSClassFromString(@"UIGlassEffect");
-    if (glassCls && [glassCls respondsToSelector:@selector(effectWithStyle:)]) {
-        UIVisualEffect *fx = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassCls, @selector(effectWithStyle:), 1);
-        if (fx) {
-            if ([fx respondsToSelector:@selector(setInteractive:)])
-                ((void (*)(id, SEL, BOOL))objc_msgSend)(fx, @selector(setInteractive:), NO);
-            return fx;
-        }
-    }
-    return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial];
-}
 
 static Class HPFindClass(NSString *exact, NSString *contains, NSArray<NSString *> *excludes) {
     Class c = NSClassFromString(exact);
@@ -93,72 +81,58 @@ static BOOL HPIsAncestorOfAny(UIView *v, NSArray *btns) {
     return NO;
 }
 
-static void HPInferTheme(UIView *bar) {
-    UIColor *c = bar.backgroundColor;
-    if (c) {
-        CGFloat w = 0, a = 0;
-        if ([c getWhite:&w alpha:&a] && a > 0.3) { gNight = w < 0.35; gNightKnown = YES; return; }
-    }
-    if (!gNightKnown) {
-        gNight = (bar.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
-        gNightKnown = YES;
-    }
+#pragma mark - 玻璃盘（照 XHSNative plateOn 配方）
+
+static UIColor *HPPlateFillColor(void) {
+    return [UIColor colorWithDynamicProvider:^UIColor * _Nonnull(UITraitCollection * _Nonnull traits) {
+        if (traits.userInterfaceStyle == UIUserInterfaceStyleDark)
+            return [UIColor colorWithRed:0.13 green:0.13 blue:0.15 alpha:0.50];
+        return [UIColor colorWithWhite:1.0 alpha:0.50];
+    }];
 }
 
-#pragma mark - 样式与布局
-
-static void HPApplyTheme(UIView *bar) {
-    UIView *box = objc_getAssociatedObject(bar, &kGlassBoxKey);
-    UIView *pill = objc_getAssociatedObject(bar, &kPillKey);
-    if (!box) return;
-    UIUserInterfaceStyle style = gNight ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
-    box.overrideUserInterfaceStyle = style;
-    box.layer.shadowColor = [UIColor blackColor].CGColor;
-    box.layer.shadowOpacity = gNight ? 0.45 : 0.18;
-    if (pill) {
-        pill.overrideUserInterfaceStyle = style;
-        pill.backgroundColor = gNight ? [UIColor colorWithWhite:1.0 alpha:0.18]
-                                      : [UIColor colorWithWhite:0.0 alpha:0.09];
-        pill.layer.borderColor = (gNight ? [UIColor colorWithWhite:1.0 alpha:0.10]
-                                         : [UIColor colorWithWhite:0.0 alpha:0.04]).CGColor;
+static UIVisualEffectView *HPMakePlate(BOOL withFill) {
+    UIVisualEffect *fx = nil;
+    Class glassCls = NSClassFromString(@"UIGlassEffect");
+    if (glassCls && [glassCls respondsToSelector:@selector(effectWithStyle:)])
+        fx = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassCls, @selector(effectWithStyle:), 0); // Regular
+    if (!fx) fx = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterial];
+    UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:fx];
+    Class cornerCls = NSClassFromString(@"UICornerConfiguration");
+    if (cornerCls && [cornerCls respondsToSelector:@selector(capsuleConfiguration)] &&
+        [v respondsToSelector:@selector(setCornerConfiguration:)]) {
+        id cfg = ((id (*)(id, SEL))objc_msgSend)(cornerCls, @selector(capsuleConfiguration));
+        ((void (*)(id, SEL, id))objc_msgSend)(v, @selector(setCornerConfiguration:), cfg);
     }
+    v.userInteractionEnabled = NO;
+    v.contentView.layer.masksToBounds = YES;
+    if (withFill) v.contentView.backgroundColor = HPPlateFillColor();
+    return v;
 }
 
-static void HPEnsureViews(UIView *bar) {
-    UIView *box = objc_getAssociatedObject(bar, &kGlassBoxKey);
-    if (!box) {
-        box = [[UIView alloc] initWithFrame:CGRectZero];
-        box.backgroundColor = [UIColor clearColor];
-        box.userInteractionEnabled = NO;
-        box.layer.shadowOffset = CGSizeMake(0, 6);
-        box.layer.shadowRadius = 16;
-        UIVisualEffectView *fx = [[UIVisualEffectView alloc] initWithEffect:HPMakeGlassEffect()];
-        fx.userInteractionEnabled = NO;
-        fx.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [box addSubview:fx];
-        [bar insertSubview:box atIndex:0];
-        objc_setAssociatedObject(bar, &kGlassBoxKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(bar, &kGlassFxKey, fx, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-        UIView *pill = [[UIView alloc] initWithFrame:CGRectZero];
-        pill.userInteractionEnabled = NO;
-        pill.layer.borderWidth = 0.5;
-        [bar insertSubview:pill atIndex:1];
-        objc_setAssociatedObject(bar, &kPillKey, pill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    HPApplyTheme(bar);
+static void HPSetPlateFrame(UIVisualEffectView *plate, CGRect f) {
+    plate.frame = f;
+    plate.contentView.layer.cornerRadius = f.size.height / 2;
 }
+
+#pragma mark - 布局
 
 static void HPLayoutBar(UIView *bar, Class btnCls) {
     CGRect bounds = bar.bounds;
     if (bounds.size.width < 50 || bounds.size.height < 30) return;
     NSArray *btns = HPBarButtons(bar, btnCls);
     if (btns.count == 0) return;
-    HPInferTheme(bar);
-    HPEnsureViews(bar);
 
-    UIView *box = objc_getAssociatedObject(bar, &kGlassBoxKey);
-    UIView *pill = objc_getAssociatedObject(bar, &kPillKey);
+    UIVisualEffectView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    if (!capsule) {
+        capsule = HPMakePlate(YES);
+        [bar insertSubview:capsule atIndex:0];
+        objc_setAssociatedObject(bar, &kCapsuleKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        UIVisualEffectView *lens = HPMakePlate(NO);
+        [bar insertSubview:lens atIndex:1];
+        objc_setAssociatedObject(bar, &kLensKey, lens, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    UIVisualEffectView *lens = objc_getAssociatedObject(bar, &kLensKey);
 
     // 藏原背景（不藏任何装着按钮的容器）
     if ([bar respondsToSelector:@selector(backgroundView)]) {
@@ -166,7 +140,7 @@ static void HPLayoutBar(UIView *bar, Class btnCls) {
         if (bg && !HPIsAncestorOfAny(bg, btns)) bg.hidden = YES;
     }
     for (UIView *v in bar.subviews) {
-        if (v == box || v == pill) continue;
+        if (v == capsule || v == lens) continue;
         if (HPIsAncestorOfAny(v, btns)) continue;
         CGRect f = v.frame;
         BOOL fullBg = f.size.width >= bounds.size.width * 0.9 && f.size.height >= bounds.size.height * 0.9;
@@ -176,12 +150,10 @@ static void HPLayoutBar(UIView *bar, Class btnCls) {
     bar.backgroundColor = [UIColor clearColor];
 
     // 按钮真实矩形（底栏坐标系）——只读，绝不改
-    NSMutableArray *frames = [NSMutableArray array];
     NSMutableArray *contents = [NSMutableArray array];
     CGRect row = CGRectNull;
     for (UIView *b in btns) {
         CGRect f = [bar convertRect:b.bounds fromView:b];
-        [frames addObject:[NSValue valueWithCGRect:f]];
         [contents addObject:[NSValue valueWithCGRect:HPButtonContentRect(bar, b)]];
         row = CGRectIsNull(row) ? f : CGRectUnion(row, f);
     }
@@ -190,19 +162,13 @@ static void HPLayoutBar(UIView *bar, Class btnCls) {
     CGFloat capH = 58.0;
     CGFloat capX = MAX(10.0, row.origin.x - 12);
     CGFloat capR = MIN(bounds.size.width - 10, CGRectGetMaxX(row) + 12);
-    CGFloat capCY = CGRectGetMidY(row);
-    CGFloat capY = capCY - capH / 2;
+    CGFloat capY = CGRectGetMidY(row) - capH / 2;
     if (capY < 2) capY = 2;
     if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
-    CGRect capsule = CGRectMake(capX, capY, capR - capX, capH);
-    box.frame = capsule;
-    box.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:box.bounds cornerRadius:capH / 2].CGPath;
-    UIVisualEffectView *fx = objc_getAssociatedObject(bar, &kGlassFxKey);
-    fx.frame = box.bounds;
-    fx.layer.cornerRadius = capH / 2;
-    fx.clipsToBounds = YES;
+    CGRect capRect = CGRectMake(capX, capY, capR - capX, capH);
+    HPSetPlateFrame(capsule, capRect);
 
-    // 高亮：贴选中按钮的内容中心，宽 = 内容宽 + 30（夹在 60..110）
+    // 选区透镜（玻璃）：贴选中按钮的内容中心，宽 = 内容宽 + 30（夹在 60..110）
     UIView *selBtn = objc_getAssociatedObject(bar, &kSelBtnKey);
     NSUInteger sel = selBtn ? [btns indexOfObject:selBtn] : NSNotFound;
     if (sel == NSNotFound) {
@@ -213,14 +179,14 @@ static void HPLayoutBar(UIView *bar, Class btnCls) {
         }
     }
     CGRect cr = [contents[sel] CGRectValue];
-    CGFloat pillW = MIN(MAX(cr.size.width + 30, 60.0), 110.0);
-    CGFloat pillH = capH - 16;
-    pill.frame = CGRectMake(CGRectGetMidX(cr) - pillW / 2, capsule.origin.y + (capH - pillH) / 2, pillW, pillH);
-    pill.layer.cornerRadius = pillH / 2;
-    pill.hidden = NO;
+    CGFloat lensW = MIN(MAX(cr.size.width + 30, 60.0), 110.0);
+    CGFloat lensH = capH - 16;
+    HPSetPlateFrame(lens, CGRectMake(CGRectGetMidX(cr) - lensW / 2,
+                                     capRect.origin.y + (capH - lensH) / 2, lensW, lensH));
+    lens.hidden = NO;
 
-    // 层级：玻璃 < 高亮 < 按钮（按钮若在容器里，把容器整体提到高亮之上）
-    [bar bringSubviewToFront:pill];
+    // 层级：胶囊玻璃 < 透镜玻璃 < 按钮（按钮若在容器里，把容器整体提到透镜之上）
+    [bar bringSubviewToFront:lens];
     for (UIView *b in btns) {
         UIView *top = b;
         while (top.superview && top.superview != bar) top = top.superview;
@@ -293,7 +259,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v3 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v4 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
