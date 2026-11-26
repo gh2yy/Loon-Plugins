@@ -1,48 +1,51 @@
 // zhplugin.m — 知乎 11.15.0 插件合集（2026-11-26）
 // 同一个 dylib 两项功能，各有独立开关（设置页 contactsCellInfo 行正上方连插行）：
-//   1) 玻璃探针·SJJ 全序列版（本轮）：按 SAMPLE41_ANALYSIS.md 的
-//      SJJChatGlassStore 全序列重做构造（自建透明 host 挂 keyWindow、
-//      玻璃以 index 0 垫进 host 层级内、ZPGlassView 旗标门控 setEffect:
-//      + zpUpdateMaterial: 公开通道自装、空身入树后装），外加胶囊 bg
-//      写入方身份捕获（setBackgroundColor: 覆写记调用方镜像+偏移），
-//      一只胶囊验真（自建底部导航仍待命、本轮不建；原底栏完全不动）
+//   1) 液态玻璃底部导航（正式版）：探针已验真（总闸 = 宿主
+//      UIDesignRequiresCompatibility，删键的 A/B 包真机实测胶囊成
+//      真玻璃），本轮探针整段退场、换正式导航：原栏 ZHTabBarNew
+//      隐藏，插件在窗口底部自建悬浮玻璃胶囊导航，只留首页/我的两
+//      入口——玻璃面沿用 SJJ 全序列（ZPGlassView 旗标门控 +
+//      zpUpdateMaterial: 公开通道自装、空身入树、host 容器 index 0
+//      垫底、样式先钉），按钮数据从原栏 item 抄（图标/头像/标题/
+//      字体/色值），点击回原栏真实点选链 didClickTabBarItem:，选
+//      中透镜由既有 select/unselect 钩子驱动滑动。玻璃关时还原原
+//      栏、移除自建栏。
 //   2) 纯黑背景：夜间模式下整体画布背景改纯黑 #000000（仿 WCBlack 路线，但走知乎主题发色点）
 //
-// 玻璃探针口径（2026-11-26 SJJ 全序列版；全栏自建导航仍待命、本轮不建）：
-//   已定罪前提（勿再验证）：三家样本对宿主进程零环境改造（41.3.0 全
-//   镜像普查实证）；兼容标志知乎/小红书两家共有、已排除；历代探针的
-//   胶囊全是 keyWindow 顶层浮岛——三家样本无一例，手动玻璃全长在宿
-//   主层级内部（index 0 垫底）。照抄配方版（DYKiller 吞噬 setEffect:
-//   + applyEffect: 绕行 super）真机计数定案：setEffect 外部调用=0、
-//   applyEffect 安装=1、子树仍无 _UIVisualEffectBackdropView。本轮换
-//   SJJ 的安装路径与挂载形态，两个主变量同批落地：
-//     ①挂载：自建透明 host UIView（260×64）挂 keyWindow（窗口 frame
-//       {90,300}），玻璃以 insertSubview:atIndex:0 垫进 host——玻璃第
-//       一次「长在层级内部」而非窗口浮岛。host 的 bg 创建时显式置
-//       clear、永不写色（SJJ 宿主清场纪律的形式保留：无可清场）。
-//     ②安装：ZPGlassView 旗标门控——覆写 setEffect:，实例旗标
-//       zpInstalling 为 NO 时吞掉并计数（外部调用计数 + 最近传入类
-//       名），为 YES 时走 [super setEffect:] 放行；自有
-//       zpUpdateMaterial: 置旗 → [self setEffect:fx]（公开通道）→
-//       清旗，计安装数，且仅当目标 style 与现 effect 不一致或现
-//       effect 为 nil 时才真装（变更门控）。空身 initWithFrame:
-//       （host bounds）创建，塑形仅创建时一次（本体 capsule
-//       cornerConfiguration + contentView.layer masksToBounds +
-//       cornerRadius=高/2）；入树后先钉 overrideUserInterfaceStyle
-//       （知乎 isNightMode），再建 fx（UIGlassEffect Regular、
-//       interactive 装入前设 YES、无 tint）经 zpUpdateMaterial: 装入。
-//     ③bg 写入方捕获：ZPGlassView 覆写 setBackgroundColor:，每次写
-//       入先记（值 + 调用方：backtrace/dladdr 取返回地址所属镜像名
-//       与镜像内偏移，至多留前 4 次详细记录）再放行 super——只记不
-//       钉（回写保持退场）。历代实测胶囊被外部写 bg（首白末黑）而
-//       材质胶囊 0 次，写入方身份至今未定，本轮定名。
-//   维护幂等：hidden 同步 / host 不在当前 keyWindow 才重挂 / frame
-//   变更才写 / effect 为 nil 才重装；不重排、不写 bg。玻璃开关同控
-//   显隐（关时隐藏 host）；触发链仍走 ZHRequestApply 下一拍
-//   ZHApplyBar。诊断「SJJ 胶囊」块子树从 host 起打印（背板在不在一
-//   眼可见）。判读表见 PATCH_NOTES SJJ 全序列版段。原栏仍完全不动。
+// 玻璃导航口径（正式版，2026-11-26 晚）：
+//   已定案前提（勿再验证）：知乎玻璃不渲染的总闸是宿主 Info.plist
+//   的 UIDesignRequiresCompatibility（App 级 UI 兼容模式）——只删
+//   此键的 A/B 包真机实测：同一只 SJJ 序列胶囊立即成真玻璃、折射
+//   身后内容。构造（SJJ 全序列）与成品 SDK 戳修正（27.2）均保留。
+//   导航形态（用户 2026-11-26 16:09 拍板）：原栏整体隐藏、插件自
+//   建一套液态玻璃底部导航，只保留首页/我的两入口（照虎扑
+//   HPGlassBar v5 模式：按钮数据复制 + 几何全自定 + 点击回原链）。
+//     ①原栏：玻璃开 → ZHTabBarNew 置 hidden=YES 并在每轮维护中
+//       重申；玻璃关 → 还原 hidden=NO 并把自建栏移出窗口。
+//     ②自建栏：透明 host 容器挂当前 keyWindow，底部居中悬浮（安
+//       全区上方 12pt），尺寸由两槽决定：槽宽 86、栏高 64、两侧
+//       内边距 10 → 192×64。host 子视图序：玻璃面（index 0）→
+//       选中透镜 → 两按钮。玻璃面/透镜均为 ZPGlassView（SJJ 序
+//       列：空身入树、先钉 overrideUserInterfaceStyle 跟知乎夜间
+//       模式、Regular、无 tint、zpUpdateMaterial: 装入）。
+//     ③按钮数据：从原栏可见 item 视图抄——首页取 iconImageView
+//       的图与 titleLable 的文/字体/色；我的优先 avatarImageView
+//       的头像图（圆形）。槽位按 model.identifier 定（0=首页、
+//       5=我的，取不到回落可见序首/尾）。每轮维护同步当前图与色
+//       （原栏选中态/主题变化后图色随之变，两态图标自动跟随）。
+//     ④点击：回原栏真实点选链——静态实证 itemControlClick 的链
+//       是 [item.delegate didClickTabBarItem:item.model]，delegate
+//       即原栏本人；自建按钮点击同调 [bar didClickTabBarItem:model]
+//       （登录拦截、delegate 切换、model selected 更新全在原链内）。
+//     ⑤选中与透镜：选中态读 item 的 themeSelected；既有 select/
+//       unselect/setItems/主题/layout 钩子触发下一拍维护，透镜
+//       0.25s 滑到选中槽，按钮选中态同步。维护幂等：hidden 同步
+//       / frame 变更才写 / 已在位不重排 / effect 为 nil 才装。
+//   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
+//   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
+//   录（保留探针时代的取证字段）。
 //
-// 纯黑背景口径（本轮静态定案，详见 PATCH_NOTES v3 段）：
+//// 纯黑背景口径（本轮静态定案，详见 PATCH_NOTES v3 段）：
 //   知乎颜色总发色点是 ZHThemeManage（ZHCoreTheme）：
 //     +colorWithName:ignoreNight: 先把名字经 performSelector 解析成 ZHColorModel 单例
 //     （+[ZHColorModel Map<Name>]），再统一走 +colorWithModel:ignoreNight:；
@@ -98,8 +101,13 @@
 #import <dlfcn.h>
 #import <execinfo.h>
 
-static char kCapsuleKey;   // SJJ 探针胶囊（ZPGlassView + UIGlassEffect，垫在 host 内 index 0）
-static char kHostKey;      // SJJ 探针宿主容器（自建透明 UIView，挂 keyWindow）
+static char kNavHostKey;   // 自建导航容器（透明 UIView，挂 keyWindow）
+static char kNavGlassKey;  // 导航玻璃面（ZPGlassView，垫在容器内 index 0）
+static char kNavLensKey;   // 选中透镜（ZPGlassView，玻璃面之上、按钮之下）
+static char kNavBtnHomeKey; // 首页按钮（ZPNavButton）
+static char kNavBtnMineKey; // 我的按钮（ZPNavButton）
+static char kNavSelKey;    // 最近一次选中槽位（NSNumber，透镜落位兜底）
+static char kNavPlacedKey; // 透镜已落位过（首次落位不做滑动动画）
 static char kSchedKey;     // 已排队布局标记
 static char kLayoutLockKey; // layoutSubviews 重入锁（per-instance）
 static char kGestureKey;   // 长按兜底手势（RETAIN）
@@ -153,7 +161,7 @@ static void ZHRegisterBar(UIView *bar) {
 
 static void ZHApplyBar(UIView *bar); // 前置声明，定义在布局节
 static void ZHRequestApply(UIView *bar); // 前置声明，定义在布局节
-static UIWindow *ZPProbeKeyWindow(void); // 前置声明，定义在布局节（探针落位先用）
+static UIWindow *ZPKeyWindow(void); // 前置声明，定义在布局节（导航落位用）
 static NSString *ZPBuildDiagnostics(void); // 前置声明，定义在设置页节（诊断行）
 static NSString *ZPColorDesc(UIColor *c); // 前置声明，定义在诊断行节（bg 侦测记录先用）
 static BOOL gThemeHookInstalled = NO; // 主题段已装标记：+load 期即安装，诊断行也要读，故在此声明（安装节不再重复定义）
@@ -259,21 +267,20 @@ static void ZPSetBlackEnabled(BOOL on) {
     NSLog(@"[zhplugin] blackbg switch -> %@", on ? @"ON" : @"OFF");
 }
 
-#pragma mark - 玻璃盘构造（SJJ 全序列版：旗标门控 + 公开通道自装 + host 层级内垫底）
+#pragma mark - 玻璃构造（SJJ 全序列：旗标门控 + 公开通道自装 + host 层级内垫底）
 
-// 本轮（SJJ 全序列版）：按 SAMPLE41_ANALYSIS.md 的 SJJChatGlassStore
-// 全序列重做构造。与照抄配方版（DYKiller 路线）的两个主变量差异：
-// ①安装路径——不用「吞噬 setEffect: + applyEffect: 绕行 super」，改
-// SJJ 的旗标门控：setEffect: 在旗标开时就是真通道，安装统一经
-// zpUpdateMaterial:（置旗→公开通道自装→清旗）+ 变更门控；②挂载形
-// 态——胶囊不再直挂 keyWindow 当浮岛，改垫进自建透明 host 内部
-// index 0（玻璃长在层级内部，三家样本的共同形态）。外加 bg 写入方
-// 身份捕获（ZPGlassView 覆写 setBackgroundColor: 记调用方）。
-// 承载与落位在布局节。
+// 按 SAMPLE41_ANALYSIS.md 的 SJJChatGlassStore 全序列构造（A/B 包
+// 真机验真通过）：①安装路径——不用「吞噬 setEffect: + applyEffect:
+// 绕行 super」，用 SJJ 的旗标门控：setEffect: 在旗标开时就是真通
+// 道，安装统一经 zpUpdateMaterial:（置旗→公开通道自装→清旗）+ 变
+// 更门控；②挂载形态——玻璃长在自建透明 host 内部 index 0（层级
+// 内部，三家样本的共同形态），不直挂窗口当浮岛。外加 bg 写入方
+// 身份捕获（ZPGlassView 覆写 setBackgroundColor: 记调用方，诊断
+// 保留）。承载与落位在布局节。
 //
 // iOS 26 玻璃类全部运行时取类、无硬链接（构建 SDK 不含其头文件）：
 // UIGlassEffect / UICornerConfiguration。
-// 取类失败（<iOS 26）时工厂返回 nil，布局节据此静默不建探针。
+// 取类失败（<iOS 26）时工厂返回 nil，布局节据此静默不建导航。
 
 static id ZHMakeGlassEffect(BOOL interactive) {
     Class cls = NSClassFromString(@"UIGlassEffect");
@@ -371,47 +378,154 @@ static long ZPEffectStyle(id fx) {
 }
 @end
 
-// SJJ 探针宿主工厂：自建透明 UIView（260×64）——它就是 SJJ 意义上的
-// host。bg 在创建时显式置 clearColor 且此后永不写色（SJJ 宿主存档清
-// 场纪律的形式保留：本 host 无可清场，纪律以「恒 clear」落地）。挂
-// 载（addSubview 到 keyWindow）在布局节。不吃点击（探针口径）。
-static UIView *ZHSJJHostForBar(UIView *bar) {
-    UIView *host = objc_getAssociatedObject(bar, &kHostKey);
-    if (host) return host;
-    host = [[UIView alloc] initWithFrame:CGRectMake(90, 300, 260, 64)];
-    host.backgroundColor = [UIColor clearColor]; // 显式清场，此后永不写色
-    host.userInteractionEnabled = NO; // 探针永不吃点击
-    objc_setAssociatedObject(bar, &kHostKey, host, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [host release];
-    return host;
+// 玻璃视图工厂（导航玻璃面/透镜共用）：只负责「空身创建 + 一次性
+// 塑形」，不入树、不装 effect（入树与后装在布局节按 SJJ 次序完
+// 成）。空身：initWithFrame: 创建、出生无 effect。塑形仅此一次：
+// 本体 capsule cornerConfiguration + contentView.layer
+// masksToBounds + cornerRadius=高/2。无外壳、无 shadow、无任何装
+// 饰层。UIGlassEffect 类取不到（<iOS 26）返回 nil，布局节据此静
+// 默不建导航。
+static ZPGlassView *ZHMakeNavGlassView(CGRect frame) {
+    if (!NSClassFromString(@"UIGlassEffect")) return nil;
+    ZPGlassView *v = [[ZPGlassView alloc] initWithFrame:frame];
+    v.userInteractionEnabled = NO; // 玻璃层永不吃点击（点击归按钮）
+    id cc = ZHCapsuleCornerConfiguration();
+    if (cc && [v respondsToSelector:@selector(setCornerConfiguration:)])
+        ((void (*)(id, SEL, id))objc_msgSend)(v, @selector(setCornerConfiguration:), cc);
+    v.contentView.layer.masksToBounds = YES;
+    v.contentView.layer.cornerRadius = frame.size.height / 2;
+    return v; // +1，调用方转交 associated 持有后 release
 }
 
-// SJJ 胶囊工厂：只负责「取或建 + 空身创建 + 一次性塑形」，不入树、不
-// 装 effect（入树与后装在布局节 ZHLayoutSJJProbe 按 SJJ 次序完成）。
-// 空身：initWithFrame:（host bounds）创建、出生无 effect。塑形仅此
-// 一次：本体 capsule cornerConfiguration + contentView.layer
-// masksToBounds + cornerRadius=高/2。无外壳、无 shadow、无任何装饰
-// 层。UIGlassEffect 类取不到（<iOS 26）返回 nil，布局节据此静默不建。
-static ZPGlassView *ZHSJJCapsuleForBar(UIView *bar, UIView *host) {
-    ZPGlassView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    if (capsule) return capsule;
-    if (!NSClassFromString(@"UIGlassEffect")) return nil;
-    capsule = [[ZPGlassView alloc] initWithFrame:host.bounds];
-    capsule.userInteractionEnabled = NO; // 探针永不吃点击（SJJ 建槽同款 w2=0）
-    id cc = ZHCapsuleCornerConfiguration();
-    if (cc && [capsule respondsToSelector:@selector(setCornerConfiguration:)])
-        ((void (*)(id, SEL, id))objc_msgSend)(capsule, @selector(setCornerConfiguration:), cc);
-    capsule.contentView.layer.masksToBounds = YES;
-    capsule.contentView.layer.cornerRadius = capsule.frame.size.height / 2;
-    objc_setAssociatedObject(bar, &kCapsuleKey, capsule, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [capsule release];
-    return capsule;
+#pragma mark - 自建导航按钮（数据从原栏 item 抄，几何自定）
+
+// ZPNavButton：自建导航的单只按钮（UIControl）。内容只有图标在
+// 上、标题在下，数据每轮维护时从原栏 item 视图同步（图标/头像
+// 图、标题文、字体、色值——原栏选中/主题变化后图色随之变，两态
+// 自动跟随）。点击经 handler 的 zhPluginNavTapped: 回原栏
+// didClickTabBarItem:（原 item 的 itemControlClick 同一入口）。
+@interface ZPNavButton : UIControl {
+    UIImageView *_iconView;
+    UILabel *_titleLabel;
+    UIView *_bar;   // assign：原栏（按钮由 associated 挂在原栏上，生命周期从属原栏）
+    id _model;      // RETAIN：原栏 item 的 model（点击回链用）
+    BOOL _navSelected;
+}
+- (void)zpSetBar:(UIView *)bar model:(id)model;
+- (UIView *)zpBar;
+- (id)zpModel;
+- (void)zpSyncIcon:(UIImage *)img avatar:(BOOL)avatar srcTint:(UIColor *)tint;
+- (void)zpSyncTitle:(NSString *)title font:(UIFont *)font color:(UIColor *)color;
+- (void)zpSetNavSelected:(BOOL)sel;
+@end
+
+@implementation ZPNavButton
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        _iconView = [[UIImageView alloc] initWithFrame:CGRectZero];
+        _iconView.contentMode = UIViewContentModeScaleAspectFit;
+        [self addSubview:_iconView];
+        _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _titleLabel.textAlignment = NSTextAlignmentCenter;
+        [self addSubview:_titleLabel];
+    }
+    return self;
+}
+- (void)dealloc {
+    [_iconView release];
+    [_titleLabel release];
+    [_model release];
+    [super dealloc];
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat w = self.bounds.size.width;
+    _iconView.frame = CGRectMake((w - 26) / 2, 10, 26, 26);
+    _titleLabel.frame = CGRectMake(0, 39, w, 13);
+}
+- (void)zpSetBar:(UIView *)bar model:(id)model {
+    _bar = bar;
+    if (_model != model) { [_model release]; _model = [model retain]; }
+}
+- (UIView *)zpBar { return _bar; }
+- (id)zpModel { return _model; }
+- (void)zpSyncIcon:(UIImage *)img avatar:(BOOL)avatar srcTint:(UIColor *)tint {
+    if (_iconView.image != img) _iconView.image = img;
+    if (tint && _iconView.tintColor != tint) _iconView.tintColor = tint;
+    // 头像圆形、图标方形：只在形态变化时写 layer（幂等）
+    CGFloat want = avatar ? 13 : 0;
+    if (_iconView.layer.cornerRadius != want) {
+        _iconView.layer.cornerRadius = want;
+        _iconView.layer.masksToBounds = avatar;
+    }
+}
+- (void)zpSyncTitle:(NSString *)title font:(UIFont *)font color:(UIColor *)color {
+    if (title && ![title isEqualToString:_titleLabel.text]) _titleLabel.text = title;
+    if (font && _titleLabel.font != font) _titleLabel.font = font;
+    if (color && _titleLabel.textColor != color) _titleLabel.textColor = color;
+}
+- (void)zpSetNavSelected:(BOOL)sel { _navSelected = sel; }
+- (void)setHighlighted:(BOOL)highlighted {
+    [super setHighlighted:highlighted];
+    CGFloat a = highlighted ? 0.55 : 1.0;
+    _iconView.alpha = a;
+    _titleLabel.alpha = a;
+}
+@end
+
+#pragma mark - 原栏 item 数据读取（按钮数据来源）
+
+// 原栏可见 item 视图列表：stackView 的 arrangedSubviews 中未隐藏
+// 者（ZHGlassBar 时代定案口径：item = ZHTabBarItemNormalView，父
+// 链 item → stackView → ZHTabBarNew）。
+static NSArray *ZHVisibleItems(UIView *bar) {
+    UIView *stack = ZHGetObj(bar, @"stackView");
+    NSArray *arranged = ZHGetObj(stack, @"arrangedSubviews");
+    if (![arranged isKindOfClass:[NSArray class]]) return nil;
+    NSMutableArray *vis = [NSMutableArray array];
+    for (id v in arranged) {
+        if (![v isKindOfClass:[UIView class]]) continue;
+        UIView *uv = (UIView *)v;
+        if (uv.hidden || uv.alpha < 0.01) continue;
+        [vis addObject:uv];
+    }
+    return vis;
+}
+
+// item 的 model 与 identifier（枚举：Feed=0、Video=2、
+// Notifications=4、More=5、Creation=8——v1 静态定案；
+// didClickTabBarItem: 内部以整数比较 identifier）
+static id ZHItemModel(UIView *item) { return ZHGetObj(item, @"model"); }
+static NSInteger ZHItemIdentifier(UIView *item) {
+    id model = ZHItemModel(item);
+    if (!model || ![model respondsToSelector:@selector(identifier)]) return -1;
+    return ((NSInteger (*)(id, SEL))objc_msgSend)(model, @selector(identifier));
+}
+
+// item 的有效图标：我的（More）优先 avatarImageView 的头像图（有
+// 图且未隐藏时），其余取 iconImageView 的当前图（选中/主题态由知
+// 乎自己换图，维护每轮同步即跟随）。srcTint 带回 iconImageView 的
+// tintColor（模板图标靠它上色，复制时一并带走）。
+static UIImage *ZHItemIcon(UIView *item, BOOL *isAvatar, UIColor **srcTint) {
+    *isAvatar = NO;
+    if (srcTint) *srcTint = nil;
+    UIView *av = ZHGetObj(item, @"avatarImageView");
+    if ([av isKindOfClass:[UIImageView class]] && !av.hidden && ((UIImageView *)av).image) {
+        *isAvatar = YES;
+        return ((UIImageView *)av).image;
+    }
+    UIView *iv = ZHGetObj(item, @"iconImageView");
+    if ([iv isKindOfClass:[UIImageView class]]) {
+        if (srcTint) *srcTint = iv.tintColor;
+        return ((UIImageView *)iv).image;
+    }
+    return nil;
 }
 
 // 风格钉住：overrideUserInterfaceStyle 钉知乎主题（ZPAppIsNight 口径——优先
 // ZHThemeManage isNightMode，与发色点同源）。知乎主题与系统外观不一致时，
 // 玻璃的明暗必须跟知乎走（SJJ configureSlot 样式先行同款动作）。
-// ZHLayoutSJJProbe 每轮都会调用，主题切换经既有 apply 路径自动同步；
+// ZHLayoutGlassNav 每轮都会调用，主题切换经既有 apply 路径自动同步；
 // 先比对现值再写，保持幂等。
 static void ZHGlassApplyTheme(UIView *v) {
     if (!v) return;
@@ -486,6 +600,7 @@ static void ZPRecordBgWrite(UIColor *color, void *retAddr) {
 - (void)zhPluginGlassSwitchChanged:(id)sender;
 - (void)zhPluginBlackSwitchChanged:(id)sender;
 - (void)zhPluginLongPress:(UILongPressGestureRecognizer *)g;
+- (void)zhPluginNavTapped:(id)sender;
 - (void)zhPluginDiagTapped:(id)sender;
 @end
 
@@ -527,6 +642,23 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
     if (gGlassCellInfo) ZHSetBool(gGlassCellInfo, @"setSwitchOn:", target);
     ZHSetGlassEnabled(target);
 }
+
+// 自建导航按钮点击：回原栏真实点选链 [bar didClickTabBarItem:model]
+// （与原 item 的 itemControlClick 同一入口——静态实证其链为
+// [item.delegate didClickTabBarItem:item.model]、delegate 即原栏
+// 本人；登录拦截、delegate tabBarNew:didSelect: 切换、model
+// setSelected: 更新全在原链内，本插件不另造切换逻辑）。
+- (void)zhPluginNavTapped:(id)sender {
+    if (![sender isKindOfClass:[ZPNavButton class]]) return;
+    ZPNavButton *btn = (ZPNavButton *)sender;
+    UIView *bar = [btn zpBar];
+    id model = [btn zpModel];
+    if (!bar || !model) return;
+    if ([bar respondsToSelector:@selector(didClickTabBarItem:)])
+        ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(didClickTabBarItem:), model);
+    ZHRequestApply(bar); // 点选后排一轮维护，透镜/选中态即时跟上
+}
+
 // 诊断行点击：纯读取拼诊断文本 → 复制到剪贴板 → 行副标题改「已复制」并 best-effort 刷新该表。
 // sender 可能是行模型/cell/无参，方法本体不依赖它（数据从 gDiagCellInfo 与 gLiveBars 取）。
 - (void)zhPluginDiagTapped:(id)sender {
@@ -546,59 +678,186 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
 }
 @end
 
-#pragma mark - 布局（SJJ 全序列版：apply 幂等：开 -> host+胶囊落位；关 -> 隐藏 host）
+#pragma mark - 布局（正式版：apply 幂等：开 -> 自建导航落位+隐藏原栏；关 -> 还原原栏+移除自建栏）
 
-// SJJ 落位（每轮 apply 走一遍，全程幂等；次序照 SJJChatGlassStore 的
-// 建槽入树 → 钉风格 → 装 effect）：
-//   host——不在当前 keyWindow 才重挂一次（addSubview）；frame 与目标
-//   {90,300,260,64} 不同才写；hidden 与开关同步（变更才写）。
-//   胶囊——不在 host 内才以 insertSubview:atIndex:0 垫入（SJJ 建槽恒
-//   index 0、已在位永不重排）；frame 与 host bounds 不同才写；
-//   hidden 同步。
-//   风格——ZHGlassApplyTheme 把胶囊 overrideUserInterfaceStyle 钉知乎
-//   主题（内含比对、变更才写），排在装 effect 之前（SJJ configureSlot
-//   样式先行同款）。
-//   effect——胶囊 effect 为 nil 时才建 fx（Regular、interactive 装入
-//   前在 effect 上设 YES、无 tint）经 zpUpdateMaterial: 装入（其内
-//   变更门控复核）；已装永不重赋。
-//   bg——ZPGlassView 的 setBackgroundColor: 覆写在写入当场捕获（值+
-//   调用方），布局节不再轮询、不回写。
-// 原栏本身完全不动——不隐藏、不清场、不改背景。窗口未就绪时本轮不
-// 施工，等下一轮触发。
-static void ZHLayoutSJJProbe(UIView *bar) {
-    ZHRegisterBar(bar);
-    UIView *host = ZHSJJHostForBar(bar);
-    ZPGlassView *capsule = ZHSJJCapsuleForBar(bar, host);
-    if (!capsule) return; // 玻璃类不可用：静默不建探针
-    UIWindow *win = ZPProbeKeyWindow();
-    if (!win) return;
-    if (host.superview != win) [win addSubview:host]; // 只挂一次、不重排
-    CGRect hostTarget = CGRectMake(90, 300, 260, 64);
-    if (!CGRectEqualToRect(host.frame, hostTarget)) host.frame = hostTarget;
-    if (host.hidden) host.hidden = NO;
-    if (capsule.superview != host) [host insertSubview:capsule atIndex:0]; // SJJ 恒 index 0
-    if (!CGRectEqualToRect(capsule.frame, host.bounds)) capsule.frame = host.bounds;
-    if (capsule.hidden) capsule.hidden = NO;
-    ZHGlassApplyTheme(capsule);
-    if (!capsule.effect) {
-        id fx = ZHMakeGlassEffect(YES);
-        if (fx) [capsule zpUpdateMaterial:fx];
-    }
-}
-
-// 玻璃关：只隐藏 host（胶囊随 host 一起隐、effect 不卸，下次开直接恢复）
-static void ZHHideSJJProbe(UIView *bar) {
-    UIView *host = objc_getAssociatedObject(bar, &kHostKey);
-    if (host) host.hidden = YES;
-}
+// 导航几何（两槽定宽）：槽宽 86、栏高 64、两侧内边距 10 → 192×64；
+// 底部居中悬浮，底边距 = 安全区底 + 12。
+static const CGFloat kNavSlotW = 86, kNavBarH = 64, kNavPadX = 10;
 
 // keyWindow 选取（与 ZPAppIsNight 同口径：windows 里找 isKeyWindow，回落第一只）
-static UIWindow *ZPProbeKeyWindow(void) {
+static UIWindow *ZPKeyWindow(void) {
     for (UIWindow *w in [UIApplication sharedApplication].windows)
         if (w.isKeyWindow) return w;
     return [UIApplication sharedApplication].windows.firstObject;
 }
 
+// 导航容器工厂：自建透明 UIView——bg 在创建时显式置 clearColor 且
+// 此后永不写色（SJJ 宿主清场纪律的形式保留：本 host 无可清场，纪
+// 律以「恒 clear」落地）。容器要吃点击（按钮在内），与探针版不同。
+static UIView *ZHNavHostForBar(UIView *bar) {
+    UIView *host = objc_getAssociatedObject(bar, &kNavHostKey);
+    if (host) return host;
+    host = [[UIView alloc] initWithFrame:CGRectZero];
+    host.backgroundColor = [UIColor clearColor]; // 显式清场，此后永不写色
+    objc_setAssociatedObject(bar, &kNavHostKey, host, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [host release];
+    return host;
+}
+
+// 玻璃面（index 0 垫底）/ 透镜：取或建，塑形在工厂内一次完成；入
+// 树与 effect 后装在 ZHLayoutGlassNav 按 SJJ 次序完成。玻璃面须在
+// host.frame 定型后创建（塑形圆角按创建时高/2，host 尺寸恒定）。
+static ZPGlassView *ZHNavGlassForBar(UIView *bar, UIView *host) {
+    ZPGlassView *v = objc_getAssociatedObject(bar, &kNavGlassKey);
+    if (v) return v;
+    v = ZHMakeNavGlassView(host.bounds);
+    if (!v) return nil;
+    objc_setAssociatedObject(bar, &kNavGlassKey, v, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [v release];
+    return v;
+}
+static ZPGlassView *ZHNavLensForBar(UIView *bar) {
+    ZPGlassView *v = objc_getAssociatedObject(bar, &kNavLensKey);
+    if (v) return v;
+    v = ZHMakeNavGlassView(CGRectMake(0, 0, kNavSlotW - 12, kNavBarH - 14));
+    if (!v) return nil;
+    v.hidden = YES; // 首次落位前不显形，落位当轮直接置 frame 不滑动
+    objc_setAssociatedObject(bar, &kNavLensKey, v, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [v release];
+    return v;
+}
+
+// 按钮：取或建（建时挂 handler 点击回调），frame/数据在落位时同步。
+static ZPNavButton *ZHNavButtonForBar(UIView *bar, const void *key) {
+    ZPNavButton *b = objc_getAssociatedObject(bar, key);
+    if (b) return b;
+    b = [[ZPNavButton alloc] initWithFrame:CGRectZero];
+    [b addTarget:ZPHandler() action:@selector(zhPluginNavTapped:)
+        forControlEvents:UIControlEventTouchUpInside];
+    objc_setAssociatedObject(bar, key, b, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [b release];
+    return b;
+}
+
+// 把一只原栏 item 的数据同步进自建按钮（图标/头像、标题文/字体/
+// 色、点击回链用的 bar+model）。
+static void ZPSyncNavButton(ZPNavButton *btn, UIView *bar, UIView *item) {
+    [btn zpSetBar:bar model:ZHItemModel(item)];
+    BOOL avatar = NO; UIColor *tint = nil;
+    UIImage *img = ZHItemIcon(item, &avatar, &tint);
+    [btn zpSyncIcon:img avatar:avatar srcTint:tint];
+    UILabel *lab = (UILabel *)ZHGetObj(item, @"titleLable");
+    if ([lab isKindOfClass:[UILabel class]])
+        [btn zpSyncTitle:lab.text font:lab.font color:lab.textColor];
+}
+
+// 玻璃开落位（每轮 apply 走一遍，全程幂等；次序照 SJJ：建槽入树
+// → 钉风格 → 装 effect）：
+//   槽位识别——可见 item 中 identifier 0 = 首页、5 = 我的（取不
+//   到回落可见序首/尾）；两槽未就绪（item 不足/同体）本轮不施
+//   工、更不隐藏原栏，等下一轮触发。
+//   host——不在当前 keyWindow 才重挂；frame 变更才写；hidden 同步。
+//   玻璃面——不在 host 内才以 insertSubview:atIndex:0 垫入；frame
+//   与 host bounds 不同才写。透镜/按钮随后入树（依次叠在玻璃面之
+//   上），已在位不重排。
+//   风格——玻璃面与透镜每轮 ZHGlassApplyTheme 钉知乎主题（内含比
+//   对、变更才写），排在装 effect 之前。
+//   effect——为 nil 才建 fx 经 zpUpdateMaterial: 装入，已装永不重赋。
+//   选中——读两 item 的 themeSelected（都读不到回落上轮槽位）；
+//   透镜目标 frame = 选中槽内缩（6,7,74,50），与现 frame 不同才
+//   动：已落位过走 0.25s 滑动、首次直接置位。按钮选中态同步。
+//   原栏——导航完整建成后才置 hidden=YES（每轮重申）。
+static void ZHLayoutGlassNav(UIView *bar) {
+    ZHRegisterBar(bar);
+    NSArray *vis = ZHVisibleItems(bar);
+    if (!vis || vis.count < 2) return; // item 未就绪：不施工、不隐藏原栏
+    UIView *homeItem = nil, *mineItem = nil;
+    for (UIView *it in vis) {
+        NSInteger ident = ZHItemIdentifier(it);
+        if (ident == 0 && !homeItem) homeItem = it;
+        if (ident == 5 && !mineItem) mineItem = it;
+    }
+    if (!homeItem) homeItem = vis.firstObject;
+    if (!mineItem) mineItem = vis.lastObject;
+    if (!homeItem || !mineItem || homeItem == mineItem) return;
+    UIWindow *win = ZPKeyWindow();
+    if (!win || win.bounds.size.width < 100) return;
+
+    UIView *host = ZHNavHostForBar(bar);
+    if (host.superview != win) [win addSubview:host]; // 只挂一次、不重排
+    CGFloat W = kNavSlotW * 2 + kNavPadX * 2;
+    CGRect hf = CGRectMake((win.bounds.size.width - W) / 2,
+                           win.bounds.size.height - win.safeAreaInsets.bottom - 12 - kNavBarH,
+                           W, kNavBarH);
+    if (!CGRectEqualToRect(host.frame, hf)) host.frame = hf;
+    if (host.hidden) host.hidden = NO;
+
+    ZPGlassView *glass = ZHNavGlassForBar(bar, host);
+    if (!glass) { // 玻璃类不可用：静默不建导航，空 host 摘掉免吃点击，原栏保持原样
+        if (host.superview) [host removeFromSuperview];
+        return;
+    }
+    ZPGlassView *lens = ZHNavLensForBar(bar);
+    ZPNavButton *btnHome = ZHNavButtonForBar(bar, &kNavBtnHomeKey);
+    ZPNavButton *btnMine = ZHNavButtonForBar(bar, &kNavBtnMineKey);
+    if (glass.superview != host) [host insertSubview:glass atIndex:0]; // 玻璃面恒 index 0
+    if (!CGRectEqualToRect(glass.frame, host.bounds)) glass.frame = host.bounds;
+    if (glass.hidden) glass.hidden = NO;
+    if (lens && lens.superview != host) [host addSubview:lens];
+    if (btnHome.superview != host) [host addSubview:btnHome];
+    if (btnMine.superview != host) [host addSubview:btnMine];
+    CGRect homeF = CGRectMake(kNavPadX, 0, kNavSlotW, kNavBarH);
+    CGRect mineF = CGRectMake(kNavPadX + kNavSlotW, 0, kNavSlotW, kNavBarH);
+    if (!CGRectEqualToRect(btnHome.frame, homeF)) btnHome.frame = homeF;
+    if (!CGRectEqualToRect(btnMine.frame, mineF)) btnMine.frame = mineF;
+
+    ZHGlassApplyTheme(glass);
+    if (lens) ZHGlassApplyTheme(lens);
+    if (!glass.effect) {
+        id fx = ZHMakeGlassEffect(YES);
+        if (fx) [glass zpUpdateMaterial:fx];
+    }
+    if (lens && !lens.effect) {
+        id fx = ZHMakeGlassEffect(YES);
+        if (fx) [lens zpUpdateMaterial:fx];
+    }
+
+    ZPSyncNavButton(btnHome, bar, homeItem);
+    ZPSyncNavButton(btnMine, bar, mineItem);
+
+    NSInteger sel = -1;
+    if (ZHGetBool(homeItem, @"themeSelected", NO)) sel = 0;
+    else if (ZHGetBool(mineItem, @"themeSelected", NO)) sel = 1;
+    NSNumber *lastSel = objc_getAssociatedObject(bar, &kNavSelKey);
+    if (sel < 0) sel = lastSel ? lastSel.integerValue : 0;
+    objc_setAssociatedObject(bar, &kNavSelKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [btnHome zpSetNavSelected:(sel == 0)];
+    [btnMine zpSetNavSelected:(sel == 1)];
+    if (lens) {
+        CGRect slot = (sel == 0) ? homeF : mineF;
+        CGRect target = CGRectInset(slot, 6, 7);
+        BOOL placed = (objc_getAssociatedObject(bar, &kNavPlacedKey) != nil);
+        if (!placed) {
+            lens.frame = target;
+            lens.hidden = NO;
+            objc_setAssociatedObject(bar, &kNavPlacedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else if (!CGRectEqualToRect(lens.frame, target)) {
+            [UIView animateWithDuration:0.25 animations:^{ lens.frame = target; }];
+        }
+        if (lens.hidden) lens.hidden = NO;
+    }
+
+    if (!bar.hidden) bar.hidden = YES; // 导航建成后才隐藏原栏，每轮重申
+}
+
+// 玻璃关：还原原栏（hidden=NO）+ 自建栏移出窗口（对象仍由
+// associated 持有，下次开直接复用；透镜落位标记不清——重开时槽
+// 位未变不滑动、变了走滑动，正是想要的）。
+static void ZHRestoreOriginalBar(UIView *bar) {
+    UIView *host = objc_getAssociatedObject(bar, &kNavHostKey);
+    if (host && host.superview) [host removeFromSuperview];
+    if (bar.hidden) bar.hidden = NO;
+}
 
 static void ZHApplyBar(UIView *bar) {
     ZHRegisterBar(bar);
@@ -613,8 +872,8 @@ static void ZHApplyBar(UIView *bar) {
         objc_setAssociatedObject(bar, &kGestureKey, lp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [lp release];
     }
-    if (ZHGlassEnabled()) ZHLayoutSJJProbe(bar);
-    else ZHHideSJJProbe(bar);
+    if (ZHGlassEnabled()) ZHLayoutGlassNav(bar);
+    else ZHRestoreOriginalBar(bar);
 }
 
 static void ZHRequestApply(UIView *bar) {
@@ -628,9 +887,9 @@ static void ZHRequestApply(UIView *bar) {
 
 // 触发链统一走 ZHRequestApply 的下一拍 apply：底栏各 hook（setupUI/
 // layoutItems/setItems/select/unselect/主题/layout/didMoveToWindow）只排队不
-// 施工；每轮 apply 按 SJJ 幂等清单维护探针（host/胶囊位置核查/frame/
-// 风格/effect 为 nil 才装）——页面切换/主题切换/选中变化都会带来新一
-// 轮侦测样本。
+// 施工；每轮 apply 按幂等清单维护导航（host/玻璃/透镜/按钮位置核
+// 查、按钮数据同步、frame/风格变更才写、effect 为 nil 才装）——页
+// 面切换/主题切换/选中变化都会带来新一轮维护。
 
 #pragma mark - 设置页插行（锚点：contactsCellInfo 行模型对象本身，连插三行）
 
@@ -799,44 +1058,61 @@ static NSString *ZPSuperviewChain(UIView *v) {
     return parts.count ? [parts componentsJoinedByString:@" < "] : @"(无父视图)";
 }
 
-// SJJ 胶囊的诊断块：host 本值 frame + 窗口 frame 实测
-// （convertRect:toView:nil）、superview 类名链、window 是否非空；胶囊
-// frame（host 内坐标）+ 在 host 子视图中的位次、effect 对象类名、
-// effect 通道计数（setEffect: 外部调用次数 + 最近传入类名 /
-// zpUpdateMaterial: 安装次数）、bg 写入记录（总次数 + 前 4 次详细：
-// 值 ← 调用方镜像+偏移，只记不钉）、完整子树——从 host 起打印（背板
+// 玻璃导航的诊断块：自建栏 host 本值 frame + 窗口 frame 实测
+// （convertRect:toView:nil）、superview 类名链、window 是否非空；
+// 玻璃面 frame（host 内坐标）+ 在 host 子视图中的位次、effect 对
+// 象类名；透镜 frame/hidden/effect 类名；当前选中项（槽位序号 +
+// 首页/我的）；两按钮 frame；effect 通道计数（setEffect: 外部调
+// 用次数 + 最近传入类名 / zpUpdateMaterial: 安装次数）、bg 写入
+// 记录（总次数 + 前 4 次详细：值 ← 调用方镜像+偏移，只记不
+// 钉）、完整子树——从 host 起打印（玻璃面与透镜各自的背板
 // _UIVisualEffectBackdropView 在不在一眼可见，见 ZPDiagWalk）。
-static void ZPAppendSJJDiag(NSMutableString *s, UIView *bar) {
-    UIView *host = objc_getAssociatedObject(bar, &kHostKey);
-    ZPGlassView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    [s appendString:@"SJJ 胶囊（host 层级内·index 0 垫底·旗标门控公开通道）:\n"];
-    if (!host || !capsule) {
-        [s appendString:@"  胶囊: 未创建（玻璃类不可用或尚未落位）\n"];
+static void ZPAppendNavDiag(NSMutableString *s, UIView *bar) {
+    UIView *host = objc_getAssociatedObject(bar, &kNavHostKey);
+    ZPGlassView *glass = objc_getAssociatedObject(bar, &kNavGlassKey);
+    ZPGlassView *lens = objc_getAssociatedObject(bar, &kNavLensKey);
+    ZPNavButton *btnHome = objc_getAssociatedObject(bar, &kNavBtnHomeKey);
+    ZPNavButton *btnMine = objc_getAssociatedObject(bar, &kNavBtnMineKey);
+    [s appendString:@"玻璃导航（自建栏·玻璃面 index 0·透镜·两按钮）:\n"];
+    if (!host || !glass) {
+        [s appendString:@"  自建栏: 未创建（玻璃类不可用或 item 尚未就绪）\n"];
         return;
     }
-    [s appendFormat:@"  host frame(本值)=%@ 窗口frame(实测)=%@ hidden=%d superview链=%@ window=%@\n",
+    [s appendFormat:@"  自建栏 frame(本值)=%@ 窗口frame(实测)=%@ hidden=%d superview链=%@ window=%@\n",
          NSStringFromCGRect(host.frame),
          NSStringFromCGRect([host convertRect:host.bounds toView:nil]),
          (int)host.hidden, ZPSuperviewChain(host), host.window ? @"非空" : @"nil"];
-    [s appendFormat:@"  胶囊 frame(host内)=%@ hidden=%d 子视图位=%ld effect类名=%@\n",
-         NSStringFromCGRect(capsule.frame), (int)capsule.hidden,
-         (long)[host.subviews indexOfObjectIdenticalTo:capsule],
-         ZPEffectClassName(capsule)];
+    [s appendFormat:@"  玻璃面 frame(host内)=%@ hidden=%d 子视图位=%ld effect类名=%@\n",
+         NSStringFromCGRect(glass.frame), (int)glass.hidden,
+         (long)[host.subviews indexOfObjectIdenticalTo:glass],
+         ZPEffectClassName(glass)];
+    [s appendFormat:@"  透镜 frame(host内)=%@ hidden=%d effect类名=%@\n",
+         lens ? NSStringFromCGRect(lens.frame) : @"-",
+         lens ? (int)lens.hidden : -1,
+         lens ? ZPEffectClassName(lens) : @"-"];
+    NSNumber *sel = objc_getAssociatedObject(bar, &kNavSelKey);
+    [s appendFormat:@"  当前选中项=%@ 槽位=%@\n",
+         sel ? (sel.integerValue == 0 ? @"首页" : @"我的") : @"未知",
+         sel ? [sel stringValue] : @"-"];
+    [s appendFormat:@"  按钮 首页 frame=%@ 我的 frame=%@\n",
+         btnHome ? NSStringFromCGRect(btnHome.frame) : @"-",
+         btnMine ? NSStringFromCGRect(btnMine.frame) : @"-"];
     [s appendFormat:@"  effect通道计数 setEffect外部调用=%lu 最近传入=%@ zpUpdateMaterial安装=%lu\n",
          (unsigned long)gSetEffectExtCount, gSetEffectLastClass ?: @"-",
          (unsigned long)gZPInstallCount];
-    [s appendFormat:@"  bg 写入记录 胶囊: 总次数=%lu 首次=%@ 末次=%@（只记不钉）\n",
+    [s appendFormat:@"  bg 写入记录 玻璃视图: 总次数=%lu 首次=%@ 末次=%@（只记不钉）\n",
          (unsigned long)gBgWriteTotal, gBgCapFirst ?: @"-", gBgCapLast ?: @"-"];
     for (NSString *rec in gBgRecords)
         [s appendFormat:@"    写入: %@\n", rec];
-    [s appendString:@"  SJJ 胶囊子树（host 起）:\n"];
+    [s appendString:@"  玻璃导航子树（host 起）:\n"];
     ZPDiagWalk(host, s, 1);
 }
 
-// 诊断文本（SJJ 全序列版）：知乎主题值 / 系统 trait / 颜色钩已装 / 纯黑命中集
-// 解析数 / 原栏 hidden 状态（本插件不写此值）/ 三玻璃类 NSClassFromString
-// 命中布尔 / UIAccessibility 三开关运行时实读 / SJJ 胶囊探针块（见
-// ZPAppendSJJDiag，含 effect 通道计数、bg 写入方记录与 host 起完整子树）。
+// 诊断文本（正式版）：知乎主题值 / 系统 trait / 颜色钩已装 / 纯黑命中集
+// 解析数 / 原栏 hidden 状态（玻璃开时由本插件管理）/ 三玻璃类
+// NSClassFromString 命中布尔 / UIAccessibility 三开关运行时实读 /
+// 玻璃导航块（见 ZPAppendNavDiag，含自建栏 frame、当前选中项、
+// effect 通道计数、bg 写入记录与 host 起完整子树）。
 // 全程只读，不改任何状态；临时对象均为 autorelease，MRC 安全。
 static NSString *ZPBuildDiagnostics(void) {
     NSMutableString *s = [NSMutableString stringWithString:@"[zhplugin 诊断]\n"];
@@ -862,7 +1138,7 @@ static NSString *ZPBuildDiagnostics(void) {
          NSStringFromCGRect(bar.frame), ZPColorDesc(bar.backgroundColor)];
     [s appendFormat:@"纯黑命中集: 已解析 %ld 个令牌（静态枚举全集 9）\n",
          (long)ZPCanvasResolvedCount()];
-    [s appendFormat:@"原栏 hidden=%d（SJJ 全序列版：原栏完全不动，本插件不写此值）\n", (int)bar.hidden];
+    [s appendFormat:@"原栏 hidden=%d（玻璃开时由本插件置 YES 并重申，关时还原 NO）\n", (int)bar.hidden];
     [s appendFormat:@"玻璃类命中 UIGlassEffect=%@ UIGlassContainerEffect=%@ UICornerConfiguration=%@\n",
          NSClassFromString(@"UIGlassEffect") ? @"YES" : @"NO",
          NSClassFromString(@"UIGlassContainerEffect") ? @"YES" : @"NO",
@@ -874,7 +1150,7 @@ static NSString *ZPBuildDiagnostics(void) {
          UIAccessibilityIsReduceTransparencyEnabled() ? @"YES" : @"NO",
          UIAccessibilityDarkerSystemColorsEnabled() ? @"YES" : @"NO",
          UIAccessibilityIsInvertColorsEnabled() ? @"YES" : @"NO"];
-    ZPAppendSJJDiag(s, bar);
+    ZPAppendNavDiag(s, bar);
 
     return s;
 }
@@ -929,7 +1205,7 @@ static void ZHSettingsEnsureRows(id vc) {
         return;
     }
 
-    id glassInfo = ZPMakeSwitchInfo(infoCls, @"玻璃底栏", @"开启后，显示一只 SJJ 序列探针胶囊",
+    id glassInfo = ZPMakeSwitchInfo(infoCls, @"玻璃底栏", @"开启后，使用液态玻璃底部导航（仅首页/我的）",
                                     ZHGlassEnabled(), YES, &gGlassBlock, &gGlassCellInfo);
     id blackInfo = ZPMakeSwitchInfo(infoCls, @"纯黑背景", @"开启后，夜间模式下背景使用纯黑",
                                     ZPBlackEnabled(), NO, &gBlackBlock, &gBlackCellInfo);
