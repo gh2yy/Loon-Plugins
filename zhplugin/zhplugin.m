@@ -100,6 +100,12 @@
 //     10）。透镜内缩 (6,6) 不变 → 74×60、按钮图标 y 10→15 /
 //     标题 y 41→46；总宽 192、槽宽 86、底边距 8 不变，自建栏
 //     frame y = 956−8−72 = 876。其余逐字未动。
+//   v3.6（口径纠正版）：用户所指「高度」实为整栏距屏幕底部的
+//     距离、非栏高——v3.4/v3.5 两版误读只涨栏高。本版定案：栏高
+//     回到 62（透镜内缩 (6,6) → 74×50、按钮图标 y 15→10 / 标题
+//     y 46→41，即 v3.4 排布），底边距 8→18（整栏上抬 10）；总宽
+//     192、槽宽 86 不变，自建栏 frame y = 956−18−62 = 876。
+//     其余逐字未动。
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
 //   录（保留探针时代的取证字段）。
@@ -515,8 +521,8 @@ static BOOL gNavUserTapped = NO;
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat w = self.bounds.size.width;
-    _iconView.frame = CGRectMake((w - 24) / 2, 15, 24, 24);
-    _titleLabel.frame = CGRectMake(0, 46, w, 13);
+    _iconView.frame = CGRectMake((w - 24) / 2, 10, 24, 24);
+    _titleLabel.frame = CGRectMake(0, 41, w, 13);
 }
 - (void)zpSetBar:(UIView *)bar model:(id)model {
     _bar = bar;
@@ -781,9 +787,9 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
 
 #pragma mark - 布局（正式版：apply 幂等：开 -> 自建导航落位+隐藏原栏；关 -> 还原原栏+移除自建栏）
 
-// 导航几何（两槽定宽）：槽宽 86、栏高 72、两侧内边距 10 → 192×72；
-// 底部居中贴底，胶囊底边距屏幕底部 8pt（v3.2，参照微博悬浮栏）。
-static const CGFloat kNavSlotW = 86, kNavBarH = 72, kNavPadX = 10;
+// 导航几何（两槽定宽）：槽宽 86、栏高 62、两侧内边距 10 → 192×62；
+// 底部居中，胶囊底边距屏幕底部 18pt（v3.6 定案：栏高 62 + 底边距 18）。
+static const CGFloat kNavSlotW = 86, kNavBarH = 62, kNavPadX = 10;
 
 // keyWindow 选取（与 ZPAppIsNight 同口径：windows 里找 isKeyWindow，回落第一只）
 static UIWindow *ZPKeyWindow(void) {
@@ -993,7 +999,7 @@ static void ZHNavDriveLens(UIView *bar, ZPGlassView *lens, CGRect target, NSInte
 //   对、变更才写），排在装 effect 之前。
 //   effect——为 nil 才建 fx 经 zpUpdateMaterial: 装入，已装永不重赋。
 //   选中——识别后读两 item 的 themeSelected（都读不到回落上轮槽位）；
-//   透镜目标 = 选中槽内缩（6,6,74,46）：几何只经单写者
+//   透镜目标 = 选中槽内缩（6,6,74,50）：几何只经单写者
 //   ZHNavDriveLens（v3.2）——首次直接置位，后续槽位变化走弹簧
 //   （0.5s/damping 0.75 写 frame，形变归容器 morph），在途期间
 //   维护不碰、空闲时偏差 >0.5pt 直写校正。按钮选中态同步。
@@ -1007,7 +1013,7 @@ static void ZHLayoutGlassNav(UIView *bar) {
     if (host.superview != win) [win addSubview:host]; // 只挂一次、不重排
     CGFloat W = kNavSlotW * 2 + kNavPadX * 2;
     CGRect hf = CGRectMake((win.bounds.size.width - W) / 2,
-                           win.bounds.size.height - 8 - kNavBarH,
+                           win.bounds.size.height - 18 - kNavBarH,
                            W, kNavBarH);
     if (!CGRectEqualToRect(host.frame, hf)) host.frame = hf;
     if (host.hidden) host.hidden = NO;
