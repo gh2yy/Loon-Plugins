@@ -113,6 +113,25 @@
 //     紧排布）：图标 y 10→11、标题 y 41→38，整组在 62 高内垂直
 //     居中（上下边距同为 11）。栏高、底边距 23、透镜全不变。
 //     其余逐字未动。
+//   v3.9（修已知边界：二级页自建栏不消失、压住答案页自带底
+//     栏）：知乎原栏显隐信号静态定案——总漏斗是控制器
+//     ZHInitialTabBarController 的 -showTabBar:animated:（反汇
+//     编实证：navigationController:willShow:animated: 里
+//     needHideTabBar: 命中即 showTabBar:NO animated:YES；
+//     showTabBar: 内先 [tabBar setHidden:!show] 再
+//     setIsTabBarShown:，随后 animate 块调
+//     updateTabBarShownState 切 tabbarHiddenConstraint——约束
+//     只管内容区停靠，栏本体的显隐就是 setHidden:）。原栏被摘
+//     除不在层级内，但控制器对它的 setHidden: 照常发（方法调
+//     用与在不在树无关）。故给 ZHTabBarNew 加 setHidden: 覆盖
+//     （class_addMethod，super 钉父类链 IMP，同 layoutSubviews
+//     铁律）：记录跟随状态（值/来源/计数），玻璃开时同轮把自
+//     建 host 的 hidden 对齐（host 隐藏即不显形、也不吃触摸），
+//     并排一轮 apply 对账；ZHLayoutGlassNav 每轮再以原栏当前
+//     hidden 实值对账 host.hidden（实值为准、自愈任何漏记）。
+//     转场不另做动画：知乎对原栏本体也是即时置 hidden（动画
+//     只在内容区约束上），同轮对齐即同语义。几何与形态全保
+//     v3.8 定档（栏 192×62、底边距 23、透镜 74×50、间距 3）。
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
 //   录（保留探针时代的取证字段）。
@@ -188,6 +207,9 @@ static char kNavOrigParentKey; // 被摘原栏的原父视图（RETAIN，v3.3：
 static char kNavOrigIndexKey;  // 被摘原栏在原父视图中的子视图位次（NSNumber，v3.3）
 static char kNavIdentifiedKey; // 槽位已确切识别（identifier 0/5 双中，v3.3：此前按钮禁用、胶囊占位）
 static char kNavLensAnimKey;  // 透镜弹簧在途标记（v3.2：单写者纪律，置位期间维护不碰透镜几何）
+static char kNavFollowKey;    // 跟随状态：知乎最近一次要求原栏隐藏与否（NSNumber BOOL，v3.9）
+static char kNavFollowSrcKey; // 最近一次跟随信号来源（NSString，v3.9，诊断用）
+static char kNavFollowCntKey; // 跟随信号计数（NSNumber，v3.9，诊断用）
 static char kSchedKey;     // 已排队布局标记
 static char kLayoutLockKey; // layoutSubviews 重入锁（per-instance）
 static char kGestureKey;   // 长按兜底手势（RETAIN）
@@ -953,6 +975,27 @@ static void ZHNavKickRetry(UIView *bar) {
     });
 }
 
+// 跟随原栏显隐（v3.9）：知乎的显隐总漏斗是控制器
+// -[ZHInitialTabBarController showTabBar:animated:] 内的
+// [tabBar setHidden:!show]（静态实证见文件头 v3.9 段）。本插件
+// 在 ZHTabBarNew 上加的 setHidden: 覆盖负责把每次信号记下来
+// （值/来源/计数，供诊断判读），并同轮对齐自建 host；布局节
+// 每轮再以原栏当前 hidden 实值对账（实值即知乎意图、为最终
+// 准绳，钩子漏记也能自愈）。原栏被摘除不在层级内不影响这套
+// 信号：控制器持有栏对象，setHidden: 是方法调用、照常到达。
+static void ZHNavNoteFollow(UIView *bar, BOOL hidden, NSString *src) {
+    NSNumber *old = objc_getAssociatedObject(bar, &kNavFollowKey);
+    if (old && old.boolValue == hidden &&
+        [objc_getAssociatedObject(bar, &kNavFollowSrcKey) isEqualToString:src])
+        return; // 值与来源都没变：不重复计数（布局对账每轮都会走一遍）
+    objc_setAssociatedObject(bar, &kNavFollowKey, @(hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kNavFollowSrcKey, src, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSNumber *c = objc_getAssociatedObject(bar, &kNavFollowCntKey);
+    objc_setAssociatedObject(bar, &kNavFollowCntKey,
+                             @((c ? c.unsignedLongValue : 0) + 1),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 // 透镜单写者（v3.2 修 2）：全文件唯一写透镜几何（frame/transform）
 // 的函数——首落位、槽位弹簧、空闲校正三条路径全经它，布局节只
 // 做决策（落位/起弹簧/校正/在途跳过）。审计背景（详见
@@ -1023,7 +1066,18 @@ static void ZHLayoutGlassNav(UIView *bar) {
                            win.bounds.size.height - 23 - kNavBarH,
                            W, kNavBarH);
     if (!CGRectEqualToRect(host.frame, hf)) host.frame = hf;
-    if (host.hidden) host.hidden = NO;
+    // 跟随原栏显隐（v3.9）：原栏当前 hidden 实值即知乎的显隐意
+    // 图（二级页经 showTabBar: 置 YES、一级页恢复 NO）——host
+    // 与之对齐：隐藏时不显形也不吃触摸，不再压答案页自带底
+    // 栏；与记录值不符时补记一次「layout对账」（钩子漏记的自
+    // 愈路径，正常情况两者恒一致）。
+    {
+        BOOL followHidden = bar.hidden;
+        NSNumber *rec = objc_getAssociatedObject(bar, &kNavFollowKey);
+        if (!rec || rec.boolValue != followHidden)
+            ZHNavNoteFollow(bar, followHidden, @"layout对账");
+        if (host.hidden != followHidden) host.hidden = followHidden;
+    }
 
     ZPGlassView *glass = ZHNavGlassForBar(bar, host);
     if (!glass) { // 玻璃类不可用：静默不建导航，空 host 摘掉免吃点击，原栏保持原样
@@ -1425,6 +1479,15 @@ static void ZPAppendNavDiag(NSMutableString *s, UIView *bar) {
          ZHNavSlotsIdentified(bar) ? @"已识别" : @"未识别（占位）",
          (btnHome && btnHome.userInteractionEnabled) ? @"YES" : @"NO",
          (gDetachedBar == bar) ? @"YES" : @"NO"];
+    // 跟随显隐（v3.9）：跟随状态以 host.hidden 为准（显示/随原栏
+    // 隐藏），对照原栏 hidden 实值与最近信号来源/计数判读——二
+    // 级页里应见「随原栏隐藏 + 原栏hidden=1 + 来源 setHidden:」。
+    NSNumber *fcnt = objc_getAssociatedObject(bar, &kNavFollowCntKey);
+    NSString *fsrc = objc_getAssociatedObject(bar, &kNavFollowSrcKey);
+    [s appendFormat:@"  自建栏跟随 跟随状态=%@ 原栏hidden=%d host.hidden=%d 最近信号=%@ 信号计数=%lu\n",
+         host.hidden ? @"随原栏隐藏" : @"显示",
+         (int)bar.hidden, (int)host.hidden,
+         fsrc ?: @"-", fcnt ? (unsigned long)fcnt.unsignedLongValue : 0UL];
     [s appendFormat:@"  effect通道计数 setEffect外部调用=%lu 最近传入=%@ zpUpdateMaterial安装=%lu\n",
          (unsigned long)gSetEffectExtCount, gSetEffectLastClass ?: @"-",
          (unsigned long)gZPInstallCount];
@@ -1684,6 +1747,41 @@ static void ZH_Bar_didMoveToWindow(UIView *self, SEL _cmd) {
     }
 }
 
+// setHidden:（v3.9，跟随原栏显隐）：知乎显隐的总漏斗是控制器
+// -[ZHInitialTabBarController showTabBar:animated:] 内的
+// [tabBar setHidden:!show]（反汇编实证见文件头 v3.9 段；约束切
+// 换只管内容区，栏本体显隐就是这一个 flag）。原栏被摘除不在
+// 层级内，控制器对它的这次方法调用照常到达。本覆盖只做三件
+// 事：原样放行 super → 记跟随状态 → 玻璃开时同轮把自建 host
+// 的 hidden 对齐并排一轮 apply 对账。host 隐藏后不显形也不吃
+// 触摸，二级页不再与答案页自带底栏重叠；返回一级页知乎发
+// setHidden:NO，host 同轮恢复。super 起点同 layoutSubviews
+// 铁律：安装时解析父类链 IMP 直调（gSuperSetHidden），类自有
+// 实现被 swizzle 时用原 IMP（gOrigSetHidden）——ZHTabBarNew 静
+// 态无自有 setHidden:，预期走 class_addMethod + 父类链 IMP。
+// 本插件自己对原栏的 hidden 写入只有 ZHRestoreOriginalBar 的
+// hidden=NO（玻璃关路径调用，此时 ZHGlassEnabled() 已为 NO，
+// 本钩子的对齐分支天然不触发，只留一条跟随记录，无副作用）。
+static IMP gOrigSetHidden = NULL;
+static IMP gSuperSetHidden = NULL;
+static void ZH_Bar_setHidden(UIView *self, SEL _cmd, BOOL hidden) {
+    if (gOrigSetHidden) {
+        ((void (*)(id, SEL, BOOL))gOrigSetHidden)(self, _cmd, hidden);
+    } else if (gSuperSetHidden) {
+        ((void (*)(id, SEL, BOOL))gSuperSetHidden)(self, _cmd, hidden);
+    } else {
+        struct objc_super sup = { self, gBarClass ? class_getSuperclass(gBarClass)
+                                                  : class_getSuperclass(object_getClass(self)) };
+        ((void (*)(struct objc_super *, SEL, BOOL))objc_msgSendSuper)(&sup, _cmd, hidden);
+    }
+    ZHNavNoteFollow(self, hidden, @"setHidden:");
+    if (ZHGlassEnabled()) {
+        UIView *host = objc_getAssociatedObject(self, &kNavHostKey);
+        if (host && host.hidden != hidden) host.hidden = hidden; // 同轮对齐，不等下一拍
+        ZHRequestApply(self); // 补一轮维护对账（幂等）
+    }
+}
+
 #pragma mark - Hook（设置页）
 
 static IMP gOrigSetLoadData, gOrigSetDidAppear;
@@ -1783,10 +1881,20 @@ static void ZPInstallBarHooks(void) {
                                       (IMP)ZH_Bar_traitChanged, "v24@0:8@16");
     if (!addedLayout) // 类自己已有 layoutSubviews 时退回 swizzle，并保留原 IMP 由钩子转调
         gOrigLayoutSubviews = ZHSwap(cls, @selector(layoutSubviews), (IMP)ZH_Bar_layoutSubviews);
+    // 跟随显隐（v3.9）：setHidden: 覆盖——先备父类链（UIView）的
+    // setHidden: IMP 供钩子直调 super，再 class_addMethod；类自有
+    // 实现时退 swizzle 存原 IMP（静态已核 ZHTabBarNew 无自有
+    // setHidden:，预期走 addMethod 路）。
+    Method superHidden = class_getInstanceMethod(class_getSuperclass(cls), @selector(setHidden:));
+    gSuperSetHidden = superHidden ? method_getImplementation(superHidden) : NULL;
+    BOOL addedHidden = class_addMethod(cls, @selector(setHidden:),
+                                       (IMP)ZH_Bar_setHidden, "v20@0:8B16");
+    if (!addedHidden)
+        gOrigSetHidden = ZHSwap(cls, @selector(setHidden:), (IMP)ZH_Bar_setHidden);
     ZPInstallBarBirthHook(); // 出生钩：通常已在 +load 装好（守卫在内），此处为 +load 没装成时的补装
     gInstalled = (gOrigSetupUI != NULL && gOrigLayoutItems != NULL);
-    NSLog(@"[zhplugin] install segment bar: setupUI=%p layoutItems=%p select=%p theme=%p addLayout=%d addTrait=%d birth=%d installed=%d",
-          gOrigSetupUI, gOrigLayoutItems, gOrigSelect, gOrigNotifyTheme, addedLayout, addedTrait, gBirthHookInstalled, gInstalled);
+    NSLog(@"[zhplugin] install segment bar: setupUI=%p layoutItems=%p select=%p theme=%p addLayout=%d addTrait=%d addHidden=%d birth=%d installed=%d",
+          gOrigSetupUI, gOrigLayoutItems, gOrigSelect, gOrigNotifyTheme, addedLayout, addedTrait, addedHidden, gBirthHookInstalled, gInstalled);
 }
 
 // 段3：设置页两行开关 hook（ZHCommonSettingViewController）
