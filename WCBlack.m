@@ -1,4 +1,11 @@
-// WCBlack.m — 微信深色模式纯黑背景 v7.4 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v7.5 (2026-11-26)
+// v7.5：修 v7.4 底栏卡白。①WCBarTraitChanged 删除「采信探针改状态」分支——
+//   trait 回调里 currentTraitCollection 就是被质疑的 trait 本身，探针被污染，
+//   造成状态横跳、底栏最后卡在浅色钉子上；状态只认取色路径的代际/系统信号，
+//   trait 不符时只重钉。②5 秒家务 tick 加钉子对账：override 被带偏的栏钉回
+//   状态一侧并补配色，稳态自愈。③colorDic 改走字符串：v7.4 实测字典存的是
+//   XML 原始字符串（"浅,深"）而非动态色对象，旧写法全被 skip、实际没改；
+//   本版保留浅色段与 alpha、只换深色段为模块色。④诊断加 tabtrait 行。
 // v7.4：v7.3 首构建因 WCProbeColorDic 缺前向声明编译失败（调用点在定义之前），
 //   本版只补声明，逻辑与 v7.3 完全一致。
 // v7.3：修 v7.2 启动闪退——WCProbeColorDic 被放在 WCInstall 里，+load 期就给
@@ -1006,9 +1013,26 @@ static void WCProbeColorDic(void) {
                                @"TabBar_BG": @"tab", @"Toolbar_BG": @"chatbar"};
         BOOL inPlace = [dict isKindOfClass:[NSMutableDictionary class]];
         NSMutableDictionary *target = inPlace ? (NSMutableDictionary *)dict : [dict mutableCopy];
+        int changed = 0;
         for (NSString *name in names) {
             id val = dict[name];
             if (!val) { WCDictLog([NSString stringWithFormat:@"dict: %@ MISSING", name]); continue; }
+            if ([val isKindOfClass:[NSString class]]) {
+                // v7.5：v7.4 实测字典里存的是 XML 原始字符串（"浅,深"），不是动态色
+                // 对象——上一版按对象找全被 skip、实际什么都没改。这次改字符串：
+                // 浅色段原样保留，深色段换成模块色、保留原来的 alpha 后缀。
+                NSString *raw = (NSString *)val;
+                NSString *hex = WCConfigHex(mods[name]);
+                if (!hex) { WCDictLog([NSString stringWithFormat:@"dict: %@ str \"%@\" (module off, kept)", name, raw]); continue; }
+                NSArray *parts = [raw componentsSeparatedByString:@","];
+                NSString *light = parts.count > 0 ? parts[0] : raw;
+                NSString *darkOrig = parts.count > 1 ? parts[1] : light;
+                NSString *alpha = (darkOrig.length == 9) ? [darkOrig substringFromIndex:7] : @"FF";
+                NSString *newStr = [NSString stringWithFormat:@"%@,%@%@", light, hex, alpha];
+                if (![newStr isEqualToString:raw]) { target[name] = newStr; changed++; }
+                WCDictLog([NSString stringWithFormat:@"dict: %@ str \"%@\" -> \"%@\"", name, raw, newStr]);
+                continue;
+            }
             if (dynCls && [val isKindOfClass:dynCls]) {
                 UIColor *nrm = [val normalColor];
                 UIColor *drk = [val darkmodeColor];
@@ -1017,19 +1041,19 @@ static void WCProbeColorDic(void) {
                 WCDictLog([NSString stringWithFormat:@"dict: %@ dyn light=%@ dark=%@ -> %@",
                            name, WCHexOfColorIn(nrm, WCLightTrait()), WCHexOfColorIn(drk, WCDarkTrait()), WCHexOfColor(newDark)]);
                 id repl = [dynCls DynamicColorWithNormalColor:nrm darkmodeColor:newDark];
-                if (repl) target[name] = repl;
+                if (repl) { target[name] = repl; changed++; }
             } else {
-                WCDictLog([NSString stringWithFormat:@"dict: %@ class=%@ (not dynamic, skipped)", name, NSStringFromClass([val class])]);
+                WCDictLog([NSString stringWithFormat:@"dict: %@ class=%@ (unknown type, skipped)", name, NSStringFromClass([val class])]);
             }
         }
         if (!inPlace) {
-            ((void (*)(id, SEL, id))objc_msgSend)(mgr, @selector(setColorDic:), target);
+            if (changed > 0) {
+                ((void (*)(id, SEL, id))objc_msgSend)(mgr, @selector(setColorDic:), target);
+                WCDictLog(@"dict: replaced whole dic (was immutable)");
+            }
             [target release];
-            WCDictLog(@"dict: replaced whole dic (was immutable)");
-        } else {
-            WCDictLog(@"dict: mutated in place");
         }
-        WCDictLog([NSString stringWithFormat:@"dict: total keys=%lu", (unsigned long)dict.count]);
+        WCDictLog([NSString stringWithFormat:@"dict: changed=%d total keys=%lu", changed, (unsigned long)dict.count]);
     } @catch (NSException *e) {
         WCDictLog([NSString stringWithFormat:@"dict: exception %@", e.name]);
     }
@@ -1100,6 +1124,14 @@ static void WCAppendSourceStats(NSMutableString *out) {
             [out appendFormat:@"navtrait: %@ trait=%ld override=%ld\n", NSStringFromClass([b class]),
              (long)b.traitCollection.userInterfaceStyle, (long)b.overrideUserInterfaceStyle];
             break;
+        }
+    }
+    if (gBarsTab) {
+        for (UIView *b in gBarsTab.allObjects) {
+            if (!b.window) continue;
+            [out appendFormat:@"tabtrait: %@ trait=%ld override=%ld frame=%.0f,%.0f,%.0f,%.0f hid=%d\n", NSStringFromClass([b class]),
+             (long)b.traitCollection.userInterfaceStyle, (long)b.overrideUserInterfaceStyle,
+             b.frame.origin.x, b.frame.origin.y, b.frame.size.width, b.frame.size.height, (int)b.hidden];
         }
     }
 }
@@ -1308,7 +1340,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"7.4", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"7.5", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1686,16 +1718,19 @@ static void WCBarTraitChanged(UIView *v, int kind, UITraitCollection *prev) {
     }
     BOOL traitDark = (v.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
     if (traitDark != gWCWeChatDark) {
-        if (WCProbeWeChatDarkNow() == traitDark) {
-            gWCWeChatDark = traitDark;
-            WCThemeLog(@"trait %@ ->%@ @%.1f", NSStringFromClass([v class]), traitDark ? @"dark" : @"light", [NSDate timeIntervalSinceReferenceDate]);
-        } else {
-            // v7.2 实验：顶栏模块关掉时不钉制，顶栏完全交回微信原生（配合 colorDic 改值定案）
-            if (kind == 0 && !WCConfigColor(@"nav")) return;
-            UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
-            if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
-            return;
+        // v7.5：不再从 trait 回调里采信探针改状态。回调执行时 currentTraitCollection
+        // 正是这个视图自己的新 trait，探针读到的就是被质疑的那个值本身——v7.4 实测
+        // 底栏 trait 转浅时探针跟着说浅、状态被改浅、整排栏被钉浅，取色上下文一恢复
+        // 又翻回深，来回横跳约 20 秒，最后底栏卡在浅色钉子上出不来（用户截图白底栏）。
+        // 状态只认 WCNoteColorFetch 的信号（currentType 代际/系统侧）；这里只重钉。
+        // v7.2 实验：顶栏模块关掉时不钉制，顶栏完全交回微信原生（配合 colorDic 改值定案）
+        if (kind == 0 && !WCConfigColor(@"nav")) return;
+        UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+        if (v.overrideUserInterfaceStyle != want) {
+            v.overrideUserInterfaceStyle = want;
+            WCThemeLog(@"trait %@ mismatch->repin %@ @%.1f", NSStringFromClass([v class]), gWCWeChatDark ? @"dark" : @"light", [NSDate timeIntervalSinceReferenceDate]);
         }
+        return;
     }
     WCApplyBarTrait(v, kind);
 }
@@ -1823,7 +1858,26 @@ static void WCPinTopBandsInWindow(UIWindow *win) {
 // v7：0.4 秒的维护 tick 已删除——栏的颜色只在 trait 回调与主题事件里动，
 // 轮询对齐正是切换时色块延后的根源。留下的这个 5 秒慢 tick 只做与颜色无关
 // 的家务：插件入口注册重试、首页分割线、输入框色板/话筒维护。
+// v7.5 钉子对账：状态稳定后，若某栏的 override 被外力（微信重建、玻璃插件、
+// 旧版残留的反侧钉子）带偏，慢 tick 把它钉回状态一侧并补一次配色。只纠错、
+// 不主导切换——切换仍由事件即时完成，这个 5 秒对账只是保证稳态不卡死。
+static void WCReconcileBarPins(void) {
+    if (!gWCFlipInit) return;
+    UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+    UIUserInterfaceStyle wantNav = WCConfigColor(@"nav") ? want : UIUserInterfaceStyleUnspecified;
+    if (gBarsNav) for (UIView *b in gBarsNav.allObjects) {
+        if (b.window && b.overrideUserInterfaceStyle != wantNav) { b.overrideUserInterfaceStyle = wantNav; WCApplyBarTrait(b, 0); }
+    }
+    if (gBarsTab) for (UIView *b in gBarsTab.allObjects) {
+        if (b.window && b.overrideUserInterfaceStyle != want) { b.overrideUserInterfaceStyle = want; WCApplyBarTrait(b, 1); }
+    }
+    if (gBarsInput) for (UIView *b in gBarsInput.allObjects) {
+        if (b.window && b.overrideUserInterfaceStyle != want) { b.overrideUserInterfaceStyle = want; WCApplyBarTrait(b, 2); }
+    }
+}
+
 static void WCHousekeepingTick(void) {
+    WCReconcileBarPins();
     WCEnsureRegistered();
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
         if ([NSStringFromClass([w class]) containsString:@"TextEffects"]) { WCForceKeyboardWindow(w); continue; }
@@ -1866,7 +1920,7 @@ static void WCInstall(void) {
             if (!gOrigSetColorDic) gOrigSetColorDic = WCSwap(mgr, @selector(setColorDic:), (IMP)WC_WCColorMgr_setColorDic);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v7.4 source hooks in");
+                os_log(WCLog(), "[WCBlack] v7.5 source hooks in");
                 // v7.3：WCProbeColorDic 绝不能在 +load 期跑——它给 WCColorMgr 发消息会
                 // 触发其 +initialize 链，微信自身的初始化此时没就绪、会抛异常 abort
                 // （18:57 的 .ips 实证：+load→WCInstall→WCProbeColorDic→initialize→rethrow）。
