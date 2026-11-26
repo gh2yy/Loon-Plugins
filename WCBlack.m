@@ -267,6 +267,7 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
     WCApplyStrong(bar, bar, dyn, depth);
 }
 
+static void WCScanAndForceTabs(UIView *root, int depth); // 前向声明：定义在下方兜底扫描一节
 static void WCEnforceRegistered(void) {
     // 类型守卫：表里只该有 UIView，混入异物直接跳过（v3 闪退教训）
     for (id b in gBarsTab.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"tab", 3);
