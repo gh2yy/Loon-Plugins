@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.2 还原版 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v8.3 还原版 (2026-11-26)
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -12,7 +12,7 @@
 // 用户追加保留：聊天页底栏（MMInputToolView/InputToolContainerView，仅
 // 聊天页）强涂 chatbar 色 + 输入框底色（v5.2 色板 + 话筒按类名藏，field
 // 模块）。做法回到 v5/v6.1 的存档强涂，但深浅只看栏自己的 trait——没有
-// 状态机、没有探针、没有巡逻钉制。一级页面的顶栏明确不碰；底部 tab 栏按用户要求单独做纯黑（v8.2 新增，
+// 状态机、没有探针、没有巡逻钉制。一级页面的顶栏明确不碰；底部 tab 栏按用户要求单独做纯黑（v8.3 新增，
 // 做法同聊天底栏：只对玻璃栏本体钉 trait + 强涂）：
 // v6.1–v7.6 的顶栏/底栏钉制强涂、状态机与探针、colorDic 实验、键盘处理、
 // 诊断页全部删除，恢复微信（含玻璃插件）原生表现。
@@ -26,7 +26,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.2"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.3"); });
     return l;
 }
 
@@ -162,6 +162,13 @@ static char kWCOrigBGKey, kWCPatchHiddenKey, kWCUnderlayKey;
 static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey;
 static int gWCRestoreDepth = 0;
 static NSHashTable<UIView *> *gBarsInput, *gBarsTab;
+// v8.3：栏的深浅状态不看视图 trait（玻璃栏的 trait 一直是浅的——微信深色是
+// 色板内部状态、跟 trait 两套系统，v8.1/v8.2 因此对底栏全程没生效）。状态由
+// 探针问微信自己（BG_0 的 toColor 定值与深色值比对，v6.1 定案法），只在取色
+// 钩子/主题切换钩子/家务 tick 里刷新；栏钩子只读状态、不当场探（防 v7.4 污染）。
+static BOOL gWCWeChatDark = NO;
+static void WCRefreshDarkState(BOOL fresh);
+static void WCApplyBarsState(void);
 
 static void WCStoreOrigBG(UIView *v) {
     if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
@@ -643,8 +650,8 @@ static void WCRestoreBar(UIView *bar) {
 
 static void WCForceBar(UIView *bar, NSString *module, int depth) {
     if (!bar) return;
-    // v8.1：深浅只看栏自己的 trait（无状态机/探针）；trait 翻面回调里 trait 已是新值
-    BOOL dark = (bar.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    // v8.3：深浅认微信自己的状态（探针维护的 gWCWeChatDark），不看栏的 trait
+    BOOL dark = gWCWeChatDark;
     if ([module isEqualToString:@"chatbar"]) WCFieldSweep(bar);
     if (!dark || !WCConfigColor(module)) { WCRestoreBar(bar); return; }
     if (bar.overrideUserInterfaceStyle != UIUserInterfaceStyleDark) bar.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
@@ -726,7 +733,7 @@ static void WC_Dic_didMoveToWindow(UIView *self, SEL _cmd) {
 
 
 
-#pragma mark - 底部 tab 栏钩子（仅玻璃栏本体，v8.2：用户要纯黑）
+#pragma mark - 底部 tab 栏钩子（仅玻璃栏本体，v8.3：用户要纯黑）
 // 可见底栏是包内玻璃插件 WCTabBarGlass 自己造的 UITabBar（WCGNativeTabBar），
 // 不走微信色板、只认 trait；源头 remap 够不到它。做法同聊天底栏：钩 trait 翻面
 // 与入窗，深浅只看栏自己的 trait，无状态机、无探针、无巡逻。
@@ -836,11 +843,12 @@ static UIColor *WCSourceDynamic(NSString *module, UIColor *orig) {
     }];
 }
 
-static IMP gOrigGetColor, gOrigGetColorValue, gOrigToColor, gOrigProxyResolve;
+static IMP gOrigGetColor, gOrigGetColorValue, gOrigToColor, gOrigProxyResolve, gOrigSetCurrentType;
 static id gWCMgr = nil;
 
 static id WC_WCColorMgr_getColor(id self, SEL _cmd, NSString *name) {
     gWCMgr = self;
+    WCRefreshDarkState(NO);
     WCNoteSeen(gWCSeenNames, name);
     id orig = ((id (*)(id, SEL, id))gOrigGetColor)(self, _cmd, name);
     if (!orig || !name || !WCEnabled()) return orig;
@@ -892,6 +900,49 @@ static UIColor *WC_MMDynamicColor_toColor(id self, SEL _cmd) {
     if (!cfg) return orig;
     gWCToColorHits++;
     return cfg;
+}
+
+#pragma mark - v8.3 微信深浅探针（问微信自己，不看视图 trait）
+
+static BOOL WCProbeWeChatDarkIn(BOOL fresh) {
+    static NSTimeInterval last = 0;
+    static BOOL cached = NO;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (!fresh && now - last < 0.5) return cached;
+    last = now;
+    BOOL dark = ([UITraitCollection currentTraitCollection].userInterfaceStyle == UIUserInterfaceStyleDark);
+    Class dynCls = NSClassFromString(@"MMDynamicColor");
+    if (gWCMgr && gOrigGetColor && gOrigToColor && dynCls) {
+        id c = ((id (*)(id, SEL, id))gOrigGetColor)(gWCMgr, @selector(getColor:), @"BG_0");
+        if (c && [c isKindOfClass:dynCls]) {
+            UIColor *resolved = ((UIColor *(*)(id, SEL))gOrigToColor)(c, @selector(toColor));
+            NSString *aD = WCHexOfColorIn(resolved, WCDarkTrait());
+            NSString *aL = WCHexOfColorIn(resolved, WCLightTrait());
+            if ([aD isEqualToString:aL]) dark = [aD isEqualToString:WCHexOfColor([c darkmodeColor])];
+        }
+    }
+    cached = dark;
+    return dark;
+}
+static BOOL WCProbeWeChatDark(void) { return WCProbeWeChatDarkIn(NO); }
+static BOOL WCProbeWeChatDarkNow(void) { return WCProbeWeChatDarkIn(YES); }
+
+static void WCApplyBarsState(void) {
+    if (gBarsTab) for (UIView *b in gBarsTab.allObjects) if (b.window) WCForceBar(b, @"tab", 4);
+    if (gBarsInput) for (UIView *b in gBarsInput.allObjects) if (b.window) WCForceBar(b, @"chatbar", 4);
+}
+
+static void WCRefreshDarkState(BOOL fresh) {
+    BOOL d = fresh ? WCProbeWeChatDarkNow() : WCProbeWeChatDark();
+    if (d == gWCWeChatDark) return;
+    gWCWeChatDark = d;
+    if ([NSThread isMainThread]) WCApplyBarsState();
+    else dispatch_async(dispatch_get_main_queue(), ^{ WCApplyBarsState(); });
+}
+
+static void WC_WCColorMgr_setCurrentType(id self, SEL _cmd, long type) {
+    ((void (*)(id, SEL, long))gOrigSetCurrentType)(self, _cmd, type);
+    WCRefreshDarkState(YES);
 }
 
 static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
@@ -1061,7 +1112,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"8.2", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"8.3", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1069,7 +1120,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.2 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.3 registered in plugin list");
             break;
         }
     }
@@ -1079,6 +1130,7 @@ static void WCEnsureRegistered(void) {
 
 static void WCHousekeepingTick(void) {
     WCEnsureRegistered();
+    WCRefreshDarkState(NO);
     if (gBarsInput) for (UIView *b in gBarsInput.allObjects) if (b.window) WCFieldSweep(b);
     if (gBarsTab) for (UIView *b in gBarsTab.allObjects) if (b.window) WCForceBar(b, @"tab", 4);
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
@@ -1113,12 +1165,13 @@ static void WCInstall(void) {
         Class proxy = NSClassFromString(@"WCColorProxy");
         if (mgr && dyn && proxy) {
             if (!gOrigGetColor) gOrigGetColor = WCSwap(mgr, @selector(getColor:), (IMP)WC_WCColorMgr_getColor);
+            if (!gOrigSetCurrentType) gOrigSetCurrentType = WCSwap(mgr, @selector(setCurrentType:), (IMP)WC_WCColorMgr_setCurrentType);
             if (!gOrigGetColorValue) gOrigGetColorValue = WCSwap(mgr, @selector(getColorValueForName:), (IMP)WC_WCColorMgr_getColorValue);
             if (!gOrigToColor) gOrigToColor = WCSwap(dyn, @selector(toColor), (IMP)WC_MMDynamicColor_toColor);
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.2 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.3 source hooks in");
             }
         }
     }
