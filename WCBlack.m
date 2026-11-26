@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v5.0 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v5.1 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.0"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.1"); });
     return l;
 }
 
@@ -330,28 +330,103 @@ static void WCRestoreBar(UIView *bar) {
     objc_setAssociatedObject(bar, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static UIColor *WCFieldColor(UIColor *orig);              // 前向声明：定义在 Hooks 一节
-static BOOL WCGrayInRange(UIColor *color, int lo, int hi); // 同上
-// v4.9 兜底扫描：输入框底色（#2C2C2C，灰阶 42–46）在子树里出现就压到 #1A1A1A。
-// set 时替换是主防线；颜色若在入树前赋好、或层级深于 hook 的祖先限，这里补上。
+static BOOL WCGrayInRange(UIColor *color, int lo, int hi); // 前向声明：定义在 Hooks 一节
+
+// v5.1 输入框底色重做：v5.0 取证定案——底色是 MMGrowTextView 里一张专用底板视图
+// （全幅、圆角 8），我们的动态色其实写上去了（诊断里 bg 已是 #1A1A1A），但它在图层
+// 上的快照是透明的（layerBG=#000000 a0.00），渲染出来等于没涂，底下的图还在透。
+// 动态色这条路对这张视图不可靠，改走静态色 + 登记表 + 每拍重申：
+// 静态色没有 provider、没有快照歧义，写上就是这个色；登记表保证浅色/关模块时能还原。
+static NSMutableSet *WCFieldViews(void) {
+    static NSMutableSet *s = nil;
+    if (!s) s = [[NSMutableSet alloc] init];
+    return s;
+}
+static void WCFieldPaint(UIView *v) {
+    UIColor *cfg = WCConfigColor(@"field");
+    if (!cfg) return;
+    WCStoreOrigBG(v);
+    [WCFieldViews() addObject:v];
+    if (v.backgroundColor != cfg) v.backgroundColor = cfg;
+}
 static void WCFieldScan(UIView *root, int depth) {
     if (!root || depth < 0) return;
     for (UIView *v in root.subviews) {
-        // v5.0：不再排除类名含 Text 的视图——v4.9 实测底色纹丝不动，最可能的
-        // 落空点就是这条排除把画底色的那层（类名多半带 Text）挡在门外了
         if (![v isKindOfClass:[UIVisualEffectView class]] &&
-            WCGrayInRange(v.backgroundColor, 42, 46)) {
-            WCStoreOrigBG(v);
-            v.backgroundColor = WCFieldColor(v.backgroundColor);
-        }
+            WCGrayInRange(v.backgroundColor, 42, 46))
+            WCFieldPaint(v);
         WCFieldScan(v, depth - 1);
     }
+}
+// 深色+模块开：扫描新出现的底板并登记、已登记的逐个重申静态色；
+// 浅色或模块关：把登记过的逐个还原并清表。
+static void WCFieldSweep(UIView *bar) {
+    BOOL dark = (bar.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    NSMutableSet *views = WCFieldViews();
+    if (dark && WCConfigColor(@"field")) {
+        WCFieldScan(bar, 5);
+        UIColor *cfg = WCConfigColor(@"field");
+        for (UIView *v in views.allObjects) {
+            if (!v.window) { [views removeObject:v]; continue; }
+            if (v.backgroundColor != cfg) v.backgroundColor = cfg;
+        }
+    } else if (views.count) {
+        for (UIView *v in views.allObjects) {
+            UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
+            if (ob) {
+                gWCRestoreDepth++;
+                v.backgroundColor = ob;
+                gWCRestoreDepth--;
+                objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        }
+        [views removeAllObjects];
+    }
+}
+
+// v5.1 明暗切换时的存档作废（nav/input 栏用）：只清存档、不写背景值——切换瞬间微信
+// 已经把自家背景写成新模式的值了，我们若按旧存档还原就会把它的新值盖掉（浅色顶部
+// 黑带的核心成因之一）。导航背景图、tint、被替换的 effect、被藏起来的视图与明暗
+// 无关，照常还原。清完后强刷会在新模式里重新存档。
+static void WCInvalidateStrong(UIView *root, int depth) {
+    if (!root || depth < 0) return;
+    for (UIView *v in root.subviews) {
+        if ([v isKindOfClass:[UIVisualEffectView class]]) {
+            UIVisualEffectView *ev = (UIVisualEffectView *)v;
+            UIVisualEffect *orig = objc_getAssociatedObject(ev, &kWCOrigEffectKey);
+            if (orig) {
+                ev.effect = orig;
+                objc_setAssociatedObject(ev, &kWCOrigEffectKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            objc_setAssociatedObject(ev.contentView, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        WCInvalidateStrong(v, depth - 1);
+    }
+}
+static void WCInvalidateBarForFlip(UIView *bar) {
+    for (UIView *v in (NSMutableArray *)objc_getAssociatedObject(bar, &kWCHiddenViewsKey)) v.hidden = NO;
+    objc_setAssociatedObject(bar, &kWCHiddenViewsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if ([bar isKindOfClass:[UINavigationBar class]]) {
+        UIImage *orig = objc_getAssociatedObject(bar, &kWCOrigNavImageKey);
+        [(UINavigationBar *)bar setBackgroundImage:orig forBarMetrics:UIBarMetricsDefault];
+        UIColor *tint = objc_getAssociatedObject(bar, &kWCOrigTintKey);
+        [(UINavigationBar *)bar setBarTintColor:tint];
+        objc_setAssociatedObject(bar, &kWCOrigNavImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(bar, &kWCOrigTintKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    WCInvalidateStrong(bar, 4);
+    objc_setAssociatedObject(bar, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kWCDynKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kWCFallbackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 // 深色+模块开启时把整栏刷成模块色；否则恢复。layout 与定时器都调用，幂等。
 static void WCForceBar(UIView *bar, NSString *module, int depth) {
     if (!bar) return;
     BOOL dark = (bar.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    // v5.1：输入框底色独立扫（深色刷静态色、浅色/关模块时还原），不随下面的早退跳过
+    if ([module isEqualToString:@"chatbar"]) WCFieldSweep(bar);
     if (!dark || !WCConfigColor(module)) { WCRestoreBar(bar); return; }
     NSNumber *forced = objc_getAssociatedObject(bar, &kWCForcedKey);
     UIColor *dyn = objc_getAssociatedObject(bar, &kWCDynKey);
@@ -397,8 +472,6 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
         UIColor *bg = v.backgroundColor;
         if (bg && bg != dyn && WCIsOpaqueDarkNeutral(bg)) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
     }
-    // v4.9：输入框底色压暗的强刷兜底（理由见 WCFieldScan）
-    if ([module isEqualToString:@"chatbar"] && WCConfigColor(@"field")) WCFieldScan(bar, 4);
 }
 
 // v5.0 首页分割线：主列表（MainFrame）table 的系统分隔线关掉还不够时，微信 cell 多半
@@ -504,23 +577,28 @@ static void WCScanAllWindows(void) {
     }
 }
 static void WCEnforceRegistered(void) {
-    // 类型守卫：表里只该有 UIView，混入异物直接跳过（v3 闪退教训）
-    for (id b in gBarsTab.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"tab", 3);
-    for (id b in gBarsNav.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"nav", 3);
-    for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"chatbar", 4);
-    // 明暗切换后 1.2 秒补采一次快照，记录切换后的真实状态（浅色黑带定位用）
+    // v5.1：明暗切换先作废存档、再强刷（旧顺序先强刷，正是浅色黑带成因，见
+    // WCInvalidateBarForFlip 注释）。tab 栏的还原一直正常，切换时走完整还原；
+    // nav/input 只清存档。切换后 1.2 秒补采快照的安排保留。
     static NSInteger lastStyle = -1;
     UIWindow *kw = nil;
     for (UIWindow *w in [UIApplication sharedApplication].windows) if (w.isKeyWindow) { kw = w; break; }
     if (kw) {
         NSInteger st = kw.traitCollection.userInterfaceStyle;
         if (lastStyle >= 0 && st != lastStyle) {
+            for (id b in gBarsTab.allObjects) if ([b isKindOfClass:[UIView class]]) WCRestoreBar(b);
+            for (id b in gBarsNav.allObjects) if ([b isKindOfClass:[UIView class]]) WCInvalidateBarForFlip(b);
+            for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]]) WCInvalidateBarForFlip(b);
             NSString *scene = (st == UIUserInterfaceStyleDark) ? @"trait-dark" : @"trait-light";
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{ WCCollectDiag(scene); });
         }
         lastStyle = st;
     }
+    // 类型守卫：表里只该有 UIView，混入异物直接跳过（v3 闪退教训）
+    for (id b in gBarsTab.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"tab", 3);
+    for (id b in gBarsNav.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"nav", 3);
+    for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"chatbar", 4);
     // 每约 2 秒兜底扫一次：底部 tab（玻璃插件自有类）+ 输入栏/聊天顶栏扫描注册 + 键盘窗口
     static int tick = 0;
     if (++tick % 5 == 0) { WCScanAllWindows(); WCEnsureRegistered(); }
@@ -670,8 +748,9 @@ static void WCDumpView(NSMutableString *out, UIView *v, int depth, int maxDepth)
     NSMutableString *indent = [NSMutableString string];
     for (int i = 0; i < depth; i++) [indent appendString:@"  "];
     CGRect f = v.frame;
-    [out appendFormat:@"%@%@ f=%.0f,%.0f,%.0f,%.0f bg=%@ hid=%d\n", indent, NSStringFromClass([v class]),
-        f.origin.x, f.origin.y, f.size.width, f.size.height, WCHexOfColor(v.backgroundColor), v.hidden];
+    [out appendFormat:@"%@%@ f=%.0f,%.0f,%.0f,%.0f bg=%@ now=%@ hid=%d\n", indent, NSStringFromClass([v class]),
+        f.origin.x, f.origin.y, f.size.width, f.size.height, WCHexOfColor(v.backgroundColor),
+        WCHexOfColor([v.backgroundColor resolvedColorWithTraitCollection:v.traitCollection]), v.hidden];
     if ([v isKindOfClass:[UIVisualEffectView class]]) {
         UIVisualEffectView *ev = (UIVisualEffectView *)v;
         [out appendFormat:@"%@  effect=%@\n", indent, ev.effect ? NSStringFromClass([ev.effect class]) : @"nil"];
@@ -843,38 +922,6 @@ static void WCSweep(void) {
 static IMP gOrigSetBG, gOrigNavBarTint, gOrigTabBarTint;
 static IMP gOrigMMTabLayout, gOrigMMTabWindow, gOrigNavLayout, gOrigInputLayout;
 
-// v4.9：输入框底色专用动态色（原 #2C2C2C 太灰，用户要求调低）；v5.0 起改为「输入框」
-// 模块驱动（设置页可调，默认 #1A1A1A）。动态色的 provider 在解析时才读配置，所以
-// 全局共用一份即可，配置改了自动跟随；MRC 下 static 持有要 retain。
-static UIColor *WCFieldColor(UIColor *orig) {
-    static UIColor *shared = nil;
-    if (!shared) shared = [WCDynamicColor(@"field", [UIColor clearColor]) retain];
-    return shared;
-}
-
-// v5.0：输入框底色的最后一道保险——若底色是 MMGrowTextView 自己 drawRect 画的（任何
-// 视图/图层属性都查不到，v4.9 两道规则全落空的可能原因之一），就在它最底层垫一张
-// 同尺寸的色片盖住那笔绘制：色片在全部子视图之下、父视图自身绘制之上，文字层
-// （MMTextView 是子视图）不受影响。模块关或浅色时藏起色片，露出原样。
-static void WCEnsureFieldUnderlay(UIView *grow) {
-    UIView *u = objc_getAssociatedObject(grow, &kWCUnderlayKey);
-    BOOL dark = (grow.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
-    if (!dark || !WCConfigColor(@"field")) { if (u) u.hidden = YES; return; }
-    if (!u) {
-        u = [[UIView alloc] initWithFrame:grow.bounds];
-        u.userInteractionEnabled = NO;
-        u.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        u.layer.cornerRadius = grow.layer.cornerRadius > 0 ? grow.layer.cornerRadius : 10;
-        u.clipsToBounds = YES;
-        [grow insertSubview:u atIndex:0];
-        objc_setAssociatedObject(grow, &kWCUnderlayKey, u, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [u release];
-    }
-    u.hidden = NO;
-    UIColor *fc = WCFieldColor(nil);
-    if (u.backgroundColor != fc) u.backgroundColor = fc;
-    if (!CGRectEqualToRect(u.frame, grow.bounds)) u.frame = grow.bounds;
-}
 
 // 视图是否在 MMInputToolView 层级内（向上数 maxUp 层祖先，含直属父级）
 static BOOL WCInsideInputTool(UIView *v, int maxUp) {
@@ -918,7 +965,8 @@ static void WC_View_setBackgroundColor(UIView *self, SEL _cmd, UIColor *color) {
         if (WCConfigColor(@"field") && WCInsideInputTool(self, 4) && WCGrayInRange(color, 42, 46)) {
             if (!objc_getAssociatedObject(self, &kWCOrigBGKey))
                 objc_setAssociatedObject(self, &kWCOrigBGKey, color, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            ((void (*)(id, SEL, id))gOrigSetBG)(self, _cmd, WCFieldColor(color));
+            [WCFieldViews() addObject:self];
+            ((void (*)(id, SEL, id))gOrigSetBG)(self, _cmd, WCConfigColor(@"field"));
             return;
         }
     }
@@ -967,15 +1015,6 @@ static void WC_InputTool_layoutSubviews(UIView *self, SEL _cmd) {
             }
         }
     }
-}
-static IMP gOrigGrowLayout, gOrigGrowWindow;
-static void WC_Grow_layoutSubviews(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigGrowLayout)(self, _cmd);
-    WCEnsureFieldUnderlay(self);
-}
-static void WC_Grow_didMoveToWindow(UIView *self, SEL _cmd) {
-    ((void (*)(id, SEL))gOrigGrowWindow)(self, _cmd);
-    if (self.window) WCEnsureFieldUnderlay(self);
 }
 static void WC_InputTool_didMoveToWindow(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigInputWindow)(self, _cmd);
@@ -1269,7 +1308,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"5.0", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"5.1", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1277,7 +1316,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v5.0 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v5.1 registered in plugin list");
             break;
         }
     }
@@ -1313,11 +1352,6 @@ static void WCInstall(void) {
             gOrigContainerLayout = WCSwapOwn(inputContainer, @selector(layoutSubviews), (IMP)WC_Container_layoutSubviews);
             gOrigContainerWindow = WCSwapOwn(inputContainer, @selector(didMoveToWindow), (IMP)WC_Container_didMoveToWindow);
         }
-        Class growCls = NSClassFromString(@"MMGrowTextView");
-        if (growCls) {
-            gOrigGrowLayout = WCSwapOwn(growCls, @selector(layoutSubviews), (IMP)WC_Grow_layoutSubviews);
-            gOrigGrowWindow = WCSwapOwn(growCls, @selector(didMoveToWindow), (IMP)WC_Grow_didMoveToWindow);
-        }
         Class msgNav = NSClassFromString(@"MMMsgContentNavBar");
         if (msgNav) {
             gOrigMsgNavLayout = WCSwapOwn(msgNav, @selector(layoutSubviews), (IMP)WC_MsgNav_layoutSubviews);
@@ -1350,7 +1384,7 @@ static void WCInstall(void) {
             for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"chatbar", 4);
         }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v5.0 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v5.1 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1362,7 +1396,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v5.0 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v5.1 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     WCEnsureRegistered();
