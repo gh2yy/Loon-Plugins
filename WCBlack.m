@@ -1,4 +1,9 @@
-// WCBlack.m — 微信深色模式纯黑背景 v7.2 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v7.3 (2026-11-26)
+// v7.3：修 v7.2 启动闪退——WCProbeColorDic 被放在 WCInstall 里，+load 期就给
+//   WCColorMgr 发消息（sharedInstance），触发其 +initialize 链在微信未就绪时
+//   抛异常 abort（.ips 栈实证）。改：安装时不跑，改由 getColor 钩子首次捕获到
+//   已存活的管理器实例后 dispatch_async 补跑；setColorDic 钩与诊断打开时各有
+//   一次安全入口。功能与 v7.2 其余部分完全一致。
 // v7.2（在 v7.1 事件驱动基础上加定案实验）：深挖三栏颜色到底能不能从源头改——
 //   底栏已定案不能：可见底栏是玻璃插件 WCTabBarGlass 的 WCTabBarView，它自己的
 //   二进制里没有任何微信色板名字、不调 WCColorMgr，颜色是它自带的 UIBlurEffect
@@ -884,8 +889,13 @@ static UIColor *WCSourceDynamic(NSString *module, UIColor *orig) {
 static IMP gOrigGetColor, gOrigGetColorValue, gOrigToColor, gOrigProxyResolve;
 static id gWCMgr = nil;
 
+static BOOL gWCDictScheduled = NO;
 static id WC_WCColorMgr_getColor(id self, SEL _cmd, NSString *name) {
     gWCMgr = self;
+    if (!gWCDictScheduled) {
+        gWCDictScheduled = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{ WCProbeColorDic(); });
+    }
     WCNoteColorFetch(self);
     WCNoteSeen(gWCSeenNames, name);
     id orig = ((id (*)(id, SEL, id))gOrigGetColor)(self, _cmd, name);
@@ -1295,7 +1305,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"7.2", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"7.3", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1853,8 +1863,11 @@ static void WCInstall(void) {
             if (!gOrigSetColorDic) gOrigSetColorDic = WCSwap(mgr, @selector(setColorDic:), (IMP)WC_WCColorMgr_setColorDic);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v7.2 source hooks in");
-                WCProbeColorDic();
+                os_log(WCLog(), "[WCBlack] v7.3 source hooks in");
+                // v7.3：WCProbeColorDic 绝不能在 +load 期跑——它给 WCColorMgr 发消息会
+                // 触发其 +initialize 链，微信自身的初始化此时没就绪、会抛异常 abort
+                // （18:57 的 .ips 实证：+load→WCInstall→WCProbeColorDic→initialize→rethrow）。
+                // 改由 getColor 钩子在管理器已存活后异步补跑（见 WC_WCColorMgr_getColor）。
             }
         }
     }
