@@ -245,53 +245,46 @@ static void HPApplyCapsuleShadow(UIView *plate) {
 }
 @end
 
-// 从原按钮同步数据到自建按钮；内部布局按原内容并集整体平移 (dx,dy) 后居中进槽位
-// （每轮布局都同步，远程图标迟到也能跟上）
-static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig, CGFloat dx, CGFloat dy) {
+// 从原按钮只取数据（标题/两态图标/两态颜色/字体），内部布局用自有固定规格，不再量原按钮的几何：
+// 图标框 27pt 居中在上、文字在下成组居中；红点只借原按钮判「有没有」，位置自定于图标右上角。
+// （v9 起与原按钮脱钩——v5–v8 的槽位/摆位都量自原按钮，长度与焦点问题反复，系此耦合。）
+static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
     gb.normalImage = HPGetObj(orig, @"normalImage");
     gb.selectedImage = HPGetObj(orig, @"hightlightImage");
     gb.normalColor = HPGetObj(orig, @"normalTitleColor");
     gb.selectedColor = HPGetObj(orig, @"highlightTitleColor");
     gb.title = HPGetObj(orig, @"title");
 
-    CGRect of = gb.frame;
+    CGFloat W = gb.bounds.size.width, H = gb.bounds.size.height;
+    CGFloat iconS = 27.0;
+    CGRect iconF = CGRectMake((W - iconS) / 2, 7.0, iconS, iconS);
+    gb.iconView.frame = iconF;
     UIView *oIcon = HPGetObj(orig, @"tabImageView");
     if (!oIcon) oIcon = HPGetObj(orig, @"imageView");
+    gb.iconView.hidden = oIcon ? oIcon.hidden : NO;
     UIView *oLabel = HPGetObj(orig, @"label");
     if (!oLabel) oLabel = HPGetObj(orig, @"titleLabel");
+    gb.textLabel.frame = CGRectMake(0, CGRectGetMaxY(iconF) + 2.0, W, 15.0);
+    if (oLabel) gb.textLabel.font = [(UILabel *)oLabel font];
+    gb.textLabel.hidden = gb.title.length == 0;
     UIView *oBorder = HPGetObj(orig, @"tabImageBorderView");
-    if (oIcon && [oIcon isDescendantOfView:bar]) {
-        CGRect r = HPRectInBar(bar, oIcon);
-        gb.iconView.frame = CGRectMake(r.origin.x + dx - of.origin.x, r.origin.y + dy - of.origin.y, r.size.width, r.size.height);
-        gb.iconView.hidden = oIcon.hidden;
-    }
-    if (oLabel && [oLabel isDescendantOfView:bar]) {
-        CGRect r = HPRectInBar(bar, oLabel);
-        gb.textLabel.frame = CGRectMake(r.origin.x + dx - of.origin.x, r.origin.y + dy - of.origin.y, r.size.width, r.size.height);
-        gb.textLabel.font = [(UILabel *)oLabel font];
-        gb.textLabel.hidden = oLabel.hidden || gb.title.length == 0;
-    } else {
-        gb.textLabel.hidden = YES;
-    }
     if (oBorder && [oBorder isDescendantOfView:bar]) {
-        CGRect r = HPRectInBar(bar, oBorder);
-        gb.borderView.frame = CGRectMake(r.origin.x + dx - of.origin.x, r.origin.y + dy - of.origin.y, r.size.width, r.size.height);
+        gb.borderView.frame = iconF;
         gb.borderView.image = [(UIImageView *)oBorder image];
         gb.borderView.hidden = oBorder.hidden || gb.borderView.image == nil;
     } else {
         gb.borderView.hidden = YES;
     }
-    // 红点镜像：原按钮上除图标/文字/边框外的小尺寸可见子视图
+    // 红点：原按钮上有小尺寸可见子视图（非图标/文字/边框）即视为有红点，自画 8pt 点于图标右上
     gb.badgeDot.hidden = YES;
     for (UIView *sub in orig.subviews) {
         if (sub == oIcon || sub == oLabel || sub == oBorder) continue;
         if (sub.hidden || sub.alpha < 0.01) continue;
         if (sub.frame.size.width > 20 || sub.frame.size.height > 20) continue;
         if (sub.frame.size.width < 2 || sub.frame.size.height < 2) continue;
-        CGRect r = HPRectInBar(bar, sub);
-        gb.badgeDot.frame = CGRectMake(r.origin.x + dx - of.origin.x, r.origin.y + dy - of.origin.y, r.size.width, r.size.height);
+        gb.badgeDot.frame = CGRectMake(CGRectGetMaxX(iconF) - 4.0, iconF.origin.y - 2.0, 8.0, 8.0);
         gb.badgeDot.backgroundColor = sub.backgroundColor ?: [UIColor redColor];
-        gb.badgeDot.layer.cornerRadius = MIN(r.size.width, r.size.height) / 2;
+        gb.badgeDot.layer.cornerRadius = 4.0;
         gb.badgeDot.hidden = NO;
         break;
     }
@@ -360,18 +353,13 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
         objc_setAssociatedObject(bar, &kRowSigKey, [sig copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    // 槽位几何：按内容宽度定槽，胶囊只包住槽位组并居中——按钮少时不再拉满整宽（照 XHS 重构后的自适应长度）
-    NSMutableArray *contents = [NSMutableArray array];
-    CGFloat maxContentW = 0;
+    // 槽位几何：固定规格（槽宽 86、高 58、端部留白 12），只借原按钮行定纵向位置；宽度只随按钮数变
     CGRect rowRect = CGRectNull;
     for (UIView *orig in btns) {
-        CGRect cr = HPButtonContentRect(bar, orig);
-        [contents addObject:[NSValue valueWithCGRect:cr]];
-        if (cr.size.width > maxContentW) maxContentW = cr.size.width;
         CGRect f = HPRectInBar(bar, orig);
         rowRect = CGRectIsNull(rowRect) ? f : CGRectUnion(rowRect, f);
     }
-    CGFloat slotW = MIN(MAX(maxContentW + 56, 82.0), 112.0);
+    CGFloat slotW = 86.0;
     CGFloat capH = 58.0;
     CGFloat capW = slotW * (CGFloat)btns.count + 24;
     if (capW > bounds.size.width - 20) {
@@ -384,16 +372,12 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
     CGRect capRect = CGRectMake(capX, capY, capW, capH);
 
-    // 同步 + 隐藏原按钮：内容并集整体平移进槽位中心
+    // 同步数据 + 隐藏原按钮
     for (NSUInteger i = 0; i < btns.count; i++) {
         UIView *orig = btns[i];
         HPGlassButton *gb = row[i];
-        CGRect slot = CGRectMake(capX + 12 + (CGFloat)i * slotW, capY, slotW, capH);
-        gb.frame = slot;
-        CGRect cr = [contents[i] CGRectValue];
-        HPSyncGlassButton(gb, bar, orig,
-                          CGRectGetMidX(slot) - CGRectGetMidX(cr),
-                          CGRectGetMidY(slot) - CGRectGetMidY(cr));
+        gb.frame = CGRectMake(capX + 12 + (CGFloat)i * slotW, capY, slotW, capH);
+        HPSyncGlassButton(gb, bar, orig);
         orig.hidden = YES;
     }
 
@@ -537,7 +521,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v8 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v9 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
