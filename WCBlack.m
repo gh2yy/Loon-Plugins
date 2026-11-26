@@ -157,6 +157,7 @@ static UIColor *WCDynamicColor(NSString *module, UIColor *lightFallback) {
 
 // 分割线存档键（仅此一组）
 static char kWCSepOrigStyleKey, kWCSepOrigColorKey, kWCSepHiddenKey;
+static char kWCSepMainKey;
 
 static char kWCOrigBGKey, kWCPatchHiddenKey, kWCUnderlayKey;
 static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey;
@@ -497,7 +498,6 @@ static void WCEnsureRegistered(void);
 // UITableView 的 layoutSubviews/didMoveToWindow（原 IMP 直调），认格的
 // MainFrame 主列表在入窗与每次布局的同一遍里就把分隔线关掉，赶在首帧前；
 // tick 扫描保留作兜底（顺带给认格的表打标）。
-static char kWCSepMainKey;
 static BOOL WCSepIsMainTable(UITableView *tv) {
     if (!tv.window) return NO;
     NSString *d = NSStringFromClass([tv.delegate class]) ?: @"";
@@ -506,6 +506,7 @@ static BOOL WCSepIsMainTable(UITableView *tv) {
     CGRect f = [tv convertRect:tv.bounds toView:tv.window];
     return f.size.height >= tv.window.bounds.size.height * 0.8 && f.size.width >= tv.window.bounds.size.width * 0.9;
 }
+static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp); // 前向声明：定义在 Hooks 一节
 static IMP gO_TVLayout, gO_TVWindow;
 static void WC_TV_tryApply(UITableView *tv) {
     if (!WCHideSep()) return;
