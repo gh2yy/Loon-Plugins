@@ -1,4 +1,16 @@
-// WCBlack.m — 微信深色模式纯黑背景 v3.3 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v3.4 (2026-11-26)
+// v3.4：据 v3.3 真机诊断快照定案与修复（快照证实可见底栏是玻璃插件的 WCTabBarView、
+//   原生 MMTabBar 不存在，tab 已被扫描强刷刷黑；聊天顶栏已黑）。剩三件事：
+//   ①浅色模式顶部黑带——定案在 WCSanitizeLightFallback 的单色空间漏洞：微信主题灰是
+//     monochrome 色，getRed 取不到值、净化被整段跳过，动态色浅色回退仍是深灰。改 getWhite
+//     优先判定 + 透明度门槛放宽到 0.03（保留原 alpha 换白）。
+//   ②聊天底栏：MMInputToolView 的 didMoveToWindow 钩子从未触发（三次快照 registry input
+//     恒为 0），改扫描注册——每 2 秒扫全部窗口，类名含 InputTool 者登记进注册表由强刷接管，
+//     含 MsgContentNavBar 者登记进 nav 表；首次找到输入栏后补采 chat 快照。
+//   ③诊断升级：查找改为遍历全部窗口；新增注册表导航栏转储（含 appearance/背景图/barTint）、
+//     顶部与底部条带 hitTest 祖先链、明暗切换后自动补采；设置页诊断改全屏页（可滚动+一键复制），
+//     点开时即时重采。另：tab 候选与栏的子视图在浅色下按存档原件恢复（WCRestoreStrong/恢复
+//     tab 的 appearance/barTint/背景图），深→浅切换不留残影。
 // v3.3：并入 v3.2 全部内容，另修浅色模式顶部黑带（用户 09:07 截图）：动态色的浅色回退取自
 //   深色下被赋值的静态深灰，切浅色后解析成 #17 左右的暗色。修：WCSanitizeLightFallback——
 //   回退色在浅色下仍暗（亮度<0.5）一律换白；导航恢复时一并还原 barTintColor。
@@ -40,7 +52,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v3"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v3.4"); });
     return l;
 }
 
@@ -122,11 +134,13 @@ static NSString *WCModuleForColor(UIColor *color) {
 static UIColor *WCSanitizeLightFallback(UIColor *fb) {
     if (!fb) return [UIColor clearColor];
     UIColor *l = [fb resolvedColorWithTraitCollection:WCLightTrait()];
-    CGFloat r = 0, g = 0, b = 0, a = 0;
-    if ([l getRed:&r green:&g blue:&b alpha:&a] && a > 0.9) {
-        CGFloat lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        if (lum < 0.5) return [UIColor whiteColor];
-    }
+    // v3.4：微信主题灰多为单色（monochrome）空间色，getRed 取不到值——v3.3 只查 getRed，
+    // 净化被整段跳过，深灰回退原样漏过，浅色模式顶部黑带就是这么来的。改 getWhite 优先；
+    // 透明度门槛从 0.9 放宽到 0.03，命中时保留原 alpha 只换亮度。
+    CGFloat r = 0, g = 0, b = 0, a = 0, w = 0, lum = -1;
+    if ([l getWhite:&w alpha:&a]) lum = w;
+    else if ([l getRed:&r green:&g blue:&b alpha:&a]) lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (lum >= 0 && lum < 0.5 && a > 0.03) return [UIColor colorWithWhite:1.0 alpha:a];
     return fb;
 }
 
@@ -151,7 +165,7 @@ static UIColor *WCSubstituteForColor(UIColor *color) {
 
 #pragma mark - 靶向栏强制（注册表 + 定时强刷）
 
-static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey;
+static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey, kWCOrigBGKey, kWCOrigStdAppKey, kWCOrigEdgeAppKey;
 
 static NSHashTable<UIView *> *gBarsTab, *gBarsNav, *gBarsInput;
 static void WCRegisterBar(NSHashTable<UIView *> *table, UIView *bar) {
@@ -177,6 +191,12 @@ static UIImage *WCSolidImage(UIColor *color) {
     return img;
 }
 
+// 改色前存档原背景（只存第一次），供浅色恢复
+static void WCStoreOrigBG(UIView *v) {
+    if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
+        objc_setAssociatedObject(v, &kWCOrigBGKey, v.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static void WCApplyStrong(UIView *root, UIView *bar, UIColor *dyn, int depth) {
     if (depth < 0) return;
     for (UIView *v in root.subviews) {
@@ -187,8 +207,8 @@ static void WCApplyStrong(UIView *root, UIView *bar, UIColor *dyn, int depth) {
                     objc_setAssociatedObject(ev, &kWCOrigEffectKey, ev.effect, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 ev.effect = nil;
             }
-            if (ev.contentView.backgroundColor != dyn) ev.contentView.backgroundColor = dyn;
-            if (v.backgroundColor != dyn) v.backgroundColor = dyn;
+            if (ev.contentView.backgroundColor != dyn) { WCStoreOrigBG(ev.contentView); ev.contentView.backgroundColor = dyn; }
+            if (v.backgroundColor != dyn) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
         } else if ([v isKindOfClass:[UIImageView class]] &&
                    v.frame.size.width >= bar.bounds.size.width * 0.9 &&
                    v.frame.size.height >= bar.bounds.size.height * 0.85) {
@@ -210,10 +230,36 @@ static void WCApplyStrong(UIView *root, UIView *bar, UIColor *dyn, int depth) {
                     CGFloat w = 0, al = 0;
                     if ([d getWhite:&w alpha:&al] && al > 0.03 && al < 0.95) translucentOverlay = YES;
                 }
-                if (m || translucentOverlay) v.backgroundColor = dyn;
+                if (m || translucentOverlay) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
             }
         }
         WCApplyStrong(v, bar, dyn, depth - 1);
+    }
+}
+
+// WCApplyStrong 的逆操作：按存档把子视图的 effect 与背景逐一还原（浅色恢复用）
+static void WCRestoreStrong(UIView *root, int depth) {
+    if (depth < 0 || !root) return;
+    for (UIView *v in root.subviews) {
+        if ([v isKindOfClass:[UIVisualEffectView class]]) {
+            UIVisualEffectView *ev = (UIVisualEffectView *)v;
+            UIVisualEffect *orig = objc_getAssociatedObject(ev, &kWCOrigEffectKey);
+            if (orig) {
+                ev.effect = orig;
+                objc_setAssociatedObject(ev, &kWCOrigEffectKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            UIColor *cb = objc_getAssociatedObject(ev.contentView, &kWCOrigBGKey);
+            if (cb) {
+                ev.contentView.backgroundColor = cb;
+                objc_setAssociatedObject(ev.contentView, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        }
+        UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
+        if (ob) {
+            v.backgroundColor = ob;
+            objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        WCRestoreStrong(v, depth - 1);
     }
 }
 
@@ -225,6 +271,7 @@ static void WCRestoreBar(UIView *bar) {
     if (fb && bar.backgroundColor == dyn) bar.backgroundColor = fb;
     for (UIView *v in (NSMutableArray *)objc_getAssociatedObject(bar, &kWCHiddenViewsKey)) v.hidden = NO;
     objc_setAssociatedObject(bar, &kWCHiddenViewsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    WCRestoreStrong(bar, 4);
     if ([bar isKindOfClass:[UINavigationBar class]]) {
         UIImage *orig = objc_getAssociatedObject(bar, &kWCOrigNavImageKey);
         [(UINavigationBar *)bar setBackgroundImage:orig forBarMetrics:UIBarMetricsDefault];
@@ -268,15 +315,33 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
 }
 
 static void WCScanAndForceTabs(UIView *root, int depth); // 前向声明：定义在下方兜底扫描一节
+static void WCScanRegister(UIView *root, int depth);     // 同上
+static void WCCollectDiag(NSString *scene);              // 前向声明：定义在诊断一节
 static void WCEnforceRegistered(void) {
     // 类型守卫：表里只该有 UIView，混入异物直接跳过（v3 闪退教训）
     for (id b in gBarsTab.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"tab", 3);
     for (id b in gBarsNav.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"nav", 3);
     for (id b in gBarsInput.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"chatbar", 4);
-    // 每约 2 秒兜底扫一次底部 tab（玻璃插件自有类不在注册表里）
+    // 明暗切换后 1.2 秒补采一次快照，记录切换后的真实状态（浅色黑带定位用）
+    static NSInteger lastStyle = -1;
+    UIWindow *kw = nil;
+    for (UIWindow *w in [UIApplication sharedApplication].windows) if (w.isKeyWindow) { kw = w; break; }
+    if (kw) {
+        NSInteger st = kw.traitCollection.userInterfaceStyle;
+        if (lastStyle >= 0 && st != lastStyle) {
+            NSString *scene = (st == UIUserInterfaceStyleDark) ? @"trait-dark" : @"trait-light";
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ WCCollectDiag(scene); });
+        }
+        lastStyle = st;
+    }
+    // 每约 2 秒兜底扫一次：底部 tab（玻璃插件自有类）+ 输入栏/聊天顶栏扫描注册
     static int tick = 0;
     if (++tick % 5 == 0) {
-        for (UIWindow *w in [UIApplication sharedApplication].windows) WCScanAndForceTabs(w, 12);
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            WCScanAndForceTabs(w, 12);
+            WCScanRegister(w, 16);
+        }
     }
 }
 static dispatch_source_t gEnforcerTimer; // 必须静态持有，否则定时器被释放
@@ -302,11 +367,42 @@ static BOOL WCIsTabCandidate(UIView *v) {
     NSString *cls = NSStringFromClass([v class]);
     return [cls isEqualToString:@"WCGNativeTabBar"] || [cls isEqualToString:@"WCTabBarView"] || [cls isEqualToString:@"MMTabBar"];
 }
+// tab 候选的浅色/关闭恢复：appearance、barTint、背景图、自身与子视图背景、特效全部按存档还原
+static void WCRestoreTabView(UIView *v) {
+    NSNumber *forced = objc_getAssociatedObject(v, &kWCForcedKey);
+    if (!forced.boolValue) return;
+    if ([v isKindOfClass:[UITabBar class]]) {
+        UITabBar *tb = (UITabBar *)v;
+        tb.standardAppearance = objc_getAssociatedObject(v, &kWCOrigStdAppKey);
+        tb.scrollEdgeAppearance = objc_getAssociatedObject(v, &kWCOrigEdgeAppKey);
+        tb.barTintColor = objc_getAssociatedObject(v, &kWCOrigTintKey);
+        tb.backgroundImage = objc_getAssociatedObject(v, &kWCOrigNavImageKey);
+    }
+    UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
+    if (ob) v.backgroundColor = ob;
+    for (UIView *hv in (NSMutableArray *)objc_getAssociatedObject(v, &kWCHiddenViewsKey)) hv.hidden = NO;
+    objc_setAssociatedObject(v, &kWCHiddenViewsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    WCRestoreStrong(v, 3);
+    objc_setAssociatedObject(v, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 static void WCForceTabView(UIView *v) {
-    if (!WCConfigColor(@"tab")) return;
-    if (v.traitCollection.userInterfaceStyle != UIUserInterfaceStyleDark) return;
     UIColor *cfg = WCConfigColor(@"tab");
+    BOOL dark = (v.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    if (!cfg || !dark) { WCRestoreTabView(v); return; }
     UIColor *dyn = WCDynamicColor(@"tab", [UIColor whiteColor]);
+    NSNumber *forced = objc_getAssociatedObject(v, &kWCForcedKey);
+    if (!forced.boolValue) {
+        // 首次强制前存档原件（自身背景 + UITabBar 的 appearance/tint/背景图），浅色时恢复
+        if (v.backgroundColor) objc_setAssociatedObject(v, &kWCOrigBGKey, v.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if ([v isKindOfClass:[UITabBar class]]) {
+            UITabBar *tb0 = (UITabBar *)v;
+            if (tb0.standardAppearance) objc_setAssociatedObject(v, &kWCOrigStdAppKey, tb0.standardAppearance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (tb0.scrollEdgeAppearance) objc_setAssociatedObject(v, &kWCOrigEdgeAppKey, tb0.scrollEdgeAppearance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (tb0.barTintColor) objc_setAssociatedObject(v, &kWCOrigTintKey, tb0.barTintColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (tb0.backgroundImage) objc_setAssociatedObject(v, &kWCOrigNavImageKey, tb0.backgroundImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        objc_setAssociatedObject(v, &kWCForcedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     if ([v isKindOfClass:[UITabBar class]]) {
         UITabBar *tb = (UITabBar *)v;
         UITabBarAppearance *ap = tb.standardAppearance;
@@ -336,12 +432,36 @@ static void WCScanAndForceTabs(UIView *root, int depth) {
     for (UIView *s in root.subviews) WCScanAndForceTabs(s, depth - 1);
 }
 
+// 扫描注册：v3.3 快照证实 MMInputToolView 的 didMoveToWindow 钩子从未触发（registry input 恒 0），
+// 聊天底栏改走扫描——类名含 InputTool 的视图登记进 input 表、含 MsgContentNavBar 的登记进 nav 表，
+// 之后由 0.4 秒强刷统一接管（深色强制、浅色恢复都在 WCForceBar 里按 trait 分流）。
+static BOOL gChatDiagScheduled = NO;
+static void WCScanRegister(UIView *root, int depth) {
+    if (!root || depth < 0) return;
+    NSString *cls = NSStringFromClass([root class]);
+    if ([cls containsString:@"InputTool"]) {
+        if (![gBarsInput containsObject:root]) {
+            WCRegisterBar(gBarsInput, root);
+            if (!gChatDiagScheduled) {
+                gChatDiagScheduled = YES;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{ WCCollectDiag(@"chat"); });
+            }
+        }
+    } else if ([cls containsString:@"MsgContentNavBar"]) {
+        WCRegisterBar(gBarsNav, root);
+    }
+    for (UIView *s in root.subviews) WCScanRegister(s, depth - 1);
+}
+
 #pragma mark - 诊断快照（设置页展示，用户截图/复制即可，不用连电脑抓日志）
 
 static NSString *WCHexOfColor(UIColor *c) {
     if (!c) return @"nil";
     UIColor *d = [c resolvedColorWithTraitCollection:WCDarkTrait()];
-    CGFloat r = 0, g = 0, b = 0, a = 0;
+    CGFloat r = 0, g = 0, b = 0, a = 0, w = 0;
+    if ([d getWhite:&w alpha:&a])
+        return [NSString stringWithFormat:@"#%02X%02X%02X a%.2f", (int)lrint(w * 255), (int)lrint(w * 255), (int)lrint(w * 255), a];
     if (![d getRed:&r green:&g blue:&b alpha:&a]) return @"pat";
     return [NSString stringWithFormat:@"#%02X%02X%02X a%.2f", (int)lrint(r * 255), (int)lrint(g * 255), (int)lrint(b * 255), a];
 }
@@ -378,28 +498,64 @@ static void WCCollectDiag(NSString *scene) {
     NSMutableString *out = [NSMutableString stringWithFormat:@"== WCBlack diag (%@) ==\n", scene];
     [out appendFormat:@"registry tab=%lu nav=%lu input=%lu\n",
         (unsigned long)gBarsTab.count, (unsigned long)gBarsNav.count, (unsigned long)gBarsInput.count];
-    UIWindow *win = nil;
-    for (UIWindow *w in [UIApplication sharedApplication].windows) if (w.isKeyWindow) { win = w; break; }
-    if (!win) win = [UIApplication sharedApplication].windows.firstObject;
-    if (win) {
+    // 窗口按 key 优先排序，查找遍历全部窗口（v3.3 只查 keyWindow，输入栏在别的窗口就找不到）
+    NSMutableArray<UIWindow *> *wins = [NSMutableArray array];
+    for (UIWindow *w in [UIApplication sharedApplication].windows) if (w.isKeyWindow) [wins addObject:w];
+    for (UIWindow *w in [UIApplication sharedApplication].windows) if (!w.isKeyWindow) [wins addObject:w];
+    // 注册表里的导航栏逐个转储：浅色黑带到底是哪根栏、什么状态，看这里
+    [out appendString:@"-- NAV registry --\n"];
+    BOOL anyNav = NO;
+    for (id b in gBarsNav.allObjects) {
+        if (![b isKindOfClass:[UIView class]]) continue;
+        UIView *bar = (UIView *)b;
+        if (!bar.window) continue;
+        anyNav = YES;
+        WCDumpView(out, bar, 0, 2);
+        if ([bar isKindOfClass:[UINavigationBar class]]) {
+            UINavigationBar *nb = (UINavigationBar *)bar;
+            [out appendFormat:@"  [appearance bg=%@ tint=%@ bgImage=%@]\n",
+                WCHexOfColor(nb.standardAppearance.backgroundColor),
+                WCHexOfColor(nb.barTintColor),
+                [nb backgroundImageForBarMetrics:UIBarMetricsDefault] ? @"set" : @"nil"];
+        }
+    }
+    if (!anyNav) [out appendString:@"(none in window)\n"];
+    UIWindow *tabWin = nil;
+    UIView *tabFound = nil;
+    for (UIWindow *win in wins) {
         UIView *tab = WCFindInTree(win, ^BOOL(UIView *v) {
             if (!WCIsTabCandidate(v)) return NO;
             CGRect f = [v convertRect:v.bounds toView:nil];
             return f.origin.y > win.bounds.size.height * 0.7;
         }, 12);
         [out appendString:@"-- TAB strip --\n"];
-        if (tab) { WCDumpView(out, tab, 0, 2); WCDumpAncestors(out, tab); } else [out appendString:@"(not found)\n"];
-        UIView *input = WCFindInTree(win, ^BOOL(UIView *v) { return [NSStringFromClass([v class]) containsString:@"InputTool"]; }, 14);
+        if (tab) { WCDumpView(out, tab, 0, 2); WCDumpAncestors(out, tab); tabWin = win; tabFound = tab; }
+        else [out appendString:@"(not found)\n"];
+        UIView *input = WCFindInTree(win, ^BOOL(UIView *v) { return [NSStringFromClass([v class]) containsString:@"InputTool"]; }, 16);
         [out appendString:@"-- INPUT strip --\n"];
         if (input) { WCDumpView(out, input, 0, 2); WCDumpAncestors(out, input); } else [out appendString:@"(not found)\n"];
-        UIView *hdr = WCFindInTree(win, ^BOOL(UIView *v) { NSString *c = NSStringFromClass([v class]); return [c containsString:@"MsgContentNavBar"]; }, 14);
+        UIView *hdr = WCFindInTree(win, ^BOOL(UIView *v) { NSString *c = NSStringFromClass([v class]); return [c containsString:@"MsgContentNavBar"]; }, 16);
         [out appendString:@"-- CHAT header --\n"];
         if (hdr) { WCDumpView(out, hdr, 0, 2); WCDumpAncestors(out, hdr); } else [out appendString:@"(not found)\n"];
+        if (tab) break;
+    }
+    // 顶部/底部条带 hitTest：不管类名是什么，点到谁就顺祖先链看谁在画
+    UIWindow *hw = tabWin ?: wins.firstObject;
+    if (hw) {
+        CGFloat W = hw.bounds.size.width, H = hw.bounds.size.height;
+        [out appendString:@"-- TOP hit --\n"];
+        UIView *hitT = [hw hitTest:CGPointMake(W / 2, 64) withEvent:nil];
+        if (hitT) { WCDumpView(out, hitT, 0, 0); WCDumpAncestors(out, hitT); } else [out appendString:@"(none)\n"];
+        [out appendString:@"-- BOTTOM hit --\n"];
+        UIView *hitB = [hw hitTest:CGPointMake(W / 2, H - 44) withEvent:nil];
+        if (hitB) { WCDumpView(out, hitB, 0, 0); WCDumpAncestors(out, hitB); } else [out appendString:@"(none)\n"];
+        (void)tabFound;
     }
     NSString *old = [[NSUserDefaults standardUserDefaults] stringForKey:@"WCBlack.diag"];
     NSString *merged = old ? [NSString stringWithFormat:@"%@\n%@", old, out] : out;
-    if (merged.length > 6000) merged = [merged substringFromIndex:merged.length - 6000];
+    if (merged.length > 12000) merged = [merged substringFromIndex:merged.length - 12000];
     [[NSUserDefaults standardUserDefaults] setObject:merged forKey:@"WCBlack.diag"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
 // 配置变更后：全窗重扫，动态色重新解析、栏重新强制
@@ -527,6 +683,33 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
 
 #pragma mark - 设置页
 
+// 诊断全文页：可滚动、可全选复制，右上角一键复制全部（v3.3 的页脚小框滚不动，废弃）
+@interface WCDiagViewController : UIViewController
+@property (nonatomic, strong) UITextView *textView;
+@end
+@implementation WCDiagViewController
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"诊断信息";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+    self.textView = [[UITextView alloc] initWithFrame:self.view.bounds];
+    self.textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.textView.editable = NO;
+    self.textView.selectable = YES;
+    self.textView.font = [UIFont fontWithName:@"Menlo" size:10] ?: [UIFont systemFontOfSize:10];
+    NSString *diag = [[NSUserDefaults standardUserDefaults] stringForKey:@"WCBlack.diag"];
+    self.textView.text = diag.length ? diag : @"（暂无诊断数据：先回首页停几秒、再随便进一个聊天页，然后回到本页点诊断）";
+    [self.view addSubview:self.textView];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"复制全部" style:UIBarButtonItemStyleDone target:self action:@selector(wcCopyAll)];
+}
+- (void)wcCopyAll {
+    [UIPasteboard generalPasteboard].string = self.textView.text;
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"已复制" message:@"切回聊天，长按输入框粘贴发我即可" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
+}
+@end
+
 @interface WCBlackSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate, UIColorPickerViewControllerDelegate>
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, copy) NSString *pickingModule;
@@ -540,16 +723,6 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    // 诊断区：底部/聊天栏若仍不变色，把这段文字复制或截图发我即可
-    NSString *diag = [[NSUserDefaults standardUserDefaults] stringForKey:@"WCBlack.diag"];
-    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 300)];
-    tv.editable = NO;
-    tv.selectable = YES;
-    tv.font = [UIFont fontWithName:@"Menlo" size:9] ?: [UIFont systemFontOfSize:9];
-    tv.backgroundColor = [UIColor clearColor];
-    tv.text = diag.length ? diag : @"（暂无诊断数据：先回首页停几秒、再随便进一个聊天页，然后回到本页）";
-    self.tableView.tableFooterView = tv;
-    [tv release];
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     [self.view addSubview:self.tableView];
@@ -558,15 +731,21 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
 - (void)wcReload { [self.tableView reloadData]; }
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    return s == 0 ? 1 : (NSInteger)WCModules().count;
+    if (s == 0) return 1;
+    if (s == 2) return 1;
+    return (NSInteger)WCModules().count;
 }
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
-    return s == 0 ? @"总开关" : @"各模块颜色（仅深色模式生效）";
+    if (s == 0) return @"总开关";
+    if (s == 2) return @"诊断";
+    return @"各模块颜色（仅深色模式生效）";
 }
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
-    return s == 1 ? @"点模块选颜色：纯黑 / 深灰 / 石墨 / 色谱选择 / 输入色值 / 原色（关闭该模块）。改完即时生效，不用重启微信。" : nil;
+    if (s == 1) return @"点模块选颜色：纯黑 / 深灰 / 石墨 / 色谱选择 / 输入色值 / 原色（关闭该模块）。改完即时生效，不用重启微信。";
+    if (s == 2) return @"还有哪处不变色：先回首页停几秒、再随便进一个聊天页停两秒，回到本页点开诊断，用右上角「复制全部」粘贴发我。";
+    return nil;
 }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:@"c"];
@@ -577,6 +756,11 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
     if (ip.section == 0) {
         cell.textLabel.text = @"启用 WCBlack";
         cell.detailTextLabel.text = WCEnabled() ? @"开" : @"关";
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.accessoryView = nil;
+    } else if (ip.section == 2) {
+        cell.textLabel.text = @"诊断信息";
+        cell.detailTextLabel.text = @"点开查看 / 复制";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.accessoryView = nil;
     } else {
@@ -596,6 +780,13 @@ static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp) {
 }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section == 2) {
+        WCCollectDiag(@"settings"); // 点开即重采当前状态
+        WCDiagViewController *dvc = [[WCDiagViewController alloc] init];
+        [self.navigationController pushViewController:dvc animated:YES];
+        [dvc release];
+        return;
+    }
     if (ip.section == 0) {
         BOOL on = !WCEnabled();
         [[NSUserDefaults standardUserDefaults] setBool:on forKey:kWCEnabledKey];
@@ -694,7 +885,7 @@ static void WCInstall(void) {
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v3.3 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v3.4 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     if (!gRegistered) {
         Class mgr = NSClassFromString(@"WCPluginsMgr");
@@ -705,8 +896,8 @@ static void WCInstall(void) {
             for (id p in existing) { if ([[p valueForKey:@"title"] containsString:@"WCBlack"]) { dup = YES; break; } }
             if (!dup && [inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
                 ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-                    @"WCBlack 纯黑背景", @"3.3", @"WCBlackSettingsViewController");
-                os_log(WCLog(), "[WCBlack] v3.3 registered in plugin list");
+                    @"WCBlack 纯黑背景", @"3.4", @"WCBlackSettingsViewController");
+                os_log(WCLog(), "[WCBlack] v3.4 registered in plugin list");
             }
             gRegistered = YES;
         }
