@@ -46,20 +46,21 @@
 //      kRNUpdateThemeNormalNotification，即 +setNightMode: 内部同款三连，不动 NIGHT_MODE_KEY、
 //      不调 +changeTheme——那是带快照动画的日夜翻转，误调会把日夜模式翻过去），
 //     让已在屏的页面按原渠道重新取色重绘。
-//   存量视图兜底（本轮新增，定案见下方清扫段注释）：发色点只拦后续取色，页面根视图/
-//     列表视图攥着启动时取走的存量画布色不重取（装后补发通知只黑了顶部 chrome、
-//     内容区仍灰）——故加窗口级清扫：仅在安装后/开关切换后/底栏 apply 三个时机，
-//     把背景色与夜间画布旧值精确相等的视图改纯黑并打标记、可按标记还原；
-//     cell 内部与卡片类整棵跳过。边界铁律仍在（WCBlack v3.4 教训）：不整树无差别
-//     刷色、不涂全屏覆盖层/透明宿主根背景、不挂定时器轮询——清扫只碰色值精确命中
-//     画布旧值的视图，且全程可逆。
+//   安装时机（本轮定案改为源头提前）：主题发色点 hook 在 +load 即装——赶在任何页面
+//     建成取色之前。内容区画布色是基类 ZHViewController 在 viewDidLoad 一次性取走
+//     的存量，+1s 延迟装钩时首页早已建成、事后补救（主题通知/窗口清扫）都够不着它
+//     （清扫还误伤过底栏附近的画布色容器，已整段删除）。+load 里只做发色点类方法
+//     swizzle 这一件最小动作；画布模型保持懒解析（首次取色时 dispatch_once 解析，
+//     +load 里绝不碰 ZHColorModel——首版闪退的嫌疑正是 +load 期急切解析）。
+//     底栏/设置两段仍维持 didFinishLaunching + 1s 延迟安装，与本段无关。
 //
 // 开关与入口：
 //   玻璃：NSUserDefaults 键 ZHPlugin.GlassBar（新键不存在时回读旧键 ZHGlassBar.Enabled 迁移），默认开。
 //   纯黑：NSUserDefaults 键 ZHPlugin.BlackBG，默认开。
 //   设置页入口：ZHCommonSettingViewController 里锚定 contactsCellInfo（「查看通讯录好友」行模型对象），
-//     在其所在组数组内插到它正上方，连插两行（自上而下：玻璃底栏、纯黑背景），行模型用
-//     ZHSettingCellInfo 官方工厂 +switchCellInfoForTitle:subTitle:action:on: 构造（原生 cell 渲染）；
+//     在其所在组数组内插到它正上方，连插三行（自上而下：玻璃底栏、纯黑背景、诊断信息），开关行用
+//     ZHSettingCellInfo 官方工厂 +switchCellInfoForTitle:subTitle:action:on: 构造（原生 cell 渲染），
+//     诊断行用 +normalCellInfoForTitle:subTitle:target:selector: 构造（点击复制诊断文本到剪贴板，纯读取）；
 //     另留长按底栏 0.8s 切换玻璃作兜底入口。
 // 纯运行时 swizzle + 类动态加方法，无 substrate 依赖；玻璃类全部动态解析。本文件按 MRC 编写：
 //   凡赋给 associated/全局的对象一律 alloc/init 或 RETAIN 持有（WCBlack v3 首启闪退教训）。
@@ -127,6 +128,8 @@ static void ZHRegisterBar(UIView *bar) {
 
 static void ZHApplyBar(UIView *bar); // 前置声明，定义在布局节
 static void ZHRequestApply(UIView *bar); // 前置声明，定义在布局节
+static NSString *ZPBuildDiagnostics(void); // 前置声明，定义在设置页节（诊断行）
+static BOOL gThemeHookInstalled = NO; // 主题段已装标记：+load 期即安装，诊断行也要读，故在此声明（安装节不再重复定义）
 
 static void ZHSetGlassEnabled(BOOL on) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -201,117 +204,13 @@ static void ZPPostThemeRefresh(void) {
                     userInfo:@{ @"isNight": @(night) }];
 }
 
-#pragma mark - 纯黑背景（窗口级清扫：存量视图兜底）
-
-// 为什么需要清扫（2026-11-26 静态排查定案）：发色点只拦「后续取色」，而页面画布色是
-// 在视图建成时一次性取走存量 UIColor 的——基类 ZHViewController 的 -viewDidLoad
-// （@0x1052376c0，函数内有 ZHColorModel 类引用）取画布色设到根视图后不再重取；
-// 首页容器 ZHFeedsContainerExploreAViewController 的 viewDidLoad 与
-// setUpFeed:andCollectionView: 均无背景设置，其内容区（feed 根视图/列表视图）的
-// #191B1F 同样是启动期存量。故装后补发主题通知只让顶部 chrome（自带主题监听）
-// 重取变黑，内容区纹丝不动（真机采样：状态栏区纯黑、feed 全域仍 (26,27,31)）。
-// 清扫口径：遍历 keyWindow 视图树，背景色与夜间画布旧值（99A #191B1F / 10A #212429，
-// 逐分量容差 ±2/255、alpha 近 1）精确相等的视图 → 改纯黑并打标记（记 token 与原色）；
-// cell 内部与类名含 Card 的卡片视图整棵跳过。还原（关开关/切日间）时按标记逐个
-// 经发色点现取对应画布色写回，现取失败才回落存档原色。
-// 时机仅限三处：主题段安装完成后下一拍、开关切换后下一拍、底栏 apply 同一拍
-// （涂黑方向 0.5s 节流）；不挂定时器、不轮询、不整树无差别刷色。
-
-static char kBlackMarkKey;  // NSNumber：1=MapUIFrame99A / 2=MapUIFrame10A（RETAIN）
-static char kBlackOrigKey;  // 涂黑前的原始 UIColor（RETAIN，现取失败时兜底还原）
-static NSHashTable *gBlackMarked = nil; // weak 持有被标记视图（表本身 alloc/init 持有）
-static NSTimeInterval gLastBlackenAt = 0;
-
-static BOOL ZPColorComponents(UIColor *c, CGFloat *r, CGFloat *g, CGFloat *b, CGFloat *a) {
-    if (!c) return NO;
-    if ([c getRed:r green:g blue:b alpha:a]) return YES;
-    CGFloat w = 0;
-    if ([c getWhite:&w alpha:a]) { *r = *g = *b = w; return YES; }
-    return NO;
-}
-
-// 命中夜间画布旧值则返回 token 序号（1=99A / 2=10A），否则 0
-static int ZPNightCanvasToken(UIColor *c) {
-    CGFloat r, g, b, a;
-    if (!ZPColorComponents(c, &r, &g, &b, &a)) return 0;
-    if (a < 0.99) return 0;
-    const CGFloat tol = 2.5 / 255.0;
-    if (fabs(r - 0x19 / 255.0) <= tol && fabs(g - 0x1B / 255.0) <= tol && fabs(b - 0x1F / 255.0) <= tol) return 1;
-    if (fabs(r - 0x21 / 255.0) <= tol && fabs(g - 0x24 / 255.0) <= tol && fabs(b - 0x29 / 255.0) <= tol) return 2;
-    return 0;
-}
-
-static BOOL ZPSweepShouldSkip(UIView *v) {
-    if ([v isKindOfClass:[UITableViewCell class]] || [v isKindOfClass:[UICollectionViewCell class]]) return YES;
-    NSString *cls = NSStringFromClass(object_getClass(v));
-    if ([cls rangeOfString:@"Card"].location != NSNotFound) return YES;
-    return NO;
-}
-
-static void ZPBlackenWalk(UIView *v) {
-    if (ZPSweepShouldSkip(v)) return; // cell/卡片整棵跳过，不下钻
-    UIColor *bg = v.backgroundColor;
-    if (bg && !objc_getAssociatedObject(v, &kBlackMarkKey)) {
-        int token = ZPNightCanvasToken(bg);
-        if (token) {
-            if (!gBlackMarked)
-                gBlackMarked = [[NSHashTable alloc] initWithOptions:NSPointerFunctionsWeakMemory capacity:0];
-            objc_setAssociatedObject(v, &kBlackMarkKey, @(token), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(v, &kBlackOrigKey, bg, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [gBlackMarked addObject:v];
-            v.backgroundColor = [UIColor blackColor];
-        }
-    }
-    for (UIView *s in v.subviews) ZPBlackenWalk(s);
-}
-
-static void ZPBlackRestore(void) {
-    if (!gBlackMarked) return;
-    ZPResolveCanvasModels();
-    Class tmCls = NSClassFromString(@"ZHThemeManage");
-    for (UIView *v in [gBlackMarked allObjects]) {
-        NSNumber *token = objc_getAssociatedObject(v, &kBlackMarkKey);
-        if (!token) continue;
-        id model = (token.intValue == 1) ? gCanvasMain : gCanvasSecondary;
-        UIColor *fresh = nil;
-        if (tmCls && model && [tmCls respondsToSelector:@selector(colorWithModel:ignoreNight:)])
-            fresh = ((id (*)(id, SEL, id, BOOL))objc_msgSend)(tmCls, @selector(colorWithModel:ignoreNight:), model, NO);
-        if (!fresh) fresh = objc_getAssociatedObject(v, &kBlackOrigKey);
-        if (fresh) v.backgroundColor = fresh;
-        objc_setAssociatedObject(v, &kBlackMarkKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(v, &kBlackOrigKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-}
-
-// 清扫入口：夜间+开关开 → 涂黑（节流）；否则 → 还原已标记视图
-static void ZPBlackSweep(void) {
-    if (![NSThread isMainThread]) {
-        dispatch_async(dispatch_get_main_queue(), ^{ ZPBlackSweep(); });
-        return;
-    }
-    if (ZPBlackEnabled() && ZPAppIsNight()) {
-        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-        if (now - gLastBlackenAt < 0.5) return;
-        gLastBlackenAt = now;
-        UIWindow *win = nil;
-        for (UIWindow *w in [UIApplication sharedApplication].windows) {
-            if (w.isKeyWindow) { win = w; break; }
-        }
-        if (!win) win = [UIApplication sharedApplication].windows.firstObject;
-        if (win) ZPBlackenWalk(win);
-    } else {
-        ZPBlackRestore();
-    }
-}
-
 static void ZPSetBlackEnabled(BOOL on) {
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     [ud setBool:on forKey:kZPBlackKey];
     [ud synchronize];
     void (^apply)(void) = ^{
+        // 主题钩已在 +load 源头装好：切换后补发主题通知，让已在屏页面按原渠道重取色
         ZPPostThemeRefresh();
-        // 存量视图不随通知重取色：下一拍再清扫一遍（开→涂黑存量，关→按标记还原）
-        dispatch_async(dispatch_get_main_queue(), ^{ ZPBlackSweep(); });
         for (UIView *bar in [gLiveBars allObjects]) ZHApplyBar(bar);
     };
     if ([NSThread isMainThread]) apply();
@@ -342,7 +241,7 @@ static char kPlateLensKey;  // 是否透镜（NSNumber, RETAIN）——决定 fi
 
 // 参数初值（均为真机微调项）：
 //   blur style = 6（SystemUltraThinMaterial）；
-//   盘 fill：夜间 白 α0.06、日间 白 α0.30；透镜 fill：夜间 白 α0.10、日间 白 α0.45；
+//   盘 fill：夜间 白 α0.06、日间 白 α0.30；透镜 fill：夜间 白 α0.10、日间 白 α0.18；
 //   wash：白色对角渐变 α 0.10 → 0.02；rim：白 α0.15、宽 1/scale；
 //   shadow：黑、opacity 0.25、radius 16、offset (0,6)。
 static UIView *ZHMakePlate(BOOL lens) {
@@ -400,11 +299,24 @@ static UIView *ZHMakePlate(BOOL lens) {
 // ZHSetPlateFrame 每轮布局都会调用本函数，而主题切换（notifyThemeSwitch /
 // updateTheme: / trait 变化）最终都经 ZHApplyBar→ZHLayoutBar→ZHSetPlateFrame
 // 走到这里，故主题切换自动跟随、无需另挂刷新点。逐项先比对现值再写，保持幂等。
+// 明暗数据源定案（本轮）：ZPAppIsNight 改前改后都是同一口径——优先 ZHThemeManage
+// +isNightMode（知乎自有主题权威），次选 ZHTabBarNewTheme.share.isDark，系统 trait
+// 仅末位兜底；fill 的明暗取值本来就走它、没脱节。真正脱节的是材质层本身：
+// UIBlurEffect 的明暗由效果视图的 traitCollection（系统外观）解析，知乎主题与
+// 系统外观不一致时（如知乎夜间+系统浅色），材质会按系统那侧渲染（真机暗色图里
+// 胶囊呈浅灰即此）。修法照 DYKiller 对其 Regular 槽位的做法：给盘/透镜外壳钉
+// overrideUserInterfaceStyle（夜→Dark、日→Light），外壳的 trait 覆盖会传给整棵
+// 子树（材质/fill/wash/rim 一并按知乎主题解析）；本函数每轮布局都会跑到，
+// 主题切换时在既有刷新路径里自然同步更新，无需另挂刷新点。
 static void ZHPlateApplyTheme(UIView *plate) {
     BOOL lens = [objc_getAssociatedObject(plate, &kPlateLensKey) boolValue];
     BOOL dark = ZPAppIsNight();
+    UIUserInterfaceStyle wantStyle = dark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+    if (plate.overrideUserInterfaceStyle != wantStyle)
+        plate.overrideUserInterfaceStyle = wantStyle;
     UIView *fill = objc_getAssociatedObject(plate, &kPlateFillKey);
-    CGFloat fa = lens ? (dark ? 0.10 : 0.45) : (dark ? 0.06 : 0.30);
+    // 透镜日间 fill：0.45 在浅色图里读作实心灰片（采样 (222,220,221)），降到 0.18；夜间 0.10 不动
+    CGFloat fa = lens ? (dark ? 0.10 : 0.18) : (dark ? 0.06 : 0.30);
     UIColor *fc = [UIColor colorWithWhite:1.0 alpha:fa];
     if (fill && ![fill.backgroundColor isEqual:fc]) fill.backgroundColor = fc;
     UIView *rim = objc_getAssociatedObject(plate, &kPlateRimKey);
@@ -467,6 +379,7 @@ static CGRect ZHClampRectToBounds(CGRect r, CGRect bounds) {
 - (void)zhPluginGlassSwitchChanged:(id)sender;
 - (void)zhPluginBlackSwitchChanged:(id)sender;
 - (void)zhPluginLongPress:(UILongPressGestureRecognizer *)g;
+- (void)zhPluginDiagTapped:(id)sender;
 @end
 
 static ZHPluginHandler *gHandler = nil;
@@ -477,6 +390,7 @@ static ZHPluginHandler *ZPHandler(void) {
 
 static id gGlassCellInfo = nil;  // 设置页「玻璃底栏」行模型（静态 RETAIN，全程一份）
 static id gBlackCellInfo = nil;  // 设置页「纯黑背景」行模型（静态 RETAIN，全程一份）
+static id gDiagCellInfo = nil;   // 设置页「诊断信息」行模型（静态 RETAIN，全程一份）
 static id gGlassBlock = nil;     // 玻璃行模型的 action block（copy 后静态持有，MRC 防悬空）
 static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
 
@@ -505,6 +419,23 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
     BOOL target = !ZHGlassEnabled();
     if (gGlassCellInfo) ZHSetBool(gGlassCellInfo, @"setSwitchOn:", target);
     ZHSetGlassEnabled(target);
+}
+// 诊断行点击：纯读取拼诊断文本 → 复制到剪贴板 → 行副标题改「已复制」并 best-effort 刷新该表。
+// sender 可能是行模型/cell/无参，方法本体不依赖它（数据从 gDiagCellInfo 与 gLiveBars 取）。
+- (void)zhPluginDiagTapped:(id)sender {
+    (void)sender;
+    NSString *text = ZPBuildDiagnostics();
+    [UIPasteboard generalPasteboard].string = text;
+    NSLog(@"[zhplugin] diagnostics copied (%lu chars)", (unsigned long)text.length);
+    if (gDiagCellInfo && [gDiagCellInfo respondsToSelector:@selector(setSubTitle:)]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(gDiagCellInfo, @selector(setSubTitle:), @"已复制");
+        @try {
+            id cell = ZHGetObj(gDiagCellInfo, @"cell");
+            UIView *v = [cell isKindOfClass:[UIView class]] ? (UIView *)cell : nil;
+            while (v && ![v isKindOfClass:[UITableView class]]) v = v.superview;
+            if (v) [(UITableView *)v reloadData];
+        } @catch (NSException *e) { /* 副标题刷新失败无碍，剪贴板已写入 */ }
+    }
 }
 @end
 
@@ -721,9 +652,6 @@ static void ZHApplyBar(UIView *bar) {
     }
     if (ZHGlassEnabled()) ZHLayoutBar(bar);
     else ZHRestoreBar(bar);
-    // 纯黑清扫第三个时机点：与底栏 apply 同一拍（内部 0.5s 节流；切页/主题变化时
-    // 新在屏的存量画布视图在这里被补涂，日间/关开关时同一入口按标记还原）
-    ZPBlackSweep();
 }
 
 static void ZHRequestApply(UIView *bar) {
@@ -739,7 +667,7 @@ static void ZHRequestApply(UIView *bar) {
 // item 的 themeSelected 可能尚未更新，同步读会让透镜落到旧选中项（旧版「点击有 bug」成因之一）；
 // 下一拍状态已定，透镜动画在 ZHLayoutBar 内按选中序号变化触发。
 
-#pragma mark - 设置页插行（锚点：contactsCellInfo 行模型对象本身，连插两行）
+#pragma mark - 设置页插行（锚点：contactsCellInfo 行模型对象本身，连插三行）
 
 // 在 owner 对象的全部 object 型属性/ivar 里找「装着 anchor 的数组」，返回定位信息
 // 结果字典：owner / key（属性名或 ivar 名）/ array / index / viaIvar(BOOL)
@@ -857,6 +785,95 @@ static void ZPAttachSwitch(id cellInfo, SEL action, BOOL on) {
     [sw setOn:on animated:NO];
 }
 
+#pragma mark - 诊断行（纯读取取证，点一次复制到剪贴板，避免再靠截图猜）
+
+// 颜色读数格式化（诊断专用；读不出分量时回落 description）
+static NSString *ZPColorDesc(UIColor *c) {
+    if (!c) return @"nil";
+    CGFloat r, g, b, a;
+    if ([c getRed:&r green:&g blue:&b alpha:&a])
+        return [NSString stringWithFormat:@"rgba(%.0f,%.0f,%.0f,%.2f)", r * 255, g * 255, b * 255, a];
+    CGFloat w;
+    if ([c getWhite:&w alpha:&a])
+        return [NSString stringWithFormat:@"white(%.0f,%.2f)", w * 255, a];
+    return [c description];
+}
+
+static void ZPDiagWalk(UIView *v, NSMutableString *out, int depth) {
+    if (depth > 6) return;
+    NSMutableString *indent = [NSMutableString string];
+    for (int i = 0; i < depth; i++) [indent appendString:@"  "];
+    [out appendFormat:@"%@%@ frame=%@ bg=%@ hidden=%d alpha=%.2f style=%ld\n",
+         indent, NSStringFromClass(object_getClass(v)), NSStringFromCGRect(v.frame),
+         ZPColorDesc(v.backgroundColor), (int)v.hidden, v.alpha,
+         (long)v.overrideUserInterfaceStyle];
+    for (UIView *s in v.subviews) ZPDiagWalk(s, out, depth + 1);
+}
+
+// 诊断文本：知乎主题值 / 系统 trait / 盘与透镜 frame（bar 坐标）/ 盘子树逐层
+// （类名+frame+背景色读数）/ 底栏 item 列表（类名/frame/hidden/alpha）/ 颜色钩已装。
+// 全程只读，不改任何状态；临时对象均为 autorelease，MRC 安全。
+static NSString *ZPBuildDiagnostics(void) {
+    NSMutableString *s = [NSMutableString stringWithString:@"[zhplugin 诊断]\n"];
+    Class tmCls = NSClassFromString(@"ZHThemeManage");
+    NSString *tmVal = @"n/a";
+    if (tmCls && [tmCls respondsToSelector:@selector(isNightMode)])
+        tmVal = ((BOOL (*)(id, SEL))objc_msgSend)(tmCls, @selector(isNightMode)) ? @"YES" : @"NO";
+    [s appendFormat:@"知乎主题 isNightMode=%@ / ZPAppIsNight=%@\n",
+         tmVal, ZPAppIsNight() ? @"YES" : @"NO"];
+    UIWindow *win = nil;
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.isKeyWindow) { win = w; break; }
+    }
+    if (!win) win = [UIApplication sharedApplication].windows.firstObject;
+    [s appendFormat:@"系统 trait=%ld (0未定/1浅/2深)\n", (long)win.traitCollection.userInterfaceStyle];
+    [s appendFormat:@"颜色钩已装=%@ / 纯黑开关=%@ / 玻璃开关=%@\n",
+         gThemeHookInstalled ? @"YES" : @"NO",
+         ZPBlackEnabled() ? @"ON" : @"OFF", ZHGlassEnabled() ? @"ON" : @"OFF"];
+    UIView *bar = [gLiveBars allObjects].firstObject;
+    if (!bar) { [s appendString:@"底栏: 尚无实例\n"]; return s; }
+    [s appendFormat:@"底栏 %@ bounds=%@ frame=%@ bg=%@\n",
+         NSStringFromClass(object_getClass(bar)), NSStringFromCGRect(bar.bounds),
+         NSStringFromCGRect(bar.frame), ZPColorDesc(bar.backgroundColor)];
+    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    if (capsule)
+        [s appendFormat:@"胶囊 frame=%@ hidden=%d\n", NSStringFromCGRect(capsule.frame), (int)capsule.hidden];
+    else
+        [s appendString:@"胶囊: 未创建\n"];
+    if (lens)
+        [s appendFormat:@"透镜 frame=%@ hidden=%d\n", NSStringFromCGRect(lens.frame), (int)lens.hidden];
+    else
+        [s appendString:@"透镜: 未创建\n"];
+    if (capsule) { [s appendString:@"胶囊子树:\n"]; ZPDiagWalk(capsule, s, 1); }
+    if (lens) { [s appendString:@"透镜子树:\n"]; ZPDiagWalk(lens, s, 1); }
+    UIView *stack = ZHGetObj(bar, @"stackView");
+    NSArray *arranged = ZHGetObj(stack, @"arrangedSubviews");
+    [s appendFormat:@"items(%lu):\n", (unsigned long)arranged.count];
+    for (UIView *v in arranged) {
+        if (![v isKindOfClass:[UIView class]]) continue;
+        CGRect r = [bar convertRect:v.bounds fromView:v];
+        [s appendFormat:@"  %@ frame(bar坐标)=%@ hidden=%d alpha=%.2f selected=%@\n",
+             NSStringFromClass(object_getClass(v)), NSStringFromCGRect(r),
+             (int)v.hidden, v.alpha, ZHGetBool(v, @"themeSelected", NO) ? @"YES" : @"NO"];
+    }
+    return s;
+}
+
+// 诊断行模型：官方普通行工厂（target/selector 式）。工厂签名已在二进制核实：
+// ZHSettingCellInfo +normalCellInfoForTitle:subTitle:target:selector:
+// 类型编码 @48@0:8@16@24@32:40（title, subTitle, target, SEL）。
+static id ZPMakeDiagInfo(Class infoCls) {
+    if (gDiagCellInfo) return gDiagCellInfo;
+    SEL fac = @selector(normalCellInfoForTitle:subTitle:target:selector:);
+    if (![infoCls respondsToSelector:fac]) return nil;
+    id info = ((id (*)(id, SEL, id, id, id, SEL))objc_msgSend)(
+        infoCls, fac, @"诊断信息", @"点击复制诊断信息", ZPHandler(), @selector(zhPluginDiagTapped:));
+    if (!info) return nil;
+    gDiagCellInfo = [info retain];
+    return gDiagCellInfo;
+}
+
 static BOOL gSettingsDone = NO;
 static void ZHSettingsEnsureRows(id vc) {
     if (gSettingsDone) return;
@@ -879,38 +896,46 @@ static void ZHSettingsEnsureRows(id vc) {
     NSArray *arr = hit[@"array"];
     NSUInteger anchorIdx = [hit[@"index"] unsignedIntegerValue];
     // 幂等：按标题逐行核对，缺哪行补哪行
-    NSUInteger glassIdx = NSNotFound, blackIdx = NSNotFound;
+    NSUInteger glassIdx = NSNotFound, blackIdx = NSNotFound, diagIdx = NSNotFound;
     for (NSUInteger i = 0; i < arr.count; i++) {
         id el = arr[i];
         if (![el respondsToSelector:@selector(title)]) continue;
         NSString *t = [el title];
         if ([t isEqualToString:@"玻璃底栏"]) glassIdx = i;
         else if ([t isEqualToString:@"纯黑背景"]) blackIdx = i;
+        else if ([t isEqualToString:@"诊断信息"]) diagIdx = i;
     }
-    if (glassIdx != NSNotFound && blackIdx != NSNotFound) { gSettingsDone = YES; return; }
+    if (glassIdx != NSNotFound && blackIdx != NSNotFound && diagIdx != NSNotFound) {
+        gSettingsDone = YES;
+        return;
+    }
 
     id glassInfo = ZPMakeSwitchInfo(infoCls, @"玻璃底栏", @"开启后，底部栏使用清透玻璃效果",
                                     ZHGlassEnabled(), YES, &gGlassBlock, &gGlassCellInfo);
     id blackInfo = ZPMakeSwitchInfo(infoCls, @"纯黑背景", @"开启后，夜间模式下背景使用纯黑",
                                     ZPBlackEnabled(), NO, &gBlackBlock, &gBlackCellInfo);
     if (!glassInfo || !blackInfo) { NSLog(@"[zhplugin] settings: factory returned nil"); return; }
+    id diagInfo = ZPMakeDiagInfo(infoCls);
+    if (!diagInfo) NSLog(@"[zhplugin] settings: diag factory unavailable, switches still inserted");
     // 与锚点同 section 登记（照原生行的簿记方式）
     for (id info in @[glassInfo, blackInfo]) {
         if (section && [info respondsToSelector:@selector(addWeakSection:)])
             ((void (*)(id, SEL, id))objc_msgSend)(info, @selector(addWeakSection:), section);
     }
+    if (diagInfo && section && [diagInfo respondsToSelector:@selector(addWeakSection:)])
+        ((void (*)(id, SEL, id))objc_msgSend)(diagInfo, @selector(addWeakSection:), section);
 
-    // 目标顺序：[.., 玻璃底栏, 纯黑背景, contactsCellInfo(锚点), ..]
+    // 目标顺序：[.., 玻璃底栏, 纯黑背景, 诊断信息, contactsCellInfo(锚点), ..]
+    // 收敛式插入：先把已在数组里的我方行（就是上面三个单例本人）摘下，
+    // 再在锚点正上方按序整组插入——无论此前插到哪一步，本轮都收敛到同一形态。
     NSMutableArray *work = [arr mutableCopy];
-    if (glassIdx == NSNotFound && blackIdx == NSNotFound) {
-        [work insertObject:blackInfo atIndex:anchorIdx];
-        [work insertObject:glassInfo atIndex:anchorIdx];
-    } else if (glassIdx == NSNotFound) { // 已有纯黑行（排在锚点上方），玻璃插到它前面
-        [work insertObject:glassInfo atIndex:blackIdx];
-    } else { // 已有玻璃行，纯黑插到锚点正上方（玻璃之下、锚点之上）
-        NSUInteger ai = [work indexOfObjectIdenticalTo:anchor];
-        if (ai != NSNotFound) [work insertObject:blackInfo atIndex:ai];
-    }
+    NSMutableArray *ours = [NSMutableArray arrayWithObjects:glassInfo, blackInfo, nil];
+    if (diagInfo) [ours addObject:diagInfo];
+    for (id info in ours) [work removeObjectIdenticalTo:info];
+    NSUInteger ai = [work indexOfObjectIdenticalTo:anchor];
+    if (ai == NSNotFound) { [work release]; return; }
+    for (NSUInteger k = 0; k < ours.count; k++)
+        [work insertObject:ours[k] atIndex:ai + k];
     if ([arr isKindOfClass:[NSMutableArray class]]) {
         [(NSMutableArray *)arr removeAllObjects];
         [(NSMutableArray *)arr addObjectsFromArray:work];
@@ -918,8 +943,10 @@ static void ZHSettingsEnsureRows(id vc) {
         ZHSetContainerValue(hit, work);
     }
     [work release];
-    gSettingsDone = YES;
-    NSLog(@"[zhplugin] settings: rows inserted above contacts at index %lu", (unsigned long)anchorIdx);
+    // 诊断行没插成时不置 done：下次进设置页（loadData/viewDidAppear）再补一次
+    gSettingsDone = (diagInfo != nil);
+    NSLog(@"[zhplugin] settings: rows inserted above contacts at index %lu (diag=%@)",
+          (unsigned long)anchorIdx, diagInfo ? @"YES" : @"NO");
 
     dispatch_async(dispatch_get_main_queue(), ^{
         UITableView *tv = ZHFindTable([vc view]);
@@ -1051,7 +1078,6 @@ static IMP ZHSwapClassMethod(Class cls, SEL sel, IMP newImp) {
 }
 
 static BOOL gInstalled = NO;
-static BOOL gThemeHookInstalled = NO;
 static BOOL gSettingsHookInstalled = NO;
 
 // 段1：纯黑——主题发色点 hook（与底栏/设置两段解耦，互不拖累）
@@ -1062,17 +1088,15 @@ static void ZPInstallThemeHook(void) {
     gOrigColorWithModel = ZHSwapClassMethod(tmCls, @selector(colorWithModel:ignoreNight:),
                                             (IMP)ZP_Theme_colorWithModel);
     gThemeHookInstalled = (gOrigColorWithModel != NULL);
-    // 注意：这里不再预先解析画布模型；改由取色 hook 首次命中时懒解析（见 ZPResolveCanvasModels）。
+    // 注意：这里绝不预先解析画布模型；改由取色 hook 首次命中时懒解析（见 ZPResolveCanvasModels）。
     NSLog(@"[zhplugin] install segment theme: colorHook=%p installed=%d", gOrigColorWithModel, gThemeHookInstalled);
-    // 纯黑没生效的根因（本轮定案）：钩子在 didFinishLaunching+1s 才装上，而首页 feed 等
-    // 首屏视图的画布色在启动建视图时早已取走存量 UIColor 对象——发色点只改「后续取色」，
-    // 存量视图不会自己回头重取。故安装成功后立刻补发一次知乎自家主题通知三连（与开关
-    // 切换同款），让已在屏页面按原渠道重取色；之后新建页面走钩子天然命中。
+    // 本段由 +load 调用（见 ZHPluginLoader）：赶在任何页面建成取色之前装好，
+    // 首页等启动即建的页面在 viewDidLoad 取画布色时就走钩子，内容区直接纯黑，
+    // 不再需要事后补救（+1s 延迟装钩 + 窗口清扫的老路已废弃删除）。
+    // 装后补发一次知乎自家主题通知三连保留：+load 时刻尚无观察者时为空转，无害。
     if (gThemeHookInstalled && ZPBlackEnabled()) {
         ZPPostThemeRefresh();
-        // 通知只救自带主题监听的视图（顶部 chrome）；内容区存量画布色靠下一拍清扫兜底
-        dispatch_async(dispatch_get_main_queue(), ^{ ZPBlackSweep(); });
-        NSLog(@"[zhplugin] install segment theme: posted theme refresh + sweep for already-built views");
+        NSLog(@"[zhplugin] install segment theme: posted theme refresh after install");
     }
 }
 
@@ -1125,6 +1149,7 @@ static void ZPInstallSettingsHooks(void) {
 }
 
 // 三段独立安装：一段抛异常不许拖累其它段（WCBlack v4.7 教训）。
+// 主题段通常已在 +load 装好，这里的调用是未装成时的补装/无操作（函数内有已装守卫）。
 static void ZPInstall(void) {
     @try {
         ZPInstallThemeHook();
@@ -1149,16 +1174,30 @@ static void ZPInstall(void) {
 @interface ZHPluginLoader : NSObject
 @end
 @implementation ZHPluginLoader
-// +load 只登记启动完成通知：不在 +load 期装任何钩子、不碰任何 ZH 类、不解析画布模型。
-// 教训（2026-11-26 对照实验定性）：旧版在 +load 里立即 ZPInstall 并在安装期触发
-// ZHColorModel 的 +initialize/单例构造，此时宿主自身 +load 尚未跑完、UIApplication
-// 未建，疑致启动即闪退（空插件对照版同法注入不退，已排除镜像检测与注入/签名问题）。
+// +load 分工（本轮定案）：主题段在此即装，底栏/设置两段仍延迟到启动后 +1s。
+// 为什么主题段必须提前：内容区画布色是页面在 viewDidLoad 建成时一次性取走的存量，
+// 钩子若等 +1s 再装，首页早已建成、取色已过，事后通知/清扫都够不着（上一版实测
+// 顶部黑了、feed 仍灰，清扫还误伤底栏附近容器）。赶在 +load 装好，任何页面建成
+// 取色时都走钩子，源头即纯黑。
+// 安全边界（与首版闪退教训的区分）：首版嫌疑动作是 +load 期「急切解析画布模型」
+// （触发 ZHColorModel +initialize/单例构造）外加整段全量安装；本轮 +load 只做
+// 一件最小动作——对 ZHThemeManage 的 +colorWithModel:ignoreNight: 做类方法
+// swizzle，不碰 ZHColorModel、画布模型保持首次取色时 dispatch_once 懒解析，
+// 底栏段的布局钩子（递归修复所在段）与设置段一律不动、维持 +1s 延迟。
+// 若 +load 期解析不到 ZHThemeManage（理论兜底），gThemeHookInstalled 保持 NO，
+// +1s 的 ZPInstall 会再调一次 ZPInstallThemeHook 补装。
 + (void)load {
+    @try {
+        ZPInstallThemeHook();
+        NSLog(@"[zhplugin] load: theme segment installed at +load (hook=%d)", gThemeHookInstalled);
+    } @catch (NSException *e) {
+        NSLog(@"[zhplugin] load: theme segment at +load FAILED (will retry at +1s): %@", e);
+    }
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(zp_didFinishLaunching:)
                                                  name:UIApplicationDidFinishLaunchingNotification
                                                object:nil];
-    NSLog(@"[zhplugin] load: observer registered, install deferred to didFinishLaunching + 1s");
+    NSLog(@"[zhplugin] load: observer registered, bar/settings install deferred to didFinishLaunching + 1s");
 }
 
 + (void)zp_didFinishLaunching:(NSNotification *)note {
