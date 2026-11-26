@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v4.5 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v4.6 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.5"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.6"); });
     return l;
 }
 
@@ -618,24 +618,17 @@ static void WCForceKeyboardWindow(UIWindow *win) {
         // （v4.2 真机粘贴里 kbd 段缺失就是这么丢的），独立键不受挤。
         [[NSUserDefaults standardUserDefaults] setObject:out forKey:@"WCBlack.kbd"];
     }
-    UIColor *cfg = WCConfigColor(@"chatbar");
-    BOOL dark = (win.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    // v4.6 紧急修正：这个窗口只存树、绝不上色。v4.5 把 UITextEffectsWindow 当键盘窗口强刷、
+    // 给它涂了不透明黑背景——它是覆盖全屏、位于主窗口之上的系统窗口，键盘一弹起就整页
+    // 盖黑（用户实测：开键盘页面卡住、内容消失）。而且树已证明面板是远程渲染：进程内只有
+    // _UIRemoteKeyboardPlaceholderView 占位视图，没有任何本地底板可涂，涂它纯有害无益。
+    // v4.5 若已涂过，进到这里先按存档还原干净。
     NSNumber *forced = objc_getAssociatedObject(win, &kWCForcedKey);
-    if (!cfg || !dark) {
-        if (forced.boolValue) {
-            win.backgroundColor = objc_getAssociatedObject(win, &kWCOrigBGKey);
-            WCRestoreStrong(win, 6);
-            objc_setAssociatedObject(win, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        return;
+    if (forced.boolValue) {
+        win.backgroundColor = objc_getAssociatedObject(win, &kWCOrigBGKey);
+        WCRestoreStrong(win, 6);
+        objc_setAssociatedObject(win, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    UIColor *dyn = WCDynamicColor(@"chatbar", [UIColor whiteColor]);
-    if (!forced.boolValue) {
-        if (win.backgroundColor) objc_setAssociatedObject(win, &kWCOrigBGKey, win.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(win, &kWCForcedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    if (win.backgroundColor != dyn) win.backgroundColor = dyn;
-    WCApplyStrong(win, win, dyn, 6);
 }
 
 static void WCCollectDiag(NSString *scene) {
@@ -1032,7 +1025,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"4.5", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"4.6", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1040,7 +1033,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v4.5 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v4.6 registered in plugin list");
             break;
         }
     }
@@ -1097,7 +1090,7 @@ static void WCInstall(void) {
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v4.5 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v4.6 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1109,7 +1102,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v4.5 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v4.6 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     WCEnsureRegistered();
