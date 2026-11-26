@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v4.6 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v4.7 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.6"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v4.7"); });
     return l;
 }
 
@@ -1025,7 +1025,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"4.6", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"4.7", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1033,15 +1033,20 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v4.6 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v4.7 registered in plugin list");
             break;
         }
     }
 }
 static void WCInstall(void) {
+    // v4.7：强刷定时器先起，再挂钩子。旧顺序里 setBackgroundColor 交换排在最前、
+    // 一旦返回空就整段 return——定时器没起来、注册重试也断了，表现就是插件整体
+    // 消失（v4.3、v4.6 各栽过一次，还都是偶发）。现在单个钩子失败只记一笔，
+    // 不许拖死全插件；定时器本身 dispatch_once，重复调无妨。
+    WCStartEnforcer();
     if (!gInstalled) {
         gOrigSetBG = WCSwap([UIView class], @selector(setBackgroundColor:), (IMP)WC_View_setBackgroundColor);
-        if (!gOrigSetBG) return;
+        if (!gOrigSetBG) os_log(WCLog(), "[WCBlack] setBackgroundColor swap failed, continuing without it");
         gOrigNavBarTint = WCSwap([UINavigationBar class], @selector(setBarTintColor:), (IMP)WC_NavBar_setBarTintColor);
         gOrigTabBarTint = WCSwap([UITabBar class], @selector(setBarTintColor:), (IMP)WC_TabBar_setBarTintColor);
         Class mmTab = NSClassFromString(@"MMTabBar");
@@ -1090,7 +1095,7 @@ static void WCInstall(void) {
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v4.6 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v4.7 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1102,7 +1107,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v4.6 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v4.7 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     WCEnsureRegistered();
@@ -1116,5 +1121,8 @@ static void WCInstall(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ WCInstall(); });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCInstall(); });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCInstall(); });
+    // v4.7 长尾：管理器慢热或列表中途被重建时，10 秒、30 秒再各补一次安装+注册
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCInstall(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCInstall(); });
 }
 @end
