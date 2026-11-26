@@ -1,4 +1,10 @@
-// WCBlack.m — 微信深色模式纯黑背景 v3.4 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v3.5 (2026-11-26)
+// v3.5：v3.4 真机（视频+快照）确认深色下列表/聊天/顶栏/输入栏/tab 已全黑、扫描注册生效
+//   （registry input=3，InputToolContainerView 与 InputToolViewBar 均 #000000）。用户新指出：
+//   键盘升起时键盘面板的灰底（#222 采样）也要纯黑。键盘窗口 UIRemoteKeyboardWindow 同在本
+//   进程的 windows 列表里——新增键盘窗口处理：窗口自身与其子视图按 chatbar 模块强刷
+//   （窗口背景+ApplyStrong 遍历，含进程内的 dock/特效视图），浅色按存档恢复；首次见到键盘
+//   窗口时把它的视图树存进诊断，万一灰底是键盘进程远程渲染的，树里只有占位视图即可见分晓。
 // v3.4：据 v3.3 真机诊断快照定案与修复（快照证实可见底栏是玻璃插件的 WCTabBarView、
 //   原生 MMTabBar 不存在，tab 已被扫描强刷刷黑；聊天顶栏已黑）。剩三件事：
 //   ①浅色模式顶部黑带——定案在 WCSanitizeLightFallback 的单色空间漏洞：微信主题灰是
@@ -52,7 +58,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v3.4"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v3.5"); });
     return l;
 }
 
@@ -317,6 +323,7 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
 static void WCScanAndForceTabs(UIView *root, int depth); // 前向声明：定义在下方兜底扫描一节
 static void WCScanRegister(UIView *root, int depth);     // 同上
 static void WCCollectDiag(NSString *scene);              // 前向声明：定义在诊断一节
+static void WCForceKeyboardWindow(UIWindow *win);        // 同上
 static void WCEnforceRegistered(void) {
     // 类型守卫：表里只该有 UIView，混入异物直接跳过（v3 闪退教训）
     for (id b in gBarsTab.allObjects) if ([b isKindOfClass:[UIView class]] && [(UIView *)b window]) WCForceBar(b, @"tab", 3);
@@ -335,10 +342,11 @@ static void WCEnforceRegistered(void) {
         }
         lastStyle = st;
     }
-    // 每约 2 秒兜底扫一次：底部 tab（玻璃插件自有类）+ 输入栏/聊天顶栏扫描注册
+    // 每约 2 秒兜底扫一次：底部 tab（玻璃插件自有类）+ 输入栏/聊天顶栏扫描注册 + 键盘窗口
     static int tick = 0;
     if (++tick % 5 == 0) {
         for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if ([NSStringFromClass([w class]) containsString:@"Keyboard"]) { WCForceKeyboardWindow(w); continue; }
             WCScanAndForceTabs(w, 12);
             WCScanRegister(w, 16);
         }
@@ -494,6 +502,46 @@ static UIView *WCFindInTree(UIView *root, BOOL (^pred)(UIView *), int depth) {
     for (UIView *s in root.subviews) { UIView *r = WCFindInTree(s, pred, depth - 1); if (r) return r; }
     return nil;
 }
+static void WCAppendDiagText(NSString *text) {
+    NSString *old = [[NSUserDefaults standardUserDefaults] stringForKey:@"WCBlack.diag"];
+    NSString *merged = old ? [NSString stringWithFormat:@"%@\n%@", old, text] : text;
+    if (merged.length > 12000) merged = [merged substringFromIndex:merged.length - 12000];
+    [[NSUserDefaults standardUserDefaults] setObject:merged forKey:@"WCBlack.diag"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// 键盘窗口（UIRemoteKeyboardWindow）：同在本进程 windows 列表里。窗口自身背景与进程内
+// 子视图（dock、占位/特效视图）按 chatbar 模块强刷；按键本体若是键盘进程远程渲染的图层，
+// 本进程树里只会看到占位视图——首次见到时整树存进诊断，是不是远程渲染一眼可见。
+static void WCForceKeyboardWindow(UIWindow *win) {
+    if (!win) return;
+    static BOOL kbdDiagDone = NO;
+    if (!kbdDiagDone) {
+        kbdDiagDone = YES;
+        NSMutableString *out = [NSMutableString stringWithString:@"== WCBlack kbd window ==\n"];
+        WCDumpView(out, win, 0, 5);
+        WCAppendDiagText(out);
+    }
+    UIColor *cfg = WCConfigColor(@"chatbar");
+    BOOL dark = (win.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    NSNumber *forced = objc_getAssociatedObject(win, &kWCForcedKey);
+    if (!cfg || !dark) {
+        if (forced.boolValue) {
+            win.backgroundColor = objc_getAssociatedObject(win, &kWCOrigBGKey);
+            WCRestoreStrong(win, 6);
+            objc_setAssociatedObject(win, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+    UIColor *dyn = WCDynamicColor(@"chatbar", [UIColor whiteColor]);
+    if (!forced.boolValue) {
+        if (win.backgroundColor) objc_setAssociatedObject(win, &kWCOrigBGKey, win.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(win, &kWCForcedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (win.backgroundColor != dyn) win.backgroundColor = dyn;
+    WCApplyStrong(win, win, dyn, 6);
+}
+
 static void WCCollectDiag(NSString *scene) {
     NSMutableString *out = [NSMutableString stringWithFormat:@"== WCBlack diag (%@) ==\n", scene];
     [out appendFormat:@"registry tab=%lu nav=%lu input=%lu\n",
@@ -551,11 +599,7 @@ static void WCCollectDiag(NSString *scene) {
         if (hitB) { WCDumpView(out, hitB, 0, 0); WCDumpAncestors(out, hitB); } else [out appendString:@"(none)\n"];
         (void)tabFound;
     }
-    NSString *old = [[NSUserDefaults standardUserDefaults] stringForKey:@"WCBlack.diag"];
-    NSString *merged = old ? [NSString stringWithFormat:@"%@\n%@", old, out] : out;
-    if (merged.length > 12000) merged = [merged substringFromIndex:merged.length - 12000];
-    [[NSUserDefaults standardUserDefaults] setObject:merged forKey:@"WCBlack.diag"];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+    WCAppendDiagText(out);
 }
 
 // 配置变更后：全窗重扫，动态色重新解析、栏重新强制
@@ -885,7 +929,7 @@ static void WCInstall(void) {
         static id cfgObserver; // 必须持有 token，否则观察会被注销（MRC 下要 retain）
         cfgObserver = [[[NSNotificationCenter defaultCenter] addObserverForName:@"WCBlackConfigChanged" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) { WCSweep(); }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v3.4 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v3.5 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     if (!gRegistered) {
         Class mgr = NSClassFromString(@"WCPluginsMgr");
@@ -896,8 +940,8 @@ static void WCInstall(void) {
             for (id p in existing) { if ([[p valueForKey:@"title"] containsString:@"WCBlack"]) { dup = YES; break; } }
             if (!dup && [inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
                 ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-                    @"WCBlack 纯黑背景", @"3.4", @"WCBlackSettingsViewController");
-                os_log(WCLog(), "[WCBlack] v3.4 registered in plugin list");
+                    @"WCBlack 纯黑背景", @"3.5", @"WCBlackSettingsViewController");
+                os_log(WCLog(), "[WCBlack] v3.5 registered in plugin list");
             }
             gRegistered = YES;
         }
