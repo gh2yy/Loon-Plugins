@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v6.0 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v6.1 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v6.0"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v6.1"); });
     return l;
 }
 
@@ -184,6 +184,7 @@ static UIColor *WCDynamicColor(NSString *module, UIColor *lightFallback) {
 
 // ===== v6 瘦身声明（原注册表只供诊断查看，不再参与上色）=====
 static char kWCOrigBGKey, kWCSepOrigStyleKey, kWCSepOrigColorKey, kWCSepHiddenKey, kWCPatchHiddenKey, kWCUnderlayKey;
+static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey, kWCOrigStdAppKey, kWCOrigEdgeAppKey;
 static int gWCRestoreDepth = 0;
 static void WCStoreOrigBG(UIView *v) {
     if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
@@ -814,8 +815,10 @@ static UIColor *WCSourceDynamic(NSString *module, UIColor *orig) {
 }
 
 static IMP gOrigGetColor, gOrigGetColorValue, gOrigToColor, gOrigProxyResolve;
+static id gWCMgr = nil;
 
 static id WC_WCColorMgr_getColor(id self, SEL _cmd, NSString *name) {
+    gWCMgr = self;
     id orig = ((id (*)(id, SEL, id))gOrigGetColor)(self, _cmd, name);
     if (!orig || !name || !WCEnabled()) return orig;
     NSString *module = WCNameModuleMap()[name];
@@ -1096,7 +1099,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"6.0", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"6.1", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1109,28 +1112,321 @@ static void WCEnsureRegistered(void) {
         }
     }
 }
-#pragma mark - v6 瘦维护（只做三件与上色无关的事：注册重试、输入框色板/话筒维护、分割线）
+#pragma mark - v6.1 栏对齐（顶栏/底栏/聊天底栏不走色板，单独对齐）
 
-static void WCScanForSweep(UIView *root, int depth) {
+// 这三处在 v6 实测里是浅的：它们不从 WCColorMgr 取色（色板里也没有它们的色），
+// 由玻璃插件与系统外观那条线决定。判深浅不用视图自己的 trait（那正是它们跟不上的
+// 原因），而是直接问微信自己的取色：BG_0 经原始 toColor 解析后等于它的深色值，
+// 微信就是深色。探针结果每拍刷新，栏的强制/还原都以它为准；同时把栏容器的
+// overrideUserInterfaceStyle 钉到同侧，让栏内的图标、材质、tint 自己按深色解析。
+static BOOL gWCWeChatDark = NO;
+static BOOL WCProbeWeChatDark(void) {
+    static NSTimeInterval last = 0;
+    static BOOL cached = NO;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - last < 0.5) return cached;
+    last = now;
+    BOOL dark = ([UITraitCollection currentTraitCollection].userInterfaceStyle == UIUserInterfaceStyleDark);
+    Class dynCls = NSClassFromString(@"MMDynamicColor");
+    if (gWCMgr && gOrigGetColor && gOrigToColor && dynCls) {
+        id c = ((id (*)(id, SEL, id))gOrigGetColor)(gWCMgr, @selector(getColor:), @"BG_0");
+        if (c && [c isKindOfClass:dynCls]) {
+            UIColor *resolved = ((UIColor *(*)(id, SEL))gOrigToColor)(c, @selector(toColor));
+            NSString *a = WCHexOfColor(resolved);
+            if ([a isEqualToString:WCHexOfColor([c darkmodeColor])]) dark = YES;
+            else if ([a isEqualToString:WCHexOfColor([c normalColor])]) dark = NO;
+        }
+    }
+    cached = dark;
+    return dark;
+}
+
+static void WCRegisterBar(NSHashTable<UIView *> *table, UIView *bar) {
+    if (table && bar && ![table containsObject:bar]) [table addObject:bar];
+}
+
+static UIImage *WCSolidImage(UIColor *color) {
+    static NSMutableDictionary<NSString *, UIImage *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [[NSMutableDictionary alloc] init]; });
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    [color getRed:&r green:&g blue:&b alpha:&a];
+    NSString *key = [NSString stringWithFormat:@"%d-%d-%d", (int)lrint(r * 255), (int)lrint(g * 255), (int)lrint(b * 255)];
+    UIImage *img = cache[key];
+    if (img) return img;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(2, 2), YES, 1);
+    [color setFill];
+    UIRectFill(CGRectMake(0, 0, 2, 2));
+    img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if (img) cache[key] = img;
+    return img;
+}
+
+static BOOL WCIsOpaqueDarkNeutral(UIColor *c) {
+    if (!c) return NO;
+    UIColor *d = [c resolvedColorWithTraitCollection:WCDarkTrait()];
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (![d getRed:&r green:&g blue:&b alpha:&a]) {
+        CGFloat w = 0;
+        if (![d getWhite:&w alpha:&a]) return NO;
+        r = g = b = w;
+    }
+    if (a < 0.95) return NO;
+    CGFloat mx = MAX(r, MAX(g, b)), mn = MIN(r, MIN(g, b));
+    CGFloat lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return (mx - mn) < 0.05 && lum > 0.005 && lum < 0.40;
+}
+
+// 顶栏背景条兜底识别：不限亮度（它当前正是浅的），只认不透明中性色
+static BOOL WCIsOpaqueNeutralAny(UIColor *c) {
+    if (!c) return NO;
+    UIColor *d = [c resolvedColorWithTraitCollection:WCDarkTrait()];
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (![d getRed:&r green:&g blue:&b alpha:&a]) {
+        CGFloat w = 0;
+        if (![d getWhite:&w alpha:&a]) return NO;
+        r = g = b = w;
+    }
+    if (a < 0.95) return NO;
+    CGFloat mx = MAX(r, MAX(g, b)), mn = MIN(r, MIN(g, b));
+    return (mx - mn) < 0.05;
+}
+
+static void WCApplyStrong(UIView *root, UIView *bar, UIColor *dyn, int depth) {
+    if (depth < 0) return;
+    for (UIView *v in root.subviews) {
+        if ([v isKindOfClass:[UIVisualEffectView class]]) {
+            UIVisualEffectView *ev = (UIVisualEffectView *)v;
+            if (ev.effect) {
+                if (!objc_getAssociatedObject(ev, &kWCOrigEffectKey))
+                    objc_setAssociatedObject(ev, &kWCOrigEffectKey, ev.effect, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                ev.effect = nil;
+            }
+            if (ev.contentView.backgroundColor != dyn) { WCStoreOrigBG(ev.contentView); ev.contentView.backgroundColor = dyn; }
+            if (v.backgroundColor != dyn) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
+        } else if ([v isKindOfClass:[UIImageView class]] &&
+                   v.frame.size.width >= bar.bounds.size.width * 0.9 &&
+                   v.frame.size.height >= bar.bounds.size.height * 0.85) {
+            if (!v.hidden) {
+                NSMutableArray *hidden = objc_getAssociatedObject(bar, &kWCHiddenViewsKey);
+                if (!hidden) { hidden = [NSMutableArray array]; objc_setAssociatedObject(bar, &kWCHiddenViewsKey, hidden, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+                if (![hidden containsObject:v]) [hidden addObject:v];
+                v.hidden = YES;
+            }
+        } else {
+            UIColor *bg = v.backgroundColor;
+            if (bg && bg != dyn) {
+                NSString *m = WCModuleForColor(bg);
+                BOOL translucentOverlay = NO;
+                if (!m) {
+                    UIColor *d = [bg resolvedColorWithTraitCollection:WCDarkTrait()];
+                    CGFloat w = 0, al = 0;
+                    if ([d getWhite:&w alpha:&al] && al > 0.03 && al < 0.95) translucentOverlay = YES;
+                }
+                if (m || translucentOverlay) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
+            }
+        }
+        WCApplyStrong(v, bar, dyn, depth - 1);
+    }
+}
+
+static void WCRestoreStrong(UIView *root, int depth) {
+    if (depth < 0 || !root) return;
+    gWCRestoreDepth++;
+    for (UIView *v in root.subviews) {
+        if ([v isKindOfClass:[UIVisualEffectView class]]) {
+            UIVisualEffectView *ev = (UIVisualEffectView *)v;
+            UIVisualEffect *orig = objc_getAssociatedObject(ev, &kWCOrigEffectKey);
+            if (orig) {
+                ev.effect = orig;
+                objc_setAssociatedObject(ev, &kWCOrigEffectKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            UIColor *cb = objc_getAssociatedObject(ev.contentView, &kWCOrigBGKey);
+            if (cb) {
+                ev.contentView.backgroundColor = cb;
+                objc_setAssociatedObject(ev.contentView, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        }
+        UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
+        if (ob) {
+            v.backgroundColor = ob;
+            objc_setAssociatedObject(v, &kWCOrigBGKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        WCRestoreStrong(v, depth - 1);
+    }
+    gWCRestoreDepth--;
+}
+
+static void WCRestoreBar(UIView *bar) {
+    NSNumber *forced = objc_getAssociatedObject(bar, &kWCForcedKey);
+    if (!forced.boolValue) return;
+    UIColor *fb = objc_getAssociatedObject(bar, &kWCFallbackKey);
+    UIColor *dyn = objc_getAssociatedObject(bar, &kWCDynKey);
+    if (fb && bar.backgroundColor == dyn) bar.backgroundColor = fb;
+    for (UIView *v in (NSMutableArray *)objc_getAssociatedObject(bar, &kWCHiddenViewsKey)) v.hidden = NO;
+    objc_setAssociatedObject(bar, &kWCHiddenViewsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    WCRestoreStrong(bar, 4);
+    if ([bar isKindOfClass:[UINavigationBar class]]) {
+        UIImage *orig = objc_getAssociatedObject(bar, &kWCOrigNavImageKey);
+        [(UINavigationBar *)bar setBackgroundImage:orig forBarMetrics:UIBarMetricsDefault];
+        UIColor *tint = objc_getAssociatedObject(bar, &kWCOrigTintKey);
+        [(UINavigationBar *)bar setBarTintColor:tint];
+    }
+    objc_setAssociatedObject(bar, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void WCForceBar(UIView *bar, NSString *module, int depth) {
+    if (!bar) return;
+    BOOL dark = gWCWeChatDark;
+    if ([module isEqualToString:@"chatbar"]) WCFieldSweep(bar);
+    if (!dark || !WCConfigColor(module)) { WCRestoreBar(bar); return; }
+    NSNumber *forced = objc_getAssociatedObject(bar, &kWCForcedKey);
+    UIColor *dyn = objc_getAssociatedObject(bar, &kWCDynKey);
+    if (!forced.boolValue) {
+        UIColor *cur = bar.backgroundColor;
+        UIColor *fb = cur ? [cur resolvedColorWithTraitCollection:WCLightTrait()] : [UIColor clearColor];
+        objc_setAssociatedObject(bar, &kWCFallbackKey, fb, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        dyn = WCDynamicColor(module, fb);
+        objc_setAssociatedObject(bar, &kWCDynKey, dyn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if ([bar isKindOfClass:[UINavigationBar class]]) {
+            UIImage *orig = [(UINavigationBar *)bar backgroundImageForBarMetrics:UIBarMetricsDefault];
+            if (orig) objc_setAssociatedObject(bar, &kWCOrigNavImageKey, orig, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            UIColor *tint = [(UINavigationBar *)bar barTintColor];
+            if (tint) objc_setAssociatedObject(bar, &kWCOrigTintKey, tint, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        objc_setAssociatedObject(bar, &kWCForcedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // 全屏宿主（MMInputToolView 440×956）绝不涂根：透明覆盖层涂了会盖死消息页（v3.4 定案）
+    if (bar.bounds.size.height > 200) {
+        UIColor *fb = objc_getAssociatedObject(bar, &kWCFallbackKey);
+        if (fb && bar.backgroundColor == dyn) bar.backgroundColor = fb;
+    } else if (bar.backgroundColor != dyn) {
+        bar.backgroundColor = dyn;
+    }
+    if ([bar isKindOfClass:[UINavigationBar class]]) {
+        UIColor *cfg = WCConfigColor(module);
+        UIImage *img = cfg ? WCSolidImage(cfg) : nil;
+        UINavigationBar *nb = (UINavigationBar *)bar;
+        if (img && [nb backgroundImageForBarMetrics:UIBarMetricsDefault] != img)
+            [nb setBackgroundImage:img forBarMetrics:UIBarMetricsDefault];
+        if (nb.barTintColor != dyn) nb.barTintColor = dyn;
+    }
+    WCApplyStrong(bar, bar, dyn, depth);
+    for (UIView *v in bar.subviews) {
+        if ([v isKindOfClass:[UIVisualEffectView class]]) continue;
+        UIColor *bg = v.backgroundColor;
+        if (bg && bg != dyn && WCIsOpaqueDarkNeutral(bg)) { WCStoreOrigBG(v); v.backgroundColor = dyn; }
+    }
+}
+
+static void WCRestoreTabView(UIView *v) {
+    NSNumber *forced = objc_getAssociatedObject(v, &kWCForcedKey);
+    if (!forced.boolValue) return;
+    if ([v isKindOfClass:[UITabBar class]]) {
+        UITabBar *tb = (UITabBar *)v;
+        tb.standardAppearance = objc_getAssociatedObject(v, &kWCOrigStdAppKey);
+        tb.scrollEdgeAppearance = objc_getAssociatedObject(v, &kWCOrigEdgeAppKey);
+        tb.barTintColor = objc_getAssociatedObject(v, &kWCOrigTintKey);
+        tb.backgroundImage = objc_getAssociatedObject(v, &kWCOrigNavImageKey);
+    }
+    UIColor *ob = objc_getAssociatedObject(v, &kWCOrigBGKey);
+    if (ob) v.backgroundColor = ob;
+    for (UIView *hv in (NSMutableArray *)objc_getAssociatedObject(v, &kWCHiddenViewsKey)) hv.hidden = NO;
+    objc_setAssociatedObject(v, &kWCHiddenViewsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    WCRestoreStrong(v, 3);
+    objc_setAssociatedObject(v, &kWCForcedKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void WCForceTabView(UIView *v) {
+    UIColor *cfg = WCConfigColor(@"tab");
+    if (!cfg || !gWCWeChatDark) { WCRestoreTabView(v); return; }
+    UIColor *dyn = WCDynamicColor(@"tab", [UIColor whiteColor]);
+    NSNumber *forced = objc_getAssociatedObject(v, &kWCForcedKey);
+    if (!forced.boolValue) {
+        if (v.backgroundColor) objc_setAssociatedObject(v, &kWCOrigBGKey, v.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if ([v isKindOfClass:[UITabBar class]]) {
+            UITabBar *tb0 = (UITabBar *)v;
+            if (tb0.standardAppearance) objc_setAssociatedObject(v, &kWCOrigStdAppKey, tb0.standardAppearance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (tb0.scrollEdgeAppearance) objc_setAssociatedObject(v, &kWCOrigEdgeAppKey, tb0.scrollEdgeAppearance, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (tb0.barTintColor) objc_setAssociatedObject(v, &kWCOrigTintKey, tb0.barTintColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (tb0.backgroundImage) objc_setAssociatedObject(v, &kWCOrigNavImageKey, tb0.backgroundImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        objc_setAssociatedObject(v, &kWCForcedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if ([v isKindOfClass:[UITabBar class]]) {
+        UITabBar *tb = (UITabBar *)v;
+        UITabBarAppearance *ap = tb.standardAppearance;
+        if (ap && ![ap.backgroundColor isEqual:cfg]) {
+            UITabBarAppearance *cp = [ap copy];
+            cp.backgroundColor = cfg;
+            cp.backgroundEffect = nil;
+            cp.shadowColor = [UIColor clearColor];
+            tb.standardAppearance = cp;
+            tb.scrollEdgeAppearance = cp;
+            [cp release];
+        }
+        if (tb.barTintColor != dyn) tb.barTintColor = dyn;
+        UIImage *img = WCSolidImage(cfg);
+        if (img && tb.backgroundImage != img) tb.backgroundImage = img;
+    }
+    if (v.backgroundColor != dyn) v.backgroundColor = dyn;
+    WCApplyStrong(v, v, dyn, 3);
+}
+
+#pragma mark - 维护 tick（注册重试、输入框维护、分割线、栏对齐）
+
+static void WCScanChrome(UIView *root, UIWindow *win, int depth) {
     if (!root || depth < 0) return;
     NSString *cn = NSStringFromClass([root class]);
-    if ([cn isEqualToString:@"MMInputToolView"]) {
-        WCFieldSweep(root);
-        if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain];
-        [gBarsInput addObject:root];
-    } else if ([cn isEqualToString:@"WCTabBarView"]) {
-        if (!gBarsTab) gBarsTab = [[NSHashTable weakObjectsHashTable] retain];
-        [gBarsTab addObject:root];
+    UIUserInterfaceStyle want = (WCEnabled() && gWCWeChatDark) ? UIUserInterfaceStyleDark : UIUserInterfaceStyleUnspecified;
+    if ([cn containsString:@"InputTool"]) {
+        if (root.overrideUserInterfaceStyle != want) root.overrideUserInterfaceStyle = want;
+        WCRegisterBar(gBarsInput, root);
+        WCForceBar(root, @"chatbar", 4);
+    } else if (WCIsTabCandidate(root)) {
+        CGRect f = [root convertRect:root.bounds toView:nil];
+        if (win && f.origin.y > win.bounds.size.height * 0.7) {
+            if (root.overrideUserInterfaceStyle != want) root.overrideUserInterfaceStyle = want;
+            WCRegisterBar(gBarsTab, root);
+            WCForceTabView(root);
+            return;
+        }
     }
-    for (UIView *s in root.subviews) WCScanForSweep(s, depth - 1);
+    if ([root isKindOfClass:[UINavigationBar class]] || [cn containsString:@"MsgContentNavBar"]) {
+        if (root.overrideUserInterfaceStyle != want) root.overrideUserInterfaceStyle = want;
+        WCRegisterBar(gBarsNav, root);
+        WCForceBar(root, @"nav", 3);
+    } else if (gWCWeChatDark && root.window && root.bounds.size.width >= root.window.bounds.size.width * 0.95 &&
+               root.bounds.size.height >= 20 && root.bounds.size.height <= 140) {
+        CGRect wf = [root convertRect:root.bounds toView:nil];
+        if (wf.origin.y < 70 && wf.origin.y > -70) {
+            if (WCIsOpaqueNeutralAny(root.backgroundColor)) {
+                WCRegisterBar(gBarsNav, root);
+                WCForceBar(root, @"nav", 3);
+            } else if ([root isKindOfClass:[UIVisualEffectView class]] && ((UIVisualEffectView *)root).effect &&
+                       root.superview && [root.superview isKindOfClass:[UIView class]]) {
+                WCRegisterBar(gBarsNav, root.superview);
+                WCForceBar(root.superview, @"nav", 3);
+            }
+        }
+    }
+    for (UIView *s in root.subviews) WCScanChrome(s, win, depth - 1);
 }
 
 static void WCSlimTick(void) {
     WCEnsureRegistered();
+    gWCWeChatDark = WCEnabled() && WCProbeWeChatDark();
     if (!gBarsNav) gBarsNav = [[NSHashTable weakObjectsHashTable] retain];
+    if (!gBarsTab) gBarsTab = [[NSHashTable weakObjectsHashTable] retain];
+    if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain];
+    if (!gWCWeChatDark) {
+        // 非深色（含关插件）：把登记过的顶栏背景条逐个还原（它只在深色时才被扫描命中）
+        for (UIView *b in gBarsNav.allObjects) WCRestoreBar(b);
+    }
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
         if ([NSStringFromClass([w class]) containsString:@"TextEffects"]) { WCForceKeyboardWindow(w); continue; }
-        WCScanForSweep(w, 16);
+        WCScanChrome(w, w, 16);
         WCScanTablesInWindow(w, w, 16);
     }
 }
@@ -1164,7 +1460,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v6 source hooks in");
+                os_log(WCLog(), "[WCBlack] v6.1 source hooks in");
             }
         }
     }
@@ -1177,7 +1473,7 @@ static void WCInstall(void) {
             gOrigDicWindow = WCSwapOwn(dic, @selector(didMoveToWindow), (IMP)WC_Dic_didMoveToWindow);
             if (gOrigDicSetHidden && gOrigDicWindow) {
                 dicHooked = YES;
-                os_log(WCLog(), "[WCBlack] v6 dictation icon hooks in");
+                os_log(WCLog(), "[WCBlack] v6.1 dictation icon hooks in");
             }
         }
     }
