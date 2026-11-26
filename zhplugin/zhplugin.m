@@ -3,7 +3,7 @@
 //   1) 液态玻璃底部导航（正式版）：探针已验真（总闸 = 宿主
 //      UIDesignRequiresCompatibility，删键的 A/B 包真机实测胶囊成
 //      真玻璃），本轮探针整段退场、换正式导航：原栏 ZHTabBarNew
-//      隐藏，插件在窗口底部自建悬浮玻璃胶囊导航，只留首页/我的两
+//      摘除保留，插件在窗口底部自建悬浮玻璃胶囊导航，只留首页/我的两
 //      入口——玻璃面沿用 SJJ 全序列（ZPGlassView 旗标门控 +
 //      zpUpdateMaterial: 公开通道自装、空身入树、host 容器 index 0
 //      垫底、样式先钉），按钮数据从原栏 item 抄（图标/头像/标题/
@@ -20,11 +20,12 @@
 //   导航形态（用户 2026-11-26 16:09 拍板）：原栏整体隐藏、插件自
 //   建一套液态玻璃底部导航，只保留首页/我的两入口（照虎扑
 //   HPGlassBar v5 模式：按钮数据复制 + 几何全自定 + 点击回原链）。
-//     ①原栏：玻璃开 → ZHTabBarNew 置 hidden=YES 并在每轮维护中
-//       重申；玻璃关 → 还原 hidden=NO 并把自建栏移出窗口。
+//     ①原栏：玻璃开 → 出生钩在入窗同一轮摘除（removeFromSuperview）
+//       并由插件强引用保留作数据源（v3.3）；玻璃关 → 按记录的原父
+//       视图/位次放回、hidden=NO，并把自建栏移出窗口。
 //     ②自建栏：透明 host 容器挂当前 keyWindow，底部居中贴底（底
 //       边距屏幕底部 8pt，v3.2 起，参照微博悬浮栏），尺寸由两槽
-//       决定：槽宽 86、栏高 54、两侧内边距 10 → 192×54。host 子
+//       决定：槽宽 86、栏高 58、两侧内边距 10 → 192×58。host 子
 //       视图序：玻璃容器（index 0）
 //       → 两按钮；容器 = UIVisualEffectView + UIGlassContainer-
 //       Effect（spacing 2.0，v3.1 起），其 contentView 内依次是
@@ -76,6 +77,21 @@
 //     缩 (6,6) → 74×42、按钮图标框 24pt、排布收紧），底边距由
 //     「安全区底+12」改贴底：胶囊底边距屏幕底部 8pt（参照微博
 //     悬浮栏：高约 52、底边几乎贴着小横条上方）。
+//   v3.3（真机反馈两修 + 方向修正）：①冷启仍见切换过程——两个时
+//     机缺口：藏栏出生钩装在 +1s 延迟段、原栏启动早期已出生扑空；
+//     胶囊又要等 item 数据全齐才肯建、中间空窗。用户拍板方向修
+//     正：不再「藏」原栏——出生钩提前到 +load 期装（只此一只钩
+//     子，其余底栏段仍延迟），钩子在入窗同一轮直接摘除原栏并由
+//     插件强引用保留作数据源、记其原父视图与子视图位次；删认领
+//     旗与「3 秒未建成自动还原」兜底（不再复活原栏）；知乎重建
+//     新原栏实例时出生钩同口径摘除并换保留引用。玻璃关时按记录
+//     放回并 hidden=NO、自建栏移出，开关语义完整。②胶囊先到位：
+//     原栏一被发现即建并显示胶囊（几何现行规格），槽位以
+//     identifier 0/5 双双命中为「识别」；未识别先按可见序占位映
+//     射、按钮禁用（userInteractionEnabled=NO），识别完成即启用，
+//     数据后续每轮同步补齐/纠正；重试到顶仍无 item 就留空槽胶囊
+//     在位、不复活原栏。③栏高 54→58（透镜内缩 (6,6) → 74×46、按
+//     钮图标 y 6→8 / 标题 y 33→37）。
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
 //   录（保留探针时代的取证字段）。
@@ -147,7 +163,9 @@ static char kNavContainerKey; // 玻璃容器（UIVisualEffectView + UIGlassCont
 static char kNavLensSlotKey;  // 透镜当前/正在滑向的槽位（NSNumber，防维护轮次反复重启弹簧）
 static char kNavRetryKey;     // 冷启直达重试计数（NSNumber，0.1s 一拍、上限 30 ≈ 3s）
 static char kNavRetryPendKey; // 冷启直达重试在途标记（防并行重试链）
-static char kNavPreHideKey;   // 原栏出生即藏认领标记（v3.2：本插件在建成前藏的，兜底恢复只认它）
+static char kNavOrigParentKey; // 被摘原栏的原父视图（RETAIN，v3.3：关玻璃时按记录放回）
+static char kNavOrigIndexKey;  // 被摘原栏在原父视图中的子视图位次（NSNumber，v3.3）
+static char kNavIdentifiedKey; // 槽位已确切识别（identifier 0/5 双中，v3.3：此前按钮禁用、胶囊占位）
 static char kNavLensAnimKey;  // 透镜弹簧在途标记（v3.2：单写者纪律，置位期间维护不碰透镜几何）
 static char kSchedKey;     // 已排队布局标记
 static char kLayoutLockKey; // layoutSubviews 重入锁（per-instance）
@@ -202,6 +220,7 @@ static void ZHRegisterBar(UIView *bar) {
 
 static void ZHApplyBar(UIView *bar); // 前置声明，定义在布局节
 static void ZHRequestApply(UIView *bar); // 前置声明，定义在布局节
+static void ZHNavDetachBar(UIView *bar); // 前置声明，定义在布局节（出生钩摘除原栏用）
 static BOOL ZHNavIsBuilt(UIView *bar); // 前置声明，定义在布局节（安装段启动清扫用）
 static void ZHNavKickRetry(UIView *bar); // 前置声明，定义在布局节（安装段启动清扫用）
 static UIWindow *ZPKeyWindow(void); // 前置声明，定义在布局节（导航落位用）
@@ -488,8 +507,8 @@ static BOOL gNavUserTapped = NO;
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat w = self.bounds.size.width;
-    _iconView.frame = CGRectMake((w - 24) / 2, 6, 24, 24);
-    _titleLabel.frame = CGRectMake(0, 33, w, 13);
+    _iconView.frame = CGRectMake((w - 24) / 2, 8, 24, 24);
+    _titleLabel.frame = CGRectMake(0, 37, w, 13);
 }
 - (void)zpSetBar:(UIView *)bar model:(id)model {
     _bar = bar;
@@ -754,9 +773,9 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
 
 #pragma mark - 布局（正式版：apply 幂等：开 -> 自建导航落位+隐藏原栏；关 -> 还原原栏+移除自建栏）
 
-// 导航几何（两槽定宽）：槽宽 86、栏高 54、两侧内边距 10 → 192×54；
+// 导航几何（两槽定宽）：槽宽 86、栏高 58、两侧内边距 10 → 192×58；
 // 底部居中贴底，胶囊底边距屏幕底部 8pt（v3.2，参照微博悬浮栏）。
-static const CGFloat kNavSlotW = 86, kNavBarH = 54, kNavPadX = 10;
+static const CGFloat kNavSlotW = 86, kNavBarH = 58, kNavPadX = 10;
 
 // keyWindow 选取（与 ZPAppIsNight 同口径：windows 里找 isKeyWindow，回落第一只）
 static UIWindow *ZPKeyWindow(void) {
@@ -849,52 +868,68 @@ static UIVisualEffectView *ZHNavContainerForBar(UIView *bar, UIView *host) {
     return cv;
 }
 
-// 冷启直达（v3.1）：建成判定 + 快重试链。真机定责——冷启后 apply
-// 若在 item 就绪前跑完便无人再触发，导航要等用户点一次原栏才出
-// 现。本链：建成前每 0.1s 一拍重排 apply（ZHRequestApply 异步下一
-// 拍施工），建成即停并清计数；计数上限 30（≈3s），超限回归既有
-// hook 触发兜底。在途标记保证全程只有一条链（布局早退与 apply
-// 尾部的重复呼叫都被它合并）。
+// 原栏摘除与保留（v3.3 修 A，用户拍板方向修正：不藏、直接摘）：
+// 玻璃开时，栏一入窗（出生钩在同一轮、首帧绘制前调用）或被
+// apply/启动清扫首触时，直接 removeFromSuperview 摘出层级，并
+// 由插件强引用保留（gDetachedBar）——它仍是图标/标题/头像的数
+// 据源，每轮同步照旧从它身上读（item 视图不在层级内也持有数
+// 据，控制器对栏对象的方法调用不因摘除而停）。摘除前把它的原
+// 父视图与子视图位次记在它自己的 associated 上（父视图以
+// RETAIN 存，根视图长命、无悬垂之虞），供玻璃关时原样放回。
+// 知乎若重建出新的原栏实例（登录态变化等），出生钩对新实例同
+// 口径摘除并换保留引用，旧的随之释放。不再有任何「未建成自动
+// 把原栏放回来」的兜底：胶囊建不起来就留空槽胶囊在位（修 B），
+// 原栏只在用户关玻璃开关时才放回。
+static UIView *gDetachedBar = nil; // RETAIN：当前被摘除的原栏（数据源 + 放回用）
+static void ZHNavDetachBar(UIView *bar) {
+    if (!bar || !ZHGlassEnabled()) return;
+    if (gDetachedBar == bar && !bar.superview) return; // 已摘除且就是保留的那只
+    UIView *parent = bar.superview;
+    if (parent) {
+        objc_setAssociatedObject(bar, &kNavOrigParentKey, parent, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(bar, &kNavOrigIndexKey,
+                                 @([parent.subviews indexOfObjectIdenticalTo:bar]),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (gDetachedBar != bar) { // 新实例换保留：旧的释放（其放回记录随之作废）
+        [gDetachedBar release];
+        gDetachedBar = [bar retain];
+    }
+    if (parent) [bar removeFromSuperview]; // 摘除会以 window=nil 再入出生钩，钩内守卫天然跳过
+}
+static BOOL ZHNavSlotsIdentified(UIView *bar) {
+    return objc_getAssociatedObject(bar, &kNavIdentifiedKey) != nil;
+}
+
+// 冷启直达（v3.1 建链，v3.3 改判停）：建成判定 + 快重试链。胶囊
+// 先到位（修 B）后「建成」来得很早，本链的实际职责是等槽位识别
+// ——建成且已识别才停并清计数；每 0.1s 一拍重排 apply，计数上限
+// 30（≈3s），到顶只是停链（空槽胶囊留在位、原栏不复活，v3.3 口
+// 径），后续知乎事件（setItems/select/主题钩子）仍可把识别补完。
+// 在途标记保证全程只有一条链（各处重复呼叫都被它合并）。
 static BOOL ZHNavIsBuilt(UIView *bar) {
     UIView *host = objc_getAssociatedObject(bar, &kNavHostKey);
-    return host && host.superview && objc_getAssociatedObject(bar, &kNavGlassKey) && bar.hidden;
+    return host && host.superview && objc_getAssociatedObject(bar, &kNavGlassKey) &&
+           gDetachedBar == bar;
 }
 static void ZHNavKickRetry(UIView *bar) {
     if (!bar || !ZHGlassEnabled()) return;
-    if (ZHNavIsBuilt(bar)) { // 建成：清计数收工
+    if (ZHNavIsBuilt(bar) && ZHNavSlotsIdentified(bar)) { // 建成且识别：清计数收工
         objc_setAssociatedObject(bar, &kNavRetryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
     if (objc_getAssociatedObject(bar, &kNavRetryPendKey)) return; // 已有在途一拍
     NSInteger cnt = [objc_getAssociatedObject(bar, &kNavRetryKey) integerValue];
-    if (cnt >= 30) { // ≈3s 上限：兜底恢复（v3.2）——出生即藏认领过、又始终没建成时把原栏还回去，绝不让用户无栏可用
-        if (objc_getAssociatedObject(bar, &kNavPreHideKey)) {
-            objc_setAssociatedObject(bar, &kNavPreHideKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            if (bar.hidden) bar.hidden = NO;
-        }
-        return;
-    }
+    if (cnt >= 30) return; // ≈3s 上限：停链，不复活原栏（v3.3）
     objc_setAssociatedObject(bar, &kNavRetryKey, @(cnt + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(bar, &kNavRetryPendKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         objc_setAssociatedObject(bar, &kNavRetryPendKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (!ZHGlassEnabled()) return;
-        ZHRequestApply(bar); // 下一拍施工（建成与否由施工结果决定）
-        ZHNavKickRetry(bar); // 未建成则续排下一拍（在途标记防叠链）
+        ZHRequestApply(bar); // 下一拍施工（识别与否由施工结果决定）
+        ZHNavKickRetry(bar); // 未识别则续排下一拍（在途标记防叠链）
     });
-}
-
-// 原栏出生即藏（v3.2 修 1）：玻璃开时，栏一入窗（didMoveToWindow
-// 钩子在同一轮、首帧绘制前调用）或被 apply/启动清扫首触时，先把
-// 原栏藏掉并认领（kNavPreHideKey）——自建栏照旧等数据就绪才建，
-// 建成后 hidden 由布局节接管并清认领；重试到顶仍没建成时由
-// ZHNavKickRetry 的到顶分支按认领恢复。知乎自己藏的栏（本函数
-// 没碰过的）不认领、永不由本插件恢复。
-static void ZHNavPreHideBar(UIView *bar) {
-    if (!bar || !ZHGlassEnabled() || !bar.window || bar.hidden) return;
-    bar.hidden = YES;
-    objc_setAssociatedObject(bar, &kNavPreHideKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 // 透镜单写者（v3.2 修 2）：全文件唯一写透镜几何（frame/transform）
@@ -934,10 +969,12 @@ static void ZHNavDriveLens(UIView *bar, ZPGlassView *lens, CGRect target, NSInte
 
 // 玻璃开落位（每轮 apply 走一遍，全程幂等；次序照 SJJ：建槽入树
 // → 钉风格 → 装 effect）：
-//   槽位识别——可见 item 中 identifier 0 = 首页、5 = 我的（取不
-//   到回落可见序首/尾）；两槽未就绪（item 不足/同体）本轮不施
-//   工、更不隐藏原栏；未就绪时另排冷启快重试链（ZHNavKickRetry，
-//   v3.1），不等下一轮事件。
+//   胶囊先到位（v3.3 修 B）——host/玻璃面/透镜/按钮先按现行几何
+//   建好并显示，不等 item 数据；槽位识别——可见 item 中
+//   identifier 0 = 首页、5 = 我的双双命中才算识别，未识别先按
+//   可见序尽力占位映射、按钮禁用（userInteractionEnabled=NO），
+//   识别完成即启用，数据后续每轮同步补齐/纠正；未识别时另排冷
+//   启快重试链（ZHNavKickRetry）等数据，不等下一轮事件。
 //   host——不在当前 keyWindow 才重挂；frame 变更才写；hidden 同步。
 //   玻璃面/透镜——同入玻璃容器（UIGlassContainerEffect，v3.1）的
 //   contentView（玻璃面 index 0 垫底、透镜其上），容器不在 host
@@ -947,25 +984,14 @@ static void ZHNavDriveLens(UIView *bar, ZPGlassView *lens, CGRect target, NSInte
 //   风格——玻璃面与透镜每轮 ZHGlassApplyTheme 钉知乎主题（内含比
 //   对、变更才写），排在装 effect 之前。
 //   effect——为 nil 才建 fx 经 zpUpdateMaterial: 装入，已装永不重赋。
-//   选中——读两 item 的 themeSelected（都读不到回落上轮槽位）；
-//   透镜目标 = 选中槽内缩（6,6,74,42）：几何只经单写者
+//   选中——识别后读两 item 的 themeSelected（都读不到回落上轮槽位）；
+//   透镜目标 = 选中槽内缩（6,6,74,46）：几何只经单写者
 //   ZHNavDriveLens（v3.2）——首次直接置位，后续槽位变化走弹簧
 //   （0.5s/damping 0.75 写 frame，形变归容器 morph），在途期间
 //   维护不碰、空闲时偏差 >0.5pt 直写校正。按钮选中态同步。
-//   原栏——导航完整建成后才置 hidden=YES（每轮重申）。
+//   原栏——摘除/放回由出生钩与开关路径负责，布局节不碰。
 static void ZHLayoutGlassNav(UIView *bar) {
     ZHRegisterBar(bar);
-    NSArray *vis = ZHVisibleItems(bar);
-    if (!vis || vis.count < 2) { ZHNavKickRetry(bar); return; } // item 未就绪：不施工、不隐藏原栏，排快重试等它就绪（v3.1）
-    UIView *homeItem = nil, *mineItem = nil;
-    for (UIView *it in vis) {
-        NSInteger ident = ZHItemIdentifier(it);
-        if (ident == 0 && !homeItem) homeItem = it;
-        if (ident == 5 && !mineItem) mineItem = it;
-    }
-    if (!homeItem) homeItem = vis.firstObject;
-    if (!mineItem) mineItem = vis.lastObject;
-    if (!homeItem || !mineItem || homeItem == mineItem) { ZHNavKickRetry(bar); return; }
     UIWindow *win = ZPKeyWindow();
     if (!win || win.bounds.size.width < 100) { ZHNavKickRetry(bar); return; }
 
@@ -1020,8 +1046,52 @@ static void ZHLayoutGlassNav(UIView *bar) {
         if (fx) [lens zpUpdateMaterial:fx];
     }
 
-    ZPSyncNavButton(btnHome, bar, homeItem);
-    ZPSyncNavButton(btnMine, bar, mineItem);
+    // 槽位识别（v3.3 修 B）：identifier 0/5 双双命中才算识别；未
+    // 识别时按可见序尽力占位映射（有几个排几个），按钮禁用，识别
+    // 完成的那一轮起才启用按钮并走下面的选中/透镜逻辑。
+    NSArray *vis = ZHVisibleItems(bar);
+    UIView *homeItem = nil, *mineItem = nil;
+    BOOL identified = NO;
+    if (vis) {
+        UIView *byIdHome = nil, *byIdMine = nil;
+        for (UIView *it in vis) {
+            NSInteger ident = ZHItemIdentifier(it);
+            if (ident == 0 && !byIdHome) byIdHome = it;
+            if (ident == 5 && !byIdMine) byIdMine = it;
+        }
+        if (byIdHome && byIdMine && byIdHome != byIdMine) {
+            homeItem = byIdHome; mineItem = byIdMine; identified = YES;
+        } else {
+            if (vis.count >= 1) homeItem = vis.firstObject;
+            if (vis.count >= 2) mineItem = vis.lastObject;
+            if (homeItem == mineItem) mineItem = nil;
+        }
+    }
+    if (homeItem) ZPSyncNavButton(btnHome, bar, homeItem);
+    if (mineItem) ZPSyncNavButton(btnMine, bar, mineItem);
+    if (btnHome.userInteractionEnabled != identified) btnHome.userInteractionEnabled = identified;
+    if (btnMine.userInteractionEnabled != identified) btnMine.userInteractionEnabled = identified;
+    if (identified && !ZHNavSlotsIdentified(bar))
+        objc_setAssociatedObject(bar, &kNavIdentifiedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!identified) {
+        // 占位态：透镜停在上轮槽位（无记录则首页槽）直接置位、不走
+        // 弹簧；继续排快重试等识别，图标/标题每轮同步补齐。
+        if (lens) {
+            NSNumber *lastSelP = objc_getAssociatedObject(bar, &kNavSelKey);
+            NSInteger parkSel = lastSelP ? lastSelP.integerValue : 0;
+            CGRect pslot = (parkSel == 0) ? homeF : mineF;
+            CGRect ptarget = CGRectInset(pslot, 6, 6);
+            BOOL placedP = (objc_getAssociatedObject(bar, &kNavPlacedKey) != nil);
+            BOOL inFlightP = (objc_getAssociatedObject(bar, &kNavLensAnimKey) != nil);
+            if (!inFlightP && (!placedP || !ZHNavRectNear(lens.frame, ptarget, 0.5))) {
+                ZHNavDriveLens(bar, lens, ptarget, parkSel, NO);
+                objc_setAssociatedObject(bar, &kNavPlacedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            if (lens.hidden) lens.hidden = NO;
+        }
+        ZHNavKickRetry(bar);
+        return;
+    }
 
     NSInteger sel = -1;
     if (ZHGetBool(homeItem, @"themeSelected", NO)) sel = 0;
@@ -1056,19 +1126,32 @@ static void ZHLayoutGlassNav(UIView *bar) {
         if (lens.hidden) lens.hidden = NO;
     }
 
-    if (!bar.hidden) bar.hidden = YES; // 导航建成后才隐藏原栏，每轮重申
-    if (objc_getAssociatedObject(bar, &kNavPreHideKey)) // 建成：出生即藏的认领由导航接管，清掉免兜底误恢复
-        objc_setAssociatedObject(bar, &kNavPreHideKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // 原栏的摘除/放回不在此处理（出生钩摘、关开关放回，v3.3）
 }
 
-// 玻璃关：还原原栏（hidden=NO）+ 自建栏移出窗口（对象仍由
-// associated 持有，下次开直接复用；透镜落位标记不清——重开时槽
-// 位未变不滑动、变了走滑动，正是想要的）。
+// 玻璃关：把保留的原栏按摘除时记录的原父视图/位次放回并确保
+// hidden=NO + 自建栏移出窗口（host 对象仍由 associated 持有，
+// 下次开直接复用；透镜落位标记不清——重开时槽位未变不滑动、变
+// 了走滑动，正是想要的）。只有当前保留的那只栏有东西可放（旧
+// 实例在换保留时已释放，不在此列）。放回触发的 didMoveToWindow
+// 时玻璃已关，出生钩不会再摘。
 static void ZHRestoreOriginalBar(UIView *bar) {
     UIView *host = objc_getAssociatedObject(bar, &kNavHostKey);
     if (host && host.superview) [host removeFromSuperview];
-    objc_setAssociatedObject(bar, &kNavPreHideKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); // 玻璃关：认领作废（本函数即恢复动作本身）
-    if (bar.hidden) bar.hidden = NO;
+    if (gDetachedBar == bar) {
+        UIView *parent = objc_getAssociatedObject(bar, &kNavOrigParentKey);
+        NSNumber *idx = objc_getAssociatedObject(bar, &kNavOrigIndexKey);
+        if (parent) {
+            NSUInteger at = idx ? idx.unsignedIntegerValue : parent.subviews.count;
+            if (at > parent.subviews.count) at = parent.subviews.count;
+            [parent insertSubview:bar atIndex:at];
+        }
+        if (bar.hidden) bar.hidden = NO;
+        objc_setAssociatedObject(bar, &kNavOrigParentKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(bar, &kNavOrigIndexKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [gDetachedBar release];
+        gDetachedBar = nil;
+    }
 }
 
 static void ZHApplyBar(UIView *bar) {
@@ -1085,7 +1168,7 @@ static void ZHApplyBar(UIView *bar) {
         [lp release];
     }
     if (ZHGlassEnabled()) {
-        ZHNavPreHideBar(bar); // 出生即藏补漏（v3.2）：未建成前 apply 首触先藏原栏，免它在就绪前露脸
+        ZHNavDetachBar(bar); // 出生即摘补漏（v3.3）：出生钩没赶上的栏，apply 首触先摘再建胶囊
         ZHLayoutGlassNav(bar);
         ZHNavKickRetry(bar); // 冷启直达（v3.1）：未建成则续排快重试，建成自动停
     }
@@ -1291,7 +1374,7 @@ static void ZPAppendNavDiag(NSMutableString *s, UIView *bar) {
     ZPNavButton *btnMine = objc_getAssociatedObject(bar, &kNavBtnMineKey);
     [s appendString:@"玻璃导航（自建栏·容器聚合玻璃面+透镜·两按钮）:\n"];
     if (!host || !glass) {
-        [s appendString:@"  自建栏: 未创建（玻璃类不可用或 item 尚未就绪）\n"];
+        [s appendString:@"  自建栏: 未创建（玻璃类不可用或窗口尚未就绪）\n"];
         return;
     }
     [s appendFormat:@"  自建栏 frame(本值)=%@ 窗口frame(实测)=%@ hidden=%d superview链=%@ window=%@\n",
@@ -1317,6 +1400,10 @@ static void ZPAppendNavDiag(NSMutableString *s, UIView *bar) {
     [s appendFormat:@"  按钮 首页 frame=%@ 我的 frame=%@\n",
          btnHome ? NSStringFromCGRect(btnHome.frame) : @"-",
          btnMine ? NSStringFromCGRect(btnMine.frame) : @"-"];
+    [s appendFormat:@"  槽位识别=%@ 按钮可点=%@ 原栏保留中=%@\n",
+         ZHNavSlotsIdentified(bar) ? @"已识别" : @"未识别（占位）",
+         (btnHome && btnHome.userInteractionEnabled) ? @"YES" : @"NO",
+         (gDetachedBar == bar) ? @"YES" : @"NO"];
     [s appendFormat:@"  effect通道计数 setEffect外部调用=%lu 最近传入=%@ zpUpdateMaterial安装=%lu\n",
          (unsigned long)gSetEffectExtCount, gSetEffectLastClass ?: @"-",
          (unsigned long)gZPInstallCount];
@@ -1358,7 +1445,8 @@ static NSString *ZPBuildDiagnostics(void) {
          NSStringFromCGRect(bar.frame), ZPColorDesc(bar.backgroundColor)];
     [s appendFormat:@"纯黑命中集: 已解析 %ld 个令牌（静态枚举全集 9）\n",
          (long)ZPCanvasResolvedCount()];
-    [s appendFormat:@"原栏 hidden=%d（玻璃开时由本插件置 YES 并重申，关时还原 NO）\n", (int)bar.hidden];
+    [s appendFormat:@"原栏 在树=%@ hidden=%d（玻璃开时由本插件摘除并保留为数据源，关时按原父视图/位次放回）\n",
+         bar.superview ? @"是" : @"否", (int)bar.hidden];
     [s appendFormat:@"玻璃类命中 UIGlassEffect=%@ UIGlassContainerEffect=%@ UICornerConfiguration=%@\n",
          NSClassFromString(@"UIGlassEffect") ? @"YES" : @"NO",
          NSClassFromString(@"UIGlassContainerEffect") ? @"YES" : @"NO",
@@ -1562,12 +1650,16 @@ static void ZH_Bar_didMoveToWindow(UIView *self, SEL _cmd) {
         ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, _cmd);
     }
     if (self.window) {
-        // 出生即藏（v3.2 修 1）：原实现跑完、入窗同一轮内同步藏栏，
-        // 赶在首帧绘制前——自建栏照旧等数据就绪才建，不再先露原栏
-        // 再换。兜底恢复在 ZHNavKickRetry 到顶分支（只认本插件藏的）。
-        ZHNavPreHideBar(self);
-        ZHRequestApply(self);
-        ZHNavKickRetry(self);
+        // 出生即摘（v3.3 修 A）：原实现跑完、入窗同一轮内同步摘除
+        // 原栏并由插件保留（赶在首帧绘制前），它继续当数据源；玻
+        // 璃关时由 ZHRestoreOriginalBar 按记录的原父视图/位次放回。
+        // 摘除本身会以 window=nil 再入本钩子，上面的守卫天然跳过。
+        ZHRegisterBar(self);
+        if (ZHGlassEnabled()) {
+            ZHNavDetachBar(self);
+            ZHRequestApply(self);
+            ZHNavKickRetry(self);
+        }
     }
 }
 
@@ -1600,6 +1692,7 @@ static IMP ZHSwapClassMethod(Class cls, SEL sel, IMP newImp) {
 }
 
 static BOOL gInstalled = NO;
+static BOOL gBirthHookInstalled = NO;
 static BOOL gSettingsHookInstalled = NO;
 
 // 段1：纯黑——主题发色点 hook（与底栏/设置两段解耦，互不拖累）
@@ -1622,7 +1715,32 @@ static void ZPInstallThemeHook(void) {
     }
 }
 
-// 段2：玻璃底栏 hook（ZHTabBarNew）
+// 段2a：出生钩提前装（v3.3 修 A）——只装 didMoveToWindow 这一只
+// 钩子，由 +load 期随主题钩一起调用：原栏在启动早期就出生，等
+// +1s 延迟段再装钩时它早已入窗、出生钩扑空，摘除只能靠清扫事
+// 后补、中间露脸。本函数只做父类链 IMP 解析 + class_addMethod
+// （类自有实现时退 swizzle）这类最小动作，与 +load 装主题钩同
+// 级——不给知乎的类发消息、不触发其 +initialize 链（v7.2 式
+// +load 闪退的动作不在此列）。其余底栏钩子仍在 ZPInstallBarHooks
+// 延迟装。已装守卫：+load 与 ZPInstall 两处调用只生效一次。
+static void ZPInstallBarBirthHook(void) {
+    if (gBirthHookInstalled) return;
+    Class cls = NSClassFromString(@"ZHTabBarNew");
+    if (!cls) { NSLog(@"[zhplugin] install segment birth: ZHTabBarNew missing, skip"); return; }
+    gBarClass = cls;
+    // 先备好父类链 IMP（addMethod 成功时钩子靠它调 super），再挂钩
+    Method superMove = class_getInstanceMethod(class_getSuperclass(cls), @selector(didMoveToWindow));
+    gOrigDidMoveToWindow = superMove ? method_getImplementation(superMove) : NULL;
+    BOOL addedMove = class_addMethod(cls, @selector(didMoveToWindow),
+                                     (IMP)ZH_Bar_didMoveToWindow, "v16@0:8");
+    if (!addedMove) // 类自有实现：swizzle，原 IMP 覆盖父类链 IMP（直调它即真 super 行为）
+        gOrigDidMoveToWindow = ZHSwap(cls, @selector(didMoveToWindow), (IMP)ZH_Bar_didMoveToWindow);
+    gBirthHookInstalled = YES;
+    NSLog(@"[zhplugin] install segment birth: didMoveToWindow addMethod=%d orig=%p installed=1",
+          addedMove, gOrigDidMoveToWindow);
+}
+
+// 段2：玻璃底栏 hook（ZHTabBarNew；出生钩已由段2a 提前装，此处只补装/无操作）
 static void ZPInstallBarHooks(void) {
     if (gInstalled) return;
     Class cls = NSClassFromString(@"ZHTabBarNew");
@@ -1644,16 +1762,10 @@ static void ZPInstallBarHooks(void) {
                                       (IMP)ZH_Bar_traitChanged, "v24@0:8@16");
     if (!addedLayout) // 类自己已有 layoutSubviews 时退回 swizzle，并保留原 IMP 由钩子转调
         gOrigLayoutSubviews = ZHSwap(cls, @selector(layoutSubviews), (IMP)ZH_Bar_layoutSubviews);
-    // didMoveToWindow 补触发：先备好父类链 IMP（addMethod 成功时钩子靠它调 super），再挂钩
-    Method superMove = class_getInstanceMethod(class_getSuperclass(cls), @selector(didMoveToWindow));
-    gOrigDidMoveToWindow = superMove ? method_getImplementation(superMove) : NULL;
-    BOOL addedMove = class_addMethod(cls, @selector(didMoveToWindow),
-                                     (IMP)ZH_Bar_didMoveToWindow, "v16@0:8");
-    if (!addedMove) // 类自有实现：swizzle，原 IMP 覆盖父类链 IMP（直调它即真 super 行为）
-        gOrigDidMoveToWindow = ZHSwap(cls, @selector(didMoveToWindow), (IMP)ZH_Bar_didMoveToWindow);
+    ZPInstallBarBirthHook(); // 出生钩：通常已在 +load 装好（守卫在内），此处为 +load 没装成时的补装
     gInstalled = (gOrigSetupUI != NULL && gOrigLayoutItems != NULL);
-    NSLog(@"[zhplugin] install segment bar: setupUI=%p layoutItems=%p select=%p theme=%p addLayout=%d addTrait=%d addMove=%d installed=%d",
-          gOrigSetupUI, gOrigLayoutItems, gOrigSelect, gOrigNotifyTheme, addedLayout, addedTrait, addedMove, gInstalled);
+    NSLog(@"[zhplugin] install segment bar: setupUI=%p layoutItems=%p select=%p theme=%p addLayout=%d addTrait=%d birth=%d installed=%d",
+          gOrigSetupUI, gOrigLayoutItems, gOrigSelect, gOrigNotifyTheme, addedLayout, addedTrait, gBirthHookInstalled, gInstalled);
 }
 
 // 段3：设置页两行开关 hook（ZHCommonSettingViewController）
@@ -1696,7 +1808,7 @@ static void ZHLaunchSweepTick(void) {
     }
     if (bar) {
         if (ZHNavIsBuilt(bar)) { gLaunchSweepLeft = 0; return; }
-        ZHNavPreHideBar(bar); // 首触补藏（v3.2）：钩子装好前出生的栏，清扫一找到先藏再建
+        ZHNavDetachBar(bar); // 首触补摘（v3.3）：出生钩装好前出生的栏，清扫一找到先摘再建
         ZHRequestApply(bar);
         ZHNavKickRetry(bar);
     }
@@ -1737,7 +1849,9 @@ static void ZPInstall(void) {
 @interface ZHPluginLoader : NSObject
 @end
 @implementation ZHPluginLoader
-// +load 分工（本轮定案）：主题段在此即装，底栏/设置两段仍延迟到启动后 +1s。
+// +load 分工（本轮定案）：主题段在此即装，底栏/设置两段仍延迟到启动后 +1s；
+// 例外（v3.3）：底栏段的 didMoveToWindow 出生钩单只提前到 +load 装（段2a），
+// 否则赶不上原栏的首次入窗——它负责的只是摘除+保留，不施工。
 // 为什么主题段必须提前：内容区画布色是页面在 viewDidLoad 建成时一次性取走的存量，
 // 钩子若等 +1s 再装，首页早已建成、取色已过，事后通知/清扫都够不着（上一版实测
 // 顶部黑了、feed 仍灰，清扫还误伤底栏附近容器）。赶在 +load 装好，任何页面建成
@@ -1746,7 +1860,8 @@ static void ZPInstall(void) {
 // （触发 ZHColorModel +initialize/单例构造）外加整段全量安装；本轮 +load 只做
 // 一件最小动作——对 ZHThemeManage 的 +colorWithModel:ignoreNight: 做类方法
 // swizzle，不碰 ZHColorModel、画布模型保持首次取色时 dispatch_once 懒解析，
-// 底栏段的布局钩子（递归修复所在段）与设置段一律不动、维持 +1s 延迟。
+// 底栏段的其余布局钩子（递归修复所在段）与设置段一律不动、维持 +1s 延迟；
+// 出生钩的提前只做 IMP 解析 + addMethod，与主题钩同级最小动作（段2a）。
 // 若 +load 期解析不到 ZHThemeManage（理论兜底），gThemeHookInstalled 保持 NO，
 // +1s 的 ZPInstall 会再调一次 ZPInstallThemeHook 补装。
 + (void)load {
@@ -1755,6 +1870,15 @@ static void ZPInstall(void) {
         NSLog(@"[zhplugin] load: theme segment installed at +load (hook=%d)", gThemeHookInstalled);
     } @catch (NSException *e) {
         NSLog(@"[zhplugin] load: theme segment at +load FAILED (will retry at +1s): %@", e);
+    }
+    @try {
+        // 出生钩（v3.3 修 A）：与主题段同级提前——原栏启动早期即出生，
+        // 钩子必须赶在它第一次入窗前装好，才能在同一轮把它摘掉。
+        // 只做 IMP 解析 + addMethod，不给知乎类发消息（见段2a 注释）。
+        ZPInstallBarBirthHook();
+        NSLog(@"[zhplugin] load: birth hook installed at +load (installed=%d)", gBirthHookInstalled);
+    } @catch (NSException *e) {
+        NSLog(@"[zhplugin] load: birth hook at +load FAILED (will retry at +1s): %@", e);
     }
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(zp_didFinishLaunching:)
