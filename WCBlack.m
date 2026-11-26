@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v5.4 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v5.5 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.4"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v5.5"); });
     return l;
 }
 
@@ -483,6 +483,28 @@ static void WCFieldPlatesIn(UIView *root, int depth) {
     if ([NSStringFromClass([root class]) isEqualToString:@"MMGrowTextView"]) { WCEnsureFieldPlate(root); WCFieldPatchHunt(root); }
     for (UIView *s in root.subviews) WCFieldPlatesIn(s, depth - 1);
 }
+
+// v5.5：话筒真身由 kbdup 诊断点名——MMGrowDictationIconView（输入框内 f=266,0,32,40），
+// 它靠子图层与子视图拼出图标和光晕（本体 bg=nil），v5.3/v5.4 的颜色/图片规则全不匹配；
+// 它那张 72×72 光晕图还探出输入框右界、被「必须落在框内」的护栏挡掉。既然已点名，
+// 就按类名整个藏：登记进 patch 表，浅色/关模块时由 patch 还原统一放回，每拍重申。
+static void WCFieldHideDictation(UIView *root, int depth) {
+    if (!root || depth < 0) return;
+    if ([NSStringFromClass([root class]) isEqualToString:@"MMGrowDictationIconView"]) {
+        if (![WCFieldPatchViews() containsObject:root]) {
+            objc_setAssociatedObject(root, &kWCPatchHiddenKey, @(root.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [WCFieldPatchViews() addObject:root];
+            if (!gWCPatchInfo || ![gWCPatchInfo containsString:@"MMGrowDictationIconView"]) {
+                NSString *info = gWCPatchInfo ? [gWCPatchInfo stringByAppendingString:@" | hide MMGrowDictationIconView (named)"] : @"hide MMGrowDictationIconView (named)";
+                [info retain];
+                [gWCPatchInfo release];
+                gWCPatchInfo = info;
+            }
+        }
+        if (!root.hidden) root.hidden = YES;
+    }
+    for (UIView *s in root.subviews) WCFieldHideDictation(s, depth - 1);
+}
 static void WCFieldScan(UIView *root, int depth) {
     if (!root || depth < 0) return;
     for (UIView *v in root.subviews) {
@@ -500,6 +522,7 @@ static void WCFieldSweep(UIView *bar) {
     if (dark && WCConfigColor(@"field")) {
         WCFieldScan(bar, 5);
         WCFieldPlatesIn(bar, 6);
+        WCFieldHideDictation(bar, 8);
         UIColor *cfg = WCConfigColor(@"field");
         for (UIView *v in views.allObjects) {
             if (!v.window) { [views removeObject:v]; continue; }
@@ -1468,7 +1491,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"5.4", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"5.5", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1476,7 +1499,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v5.4 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v5.5 registered in plugin list");
             break;
         }
     }
@@ -1547,7 +1570,7 @@ static void WCInstall(void) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCCollectDiag(@"kbdup"); });
         }] retain];
         gInstalled = YES;
-        os_log(WCLog(), "[WCBlack] v5.4 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
+        os_log(WCLog(), "[WCBlack] v5.5 installed mmTab=%{public}@ mmNav=%{public}@ mmInput=%{public}@", mmTab, mmNav, mmInput);
     }
     // 玻璃插件底栏类可能懒加载，每次安装都尝试挂 didMoveToWindow（挂上即止）：视图一进窗口
     // 立刻注册+强刷，不再等 2 秒兜底扫描——首屏底部闪灰的主因就是等扫描。
@@ -1559,7 +1582,7 @@ static void WCInstall(void) {
         if (gn) gOrigGlassNativeTabWindow = WCSwapOwn(gn, @selector(didMoveToWindow), (IMP)WC_GlassNativeTab_didMoveToWindow);
         if (gt || gn) {
             glassTabHooked = YES;
-            os_log(WCLog(), "[WCBlack] v5.4 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
+            os_log(WCLog(), "[WCBlack] v5.5 glass tab hooks: WCTabBarView=%{public}@ WCGNativeTabBar=%{public}@", gt, gn);
         }
     }
     WCEnsureRegistered();
