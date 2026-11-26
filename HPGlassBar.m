@@ -500,11 +500,14 @@ static void HPLayoutSwiftCore(UIView *bar, UIView *canvas, Class btnCls) {
     for (HPGlassButton *gb in row) [canvas bringSubviewToFront:gb];
 }
 
+static BOOL gInSwiftLayout = NO;
 static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
-    if (!bar) return;
+    if (!bar || gInSwiftLayout) return;
+    gInSwiftLayout = YES;
     UIView *host = HPHostForBar(bar, btnCls);
     HPTakeoverBar(bar, host);
     HPLayoutSwiftCore(bar, host, btnCls);
+    gInSwiftLayout = NO;
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -580,7 +583,9 @@ static void HP_SwiftBar_updateButton(UIView *self, SEL _cmd, UIView *btn, BOOL s
 // 原栏被 App 重新加进界面时，同一轮里再摘掉、自建栏顶回原位
 static void HP_SwiftBar_didMoveToWindow(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigSwiftDidMove)(self, _cmd);
-    if (self.window) HPLayoutSwiftBar(self, gSwiftBtnCls);
+    // 只认「原栏真的在界面里」：摘除动作本身也会触发本钩（此时 superview 已空），不能重入，
+    // 否则摘除→钩子→再摘除同栈死循环（v13 首版就死在这，栈溢出被看门狗杀）。
+    if (self.window && self.superview) HPLayoutSwiftBar(self, gSwiftBtnCls);
 }
 // 兼容键（知乎定案的总闸）：主包 Info.plist 里 UIDesignRequiresCompatibility 若被按「开」读到，
 // 玻璃就被降级。虎扑的 plist 里根本没有这个键，这里只兜一层：凡主包读这个键，一律答「关」。
@@ -641,7 +646,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v13 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v13.1 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
