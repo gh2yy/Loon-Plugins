@@ -1,4 +1,4 @@
-// WCBlack.m — 微信深色模式纯黑背景 v6.1 (2026-11-26)
+// WCBlack.m — 微信深色模式纯黑背景 v6.2 (2026-11-26)
 // v4.0（按用户要求改底层，废弃「先灰后黑」的定时强刷作为主力）：用户录屏指出首页顶部与
 //   聊天底栏进页面时先灰、片刻才被强刷成黑——那是 0.4 秒定时器后手赋色的固有延迟。静态定案
 //   微信 8.0.80 的原生界面颜色来自 DesignToken 设计令牌（包内 weui_color_new.xml，值与采样
@@ -69,7 +69,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v6.1"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v6.2"); });
     return l;
 }
 
@@ -184,7 +184,7 @@ static UIColor *WCDynamicColor(NSString *module, UIColor *lightFallback) {
 
 // ===== v6 瘦身声明（原注册表只供诊断查看，不再参与上色）=====
 static char kWCOrigBGKey, kWCSepOrigStyleKey, kWCSepOrigColorKey, kWCSepHiddenKey, kWCPatchHiddenKey, kWCUnderlayKey;
-static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey, kWCOrigStdAppKey, kWCOrigEdgeAppKey;
+static char kWCFallbackKey, kWCDynKey, kWCForcedKey, kWCOrigEffectKey, kWCHiddenViewsKey, kWCOrigNavImageKey, kWCOrigTintKey, kWCOrigStdAppKey, kWCOrigEdgeAppKey, kWCAlignTsKey;
 static int gWCRestoreDepth = 0;
 static void WCStoreOrigBG(UIView *v) {
     if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
@@ -1099,7 +1099,7 @@ static void WCEnsureRegistered(void) {
     }
     if (![inst respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) return;
     ((void (*)(id, SEL, id, id, id))objc_msgSend)(inst, @selector(registerControllerWithTitle:version:controller:),
-        @"WCBlack 纯黑背景", @"6.1", @"WCBlackSettingsViewController");
+        @"WCBlack 纯黑背景", @"6.2", @"WCBlackSettingsViewController");
     NSArray *after = nil;
     @try { after = [inst valueForKey:@"plugins"]; } @catch (id e) { after = nil; }
     for (id p in after) {
@@ -1374,6 +1374,100 @@ static void WCForceTabView(UIView *v) {
     WCApplyStrong(v, v, dyn, 3);
 }
 
+#pragma mark - v6.2 栏出生钩子（对齐从轮询提前到栏自己的布局回调，消进入/退出闪白）
+
+// v6.1 实测：稳态全黑，但进入/退出聊天时顶栏、底栏、输入条会闪白 0.1–0.2 秒——
+// 逐帧验过：白只出现在栏区、内容区从不白。那是新栏出生时自带浅色，要等维护 tick
+// （0.4 秒一拍）才被对齐。改法：钩这些栏自己的 layoutSubviews/didMoveToWindow，
+// 原实现跑完立刻在同一轮布局里对齐，赶在转场第一帧渲染之前。稳态重复调用按
+// 每视图 0.1 秒节流，tick 保留作兜底。
+static void WCAlignBandIn(UIView *root, int depth) {
+    if (!root || depth < 0 || !gWCWeChatDark) return;
+    if (root.window && root.bounds.size.width >= root.window.bounds.size.width * 0.95 &&
+        root.bounds.size.height >= 20 && root.bounds.size.height <= 140) {
+        CGRect wf = [root convertRect:root.bounds toView:nil];
+        if (wf.origin.y < 70 && wf.origin.y > -70) {
+            if (WCIsOpaqueNeutralAny(root.backgroundColor)) {
+                WCRegisterBar(gBarsNav, root);
+                WCForceBar(root, @"nav", 3);
+            } else if ([root isKindOfClass:[UIVisualEffectView class]] && ((UIVisualEffectView *)root).effect &&
+                       root.superview && [root.superview isKindOfClass:[UIView class]]) {
+                WCRegisterBar(gBarsNav, root.superview);
+                WCForceBar(root.superview, @"nav", 3);
+            }
+        }
+    }
+    for (UIView *s in root.subviews) WCAlignBandIn(s, depth - 1);
+}
+
+static void WCChromeAlignForView(UIView *v, int kind) {
+    if (!v || !v.window) return;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    NSNumber *ts = objc_getAssociatedObject(v, &kWCAlignTsKey);
+    if (ts && now - ts.doubleValue < 0.1) return;
+    objc_setAssociatedObject(v, &kWCAlignTsKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    gWCWeChatDark = WCEnabled() && WCProbeWeChatDark();
+    UIUserInterfaceStyle want = gWCWeChatDark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleUnspecified;
+    if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
+    if (!gBarsNav) gBarsNav = [[NSHashTable weakObjectsHashTable] retain];
+    if (!gBarsTab) gBarsTab = [[NSHashTable weakObjectsHashTable] retain];
+    if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain];
+    if (kind == 0) {
+        WCRegisterBar(gBarsNav, v);
+        WCForceBar(v, @"nav", 3);
+        UIView *scope = v;
+        for (int i = 0; i < 3 && scope.superview; i++) scope = scope.superview;
+        WCAlignBandIn(scope, 8);
+    } else if (kind == 1) {
+        CGRect f = [v convertRect:v.bounds toView:nil];
+        if (f.origin.y > v.window.bounds.size.height * 0.7) { WCRegisterBar(gBarsTab, v); WCForceTabView(v); }
+    } else {
+        WCRegisterBar(gBarsInput, v);
+        WCForceBar(v, @"chatbar", 4);
+    }
+}
+
+static IMP gO_MMNavL, gO_MMNavW, gO_MsgNavL, gO_MsgNavW, gO_NewMsgNavL, gO_NewMsgNavW;
+static IMP gO_GTabL, gO_GTabW, gO_GNTabL, gO_GNTabW, gO_MMTabL, gO_MMTabW;
+static IMP gO_InL, gO_InW, gO_ContL, gO_ContW;
+
+static void WC_MMNav_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMNavL)(s, c); WCChromeAlignForView(s, 0); }
+static void WC_MMNav_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMNavW)(s, c); WCChromeAlignForView(s, 0); }
+static void WC_MsgNav_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MsgNavL)(s, c); WCChromeAlignForView(s, 0); }
+static void WC_MsgNav_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MsgNavW)(s, c); WCChromeAlignForView(s, 0); }
+static void WC_NewMsgNav_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_NewMsgNavL)(s, c); WCChromeAlignForView(s, 0); }
+static void WC_NewMsgNav_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_NewMsgNavW)(s, c); WCChromeAlignForView(s, 0); }
+static void WC_GTab_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_GTabL)(s, c); WCChromeAlignForView(s, 1); }
+static void WC_GTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_GTabW)(s, c); WCChromeAlignForView(s, 1); }
+static void WC_GNTab_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_GNTabL)(s, c); WCChromeAlignForView(s, 1); }
+static void WC_GNTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_GNTabW)(s, c); WCChromeAlignForView(s, 1); }
+static void WC_MMTab_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMTabL)(s, c); WCChromeAlignForView(s, 1); }
+static void WC_MMTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMTabW)(s, c); WCChromeAlignForView(s, 1); }
+static void WC_In_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_InL)(s, c); WCChromeAlignForView(s, 2); }
+static void WC_In_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_InW)(s, c); WCChromeAlignForView(s, 2); }
+static void WC_Cont_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContL)(s, c); WCChromeAlignForView(s, 2); }
+static void WC_Cont_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContW)(s, c); WCChromeAlignForView(s, 2); }
+
+static void WCInstallChromeHooks(void) {
+    Class c;
+    c = NSClassFromString(@"MMUINavigationBar");
+    if (c && !gO_MMNavL) { gO_MMNavL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_MMNav_layout); gO_MMNavW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MMNav_window); }
+    c = NSClassFromString(@"MMMsgContentNavBar");
+    if (c && !gO_MsgNavL) { gO_MsgNavL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_MsgNav_layout); gO_MsgNavW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MsgNav_window); }
+    c = NSClassFromString(@"MMNewMsgContentNavBar");
+    if (c && !gO_NewMsgNavL) { gO_NewMsgNavL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_NewMsgNav_layout); gO_NewMsgNavW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_NewMsgNav_window); }
+    c = NSClassFromString(@"WCTabBarView");
+    if (c && !gO_GTabW) { gO_GTabL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_GTab_layout); gO_GTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_GTab_window); }
+    c = NSClassFromString(@"WCGNativeTabBar");
+    if (c && !gO_GNTabW) { gO_GNTabL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_GNTab_layout); gO_GNTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_GNTab_window); }
+    c = NSClassFromString(@"MMTabBar");
+    if (c && !gO_MMTabL) { gO_MMTabL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_MMTab_layout); gO_MMTabW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_MMTab_window); }
+    c = NSClassFromString(@"MMInputToolView");
+    if (c && !gO_InL) { gO_InL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_In_layout); gO_InW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_In_window); }
+    c = NSClassFromString(@"InputToolContainerView");
+    if (c && !gO_ContL) { gO_ContL = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_Cont_layout); gO_ContW = WCSwapOwn(c, @selector(didMoveToWindow), (IMP)WC_Cont_window); }
+}
+
 #pragma mark - 维护 tick（注册重试、输入框维护、分割线、栏对齐）
 
 static void WCScanChrome(UIView *root, UIWindow *win, int depth) {
@@ -1460,7 +1554,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v6.1 source hooks in");
+                os_log(WCLog(), "[WCBlack] v6.2 source hooks in");
             }
         }
     }
@@ -1473,10 +1567,11 @@ static void WCInstall(void) {
             gOrigDicWindow = WCSwapOwn(dic, @selector(didMoveToWindow), (IMP)WC_Dic_didMoveToWindow);
             if (gOrigDicSetHidden && gOrigDicWindow) {
                 dicHooked = YES;
-                os_log(WCLog(), "[WCBlack] v6.1 dictation icon hooks in");
+                os_log(WCLog(), "[WCBlack] v6.2 dictation icon hooks in");
             }
         }
     }
+    WCInstallChromeHooks();
     WCEnsureRegistered();
     WCStartSlimTimer();
     gInstalled = YES;
