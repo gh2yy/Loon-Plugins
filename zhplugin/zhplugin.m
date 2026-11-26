@@ -1,42 +1,46 @@
 // zhplugin.m — 知乎 11.15.0 插件合集（2026-11-26）
 // 同一个 dylib 两项功能，各有独立开关（设置页 contactsCellInfo 行正上方连插行）：
-//   1) 玻璃探针·照抄配方版（本轮）：一只悬浮胶囊直挂 keyWindow 顶层，按
-//      RECIPE_DIFF.md 第四节配方重做构造（ZPGlassView 子类吞 setEffect: +
-//      空身入树 + applyEffect: 后装、停写盘本体 bg、维护改两家式幂等），
+//   1) 玻璃探针·SJJ 全序列版（本轮）：按 SAMPLE41_ANALYSIS.md 的
+//      SJJChatGlassStore 全序列重做构造（自建透明 host 挂 keyWindow、
+//      玻璃以 index 0 垫进 host 层级内、ZPGlassView 旗标门控 setEffect:
+//      + zpUpdateMaterial: 公开通道自装、空身入树后装），外加胶囊 bg
+//      写入方身份捕获（setBackgroundColor: 覆写记调用方镜像+偏移），
 //      一只胶囊验真（自建底部导航仍待命、本轮不建；原底栏完全不动）
 //   2) 纯黑背景：夜间模式下整体画布背景改纯黑 #000000（仿 WCBlack 路线，但走知乎主题发色点）
 //
-// 玻璃探针口径（2026-11-26 照抄配方版；全栏自建导航仍待命、本轮不建）：
-//   v2 真机已定罪：两只胶囊（甲挂原栏父视图窗口锚定、乙直挂 keyWindow
-//   ZHRootWindow）诊断全绿——effect 类名实测 UIGlassEffect 真身、类查找
-//   全命中、窗口坐标分毫不差、bg 被外部写黑 2 次已被钉制压住、hidden=0/
-//   alpha=1/style 钉住——却双双渲染为实心黑药丸（乙压在照片上纯黑零
-//   折射）。构造、落位、层级、背景已全排除。其后逐行对照两家成功样本
-//   （XHSNative / DYKiller）定案三条构造差异（RECIPE_DIFF.md），本轮同
-//   批落地、一只胶囊验真：
-//     ①停写盘本体 backgroundColor——两家对玻璃视图本体 bg 一指不碰；
-//       我们独有的每轮写 nil 钉制是在和外部写入方反复抢同一属性。本
-//       轮删 ZPCheckAndPinBg 的回写动作、只记录（ZPRecordBg）。
-//     ②删每轮 bringSubviewToFront 与全量重申——维护改两家式幂等：
-//       hidden 同步、位置核查（不在当前 keyWindow 才重插一次、已在位
-//       永不重排）、frame 变更才写、contentView 圆角每轮重设、风格钉
-//       住变更才写。
-//     ③DYKiller 防线整套：ZPGlassView（UIVisualEffectView 子类）覆写
-//       setEffect: 为空实现+计数（外部调用一律吞掉、只记次数与最近传
-//       入类名）；真装走自有 applyEffect:（[super setEffect:] 直调父
-//       类原实现、计数安装数）；视图 initWithFrame: 空身先入树，随后
-//       才 applyEffect: 装入 UIGlassEffect Regular（interactive 装入
-//       前在 effect 上设 YES，Regular 无 tint）。
-//   胶囊规格：一只，keyWindow 顶层，frame {90,300,260,64} 窗口坐标；
-//   不用容器（两家单元素均不用）；塑形仅创建时一次（本体 capsule
-//   cornerConfiguration + contentView.layer masksToBounds +
-//   cornerRadius=高/2）；装入前 overrideUserInterfaceStyle 钉知乎主题；
-//   userInteractionEnabled=NO；玻璃开关同控显隐；触发链仍走
-//   ZHRequestApply 下一拍 ZHApplyBar。
-//   诊断新增三计数：setEffect: 外部调用次数 + 最近一次传入类名、
-//   applyEffect: 安装次数、bg 外部写入次数（只记不钉，既有记录口径）；
-//   UIAccessibility 三开关实读行保留。判读表见 PATCH_NOTES 照抄配方版
-//   段。原栏仍完全不动。
+// 玻璃探针口径（2026-11-26 SJJ 全序列版；全栏自建导航仍待命、本轮不建）：
+//   已定罪前提（勿再验证）：三家样本对宿主进程零环境改造（41.3.0 全
+//   镜像普查实证）；兼容标志知乎/小红书两家共有、已排除；历代探针的
+//   胶囊全是 keyWindow 顶层浮岛——三家样本无一例，手动玻璃全长在宿
+//   主层级内部（index 0 垫底）。照抄配方版（DYKiller 吞噬 setEffect:
+//   + applyEffect: 绕行 super）真机计数定案：setEffect 外部调用=0、
+//   applyEffect 安装=1、子树仍无 _UIVisualEffectBackdropView。本轮换
+//   SJJ 的安装路径与挂载形态，两个主变量同批落地：
+//     ①挂载：自建透明 host UIView（260×64）挂 keyWindow（窗口 frame
+//       {90,300}），玻璃以 insertSubview:atIndex:0 垫进 host——玻璃第
+//       一次「长在层级内部」而非窗口浮岛。host 的 bg 创建时显式置
+//       clear、永不写色（SJJ 宿主清场纪律的形式保留：无可清场）。
+//     ②安装：ZPGlassView 旗标门控——覆写 setEffect:，实例旗标
+//       zpInstalling 为 NO 时吞掉并计数（外部调用计数 + 最近传入类
+//       名），为 YES 时走 [super setEffect:] 放行；自有
+//       zpUpdateMaterial: 置旗 → [self setEffect:fx]（公开通道）→
+//       清旗，计安装数，且仅当目标 style 与现 effect 不一致或现
+//       effect 为 nil 时才真装（变更门控）。空身 initWithFrame:
+//       （host bounds）创建，塑形仅创建时一次（本体 capsule
+//       cornerConfiguration + contentView.layer masksToBounds +
+//       cornerRadius=高/2）；入树后先钉 overrideUserInterfaceStyle
+//       （知乎 isNightMode），再建 fx（UIGlassEffect Regular、
+//       interactive 装入前设 YES、无 tint）经 zpUpdateMaterial: 装入。
+//     ③bg 写入方捕获：ZPGlassView 覆写 setBackgroundColor:，每次写
+//       入先记（值 + 调用方：backtrace/dladdr 取返回地址所属镜像名
+//       与镜像内偏移，至多留前 4 次详细记录）再放行 super——只记不
+//       钉（回写保持退场）。历代实测胶囊被外部写 bg（首白末黑）而
+//       材质胶囊 0 次，写入方身份至今未定，本轮定名。
+//   维护幂等：hidden 同步 / host 不在当前 keyWindow 才重挂 / frame
+//   变更才写 / effect 为 nil 才重装；不重排、不写 bg。玻璃开关同控
+//   显隐（关时隐藏 host）；触发链仍走 ZHRequestApply 下一拍
+//   ZHApplyBar。诊断「SJJ 胶囊」块子树从 host 起打印（背板在不在一
+//   眼可见）。判读表见 PATCH_NOTES SJJ 全序列版段。原栏仍完全不动。
 //
 // 纯黑背景口径（本轮静态定案，详见 PATCH_NOTES v3 段）：
 //   知乎颜色总发色点是 ZHThemeManage（ZHCoreTheme）：
@@ -91,8 +95,11 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <math.h>
+#import <dlfcn.h>
+#import <execinfo.h>
 
-static char kCapsuleKey;   // 配方探针胶囊（ZPGlassView + UIGlassEffect，直挂 keyWindow 顶层）
+static char kCapsuleKey;   // SJJ 探针胶囊（ZPGlassView + UIGlassEffect，垫在 host 内 index 0）
+static char kHostKey;      // SJJ 探针宿主容器（自建透明 UIView，挂 keyWindow）
 static char kSchedKey;     // 已排队布局标记
 static char kLayoutLockKey; // layoutSubviews 重入锁（per-instance）
 static char kGestureKey;   // 长按兜底手势（RETAIN）
@@ -252,13 +259,17 @@ static void ZPSetBlackEnabled(BOOL on) {
     NSLog(@"[zhplugin] blackbg switch -> %@", on ? @"ON" : @"OFF");
 }
 
-#pragma mark - 玻璃盘构造（照抄配方版：ZPGlassView 防线 + 空身入树 + applyEffect: 后装）
+#pragma mark - 玻璃盘构造（SJJ 全序列版：旗标门控 + 公开通道自装 + host 层级内垫底）
 
-// 本轮（照抄配方版）：按 RECIPE_DIFF.md 第四节配方重做构造。核心三条
-// 同批落地：①停写盘本体 bg（只记录、不回写，见 ZPRecordBg）；②维护改
-// 两家式幂等（在布局节 ZHLayoutRecipeProbe）；③DYKiller 防线——
-// ZPGlassView 子类吞 setEffect:、空身入树、applyEffect: 后装。承载与
-// 落位在布局节。
+// 本轮（SJJ 全序列版）：按 SAMPLE41_ANALYSIS.md 的 SJJChatGlassStore
+// 全序列重做构造。与照抄配方版（DYKiller 路线）的两个主变量差异：
+// ①安装路径——不用「吞噬 setEffect: + applyEffect: 绕行 super」，改
+// SJJ 的旗标门控：setEffect: 在旗标开时就是真通道，安装统一经
+// zpUpdateMaterial:（置旗→公开通道自装→清旗）+ 变更门控；②挂载形
+// 态——胶囊不再直挂 keyWindow 当浮岛，改垫进自建透明 host 内部
+// index 0（玻璃长在层级内部，三家样本的共同形态）。外加 bg 写入方
+// 身份捕获（ZPGlassView 覆写 setBackgroundColor: 记调用方）。
+// 承载与落位在布局节。
 //
 // iOS 26 玻璃类全部运行时取类、无硬链接（构建 SDK 不含其头文件）：
 // UIGlassEffect / UICornerConfiguration。
@@ -280,54 +291,113 @@ static id ZHCapsuleCornerConfiguration(void) {
     return ((id (*)(id, SEL))objc_msgSend)(cls, @selector(capsuleConfiguration));
 }
 
-// effect 通道三计数之一/之二（诊断取证，本轮新增）：
-//   gSetEffectExtCount —— ZPGlassView 的 setEffect: 被外部调用的次数（覆写
-//     吞掉并计数；applyEffect: 走 super 通道、不经覆写，不计入此数）。
-//   gSetEffectLastClass —— 最近一次外部传入 effect 的类名（RETAIN；从未
-//     发生时为 nil，诊断显示「-」）。
-//   gApplyEffectCount —— applyEffect: 真正安装 effect 的次数。
+// effect 通道计数（诊断取证）：
+//   gSetEffectExtCount —— ZPGlassView 的 setEffect: 在旗标关时被外部调
+//     用的次数（吞掉并计数；zpUpdateMaterial: 置旗后自装走放行支路、
+//     不计入此数）。
+//   gSetEffectLastClass —— 最近一次外部传入 effect 的类名（RETAIN；从
+//     未发生时为 nil，诊断显示「-」）。
+//   gZPInstallCount —— zpUpdateMaterial: 真正装入 effect 的次数（变更
+//     门控跳过的调用不计）。
 static NSUInteger gSetEffectExtCount = 0;
 static NSString *gSetEffectLastClass = nil; // RETAIN
-static NSUInteger gApplyEffectCount = 0;
+static NSUInteger gZPInstallCount = 0;
 
-// ZPGlassView（DYKiller 的 DKChatGlassView 防线同构）：把公开的
-// setEffect: 覆写成空实现——任何外部代码（宿主或 UIKit）给这只视图赋
-// effect 都被吞掉并计数，effect 只能经自有 applyEffect: 安装。知乎进程
-// 已实测存在对外来 effect view 的外部写入（bg 写黑），此类干扰非假想。
-@interface ZPGlassView : UIVisualEffectView
-- (void)applyEffect:(UIVisualEffect *)effect;
+// bg 写入方捕获（诊断取证，本轮第二使命）：ZPGlassView 覆写
+// setBackgroundColor: 时，除值外再记调用方——返回地址经 dladdr 解析
+// 所属镜像名与镜像内偏移（主程序报 osee2unifiedRelease+0x…、系统库
+// 报库名），至多留前 4 次详细记录。记录函数 ZPRecordBgWrite 定义在
+// 本节下方（bg 捕获段），此处先声明。
+static void ZPRecordBgWrite(UIColor *color, void *retAddr);
+
+// 取一只 effect 的 style（UIGlassEffect 的 style 属性，运行时读；非
+// 玻璃 effect 或读不到返回 -1）——zpUpdateMaterial: 变更门控用。
+static long ZPEffectStyle(id fx) {
+    if (!fx) return -1;
+    Class glassCls = NSClassFromString(@"UIGlassEffect");
+    if (!glassCls || ![fx isKindOfClass:glassCls]) return -1;
+    if (![fx respondsToSelector:@selector(style)]) return -1;
+    return ((long (*)(id, SEL))objc_msgSend)(fx, @selector(style));
+}
+
+// ZPGlassView（SJJ 的 SJJChatGlassView 同构）：setEffect: 旗标门控——
+// 实例旗标 zpInstalling 为 NO 时，外部赋值一律吞掉并计数；为 YES 时
+// 走 [super setEffect:] 放行。安装统一经 zpUpdateMaterial:（置旗→经
+// 公开的 setEffect: 通道自装→清旗），与 DYKiller 的「吞噬 + 自有
+// applyEffect: 绕行 super」是两条不同的安装路径，本轮换 SJJ 的。
+// 另覆写 setBackgroundColor: 做 bg 写入方捕获（先记再放行，只记不钉）。
+@interface ZPGlassView : UIVisualEffectView {
+    BOOL _zpInstalling;
+}
+- (void)zpUpdateMaterial:(UIVisualEffect *)effect;
 @end
 
 @implementation ZPGlassView
 - (void)setEffect:(UIVisualEffect *)effect {
-    // 空实现 + 计数：不调 super、不写任何状态，只记下这次外部调用。
-    gSetEffectExtCount++;
-    NSString *cls = effect ? NSStringFromClass(object_getClass(effect)) : @"nil";
-    if (![cls isEqualToString:gSetEffectLastClass]) {
-        [gSetEffectLastClass release];
-        gSetEffectLastClass = [cls retain];
+    if (!_zpInstalling) {
+        // 旗标关：外部调用——吞掉并计数，不调 super、不写任何状态。
+        gSetEffectExtCount++;
+        NSString *cls = effect ? NSStringFromClass(object_getClass(effect)) : @"nil";
+        if (![cls isEqualToString:gSetEffectLastClass]) {
+            [gSetEffectLastClass release];
+            gSetEffectLastClass = [cls retain];
+        }
+        return;
     }
-}
-- (void)applyEffect:(UIVisualEffect *)effect {
-    gApplyEffectCount++;
-    // [super setEffect:] 由编译器生成 objc_msgSendSuper2 直调父类原实现
-    // （DYKiller 手写 msgSendSuper2 达同一通道），绕开上面的吞噬覆写。
+    // 旗标开：引擎自装（zpUpdateMaterial: 内），放行父类真装。
     [super setEffect:effect];
+}
+- (void)zpUpdateMaterial:(UIVisualEffect *)effect {
+    // 变更门控（SJJ configureSlot 同款）：目标与现 effect 同为
+    // UIGlassEffect 且 style 一致 → 不重装；两者皆 nil → 无事可做；
+    // 现 effect 为 nil 而目标非 nil（或 style 真变）→ 真装并计数。
+    UIVisualEffect *cur = self.effect;
+    if (effect && cur) {
+        long wantStyle = ZPEffectStyle(effect);
+        long curStyle = ZPEffectStyle(cur);
+        if (wantStyle >= 0 && wantStyle == curStyle) return;
+    }
+    if (!effect && !cur) return;
+    _zpInstalling = YES;
+    [self setEffect:effect];
+    _zpInstalling = NO;
+    gZPInstallCount++;
+}
+- (void)setBackgroundColor:(UIColor *)color {
+    // 写入方捕获：先记（值 + 调用方返回地址），再放行写入本身
+    // （只记不钉——不回写、不拦截，写入照常落到视图上）。
+    ZPRecordBgWrite(color, __builtin_return_address(0));
+    [super setBackgroundColor:color];
 }
 @end
 
-// 配方胶囊工厂：只负责「取或建 + 空身创建 + 一次性塑形」，不入树、不装
-// effect（入树与后装在布局节 ZHLayoutRecipeProbe 按配方次序完成）。
-// 空身：initWithFrame: 创建、出生无 effect。塑形仅此一次：本体 capsule
-// cornerConfiguration + contentView.layer masksToBounds + cornerRadius
-// =高/2。无外壳、无 shadow、无任何装饰层。UIGlassEffect 类取不到
-// （<iOS 26）返回 nil，布局节据此静默不建探针。
-static ZPGlassView *ZHRecipeCapsuleForBar(UIView *bar) {
+// SJJ 探针宿主工厂：自建透明 UIView（260×64）——它就是 SJJ 意义上的
+// host。bg 在创建时显式置 clearColor 且此后永不写色（SJJ 宿主存档清
+// 场纪律的形式保留：本 host 无可清场，纪律以「恒 clear」落地）。挂
+// 载（addSubview 到 keyWindow）在布局节。不吃点击（探针口径）。
+static UIView *ZHSJJHostForBar(UIView *bar) {
+    UIView *host = objc_getAssociatedObject(bar, &kHostKey);
+    if (host) return host;
+    host = [[UIView alloc] initWithFrame:CGRectMake(90, 300, 260, 64)];
+    host.backgroundColor = [UIColor clearColor]; // 显式清场，此后永不写色
+    host.userInteractionEnabled = NO; // 探针永不吃点击
+    objc_setAssociatedObject(bar, &kHostKey, host, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [host release];
+    return host;
+}
+
+// SJJ 胶囊工厂：只负责「取或建 + 空身创建 + 一次性塑形」，不入树、不
+// 装 effect（入树与后装在布局节 ZHLayoutSJJProbe 按 SJJ 次序完成）。
+// 空身：initWithFrame:（host bounds）创建、出生无 effect。塑形仅此
+// 一次：本体 capsule cornerConfiguration + contentView.layer
+// masksToBounds + cornerRadius=高/2。无外壳、无 shadow、无任何装饰
+// 层。UIGlassEffect 类取不到（<iOS 26）返回 nil，布局节据此静默不建。
+static ZPGlassView *ZHSJJCapsuleForBar(UIView *bar, UIView *host) {
     ZPGlassView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
     if (capsule) return capsule;
     if (!NSClassFromString(@"UIGlassEffect")) return nil;
-    capsule = [[ZPGlassView alloc] initWithFrame:CGRectMake(90, 300, 260, 64)];
-    capsule.userInteractionEnabled = NO; // 探针永不吃点击
+    capsule = [[ZPGlassView alloc] initWithFrame:host.bounds];
+    capsule.userInteractionEnabled = NO; // 探针永不吃点击（SJJ 建槽同款 w2=0）
     id cc = ZHCapsuleCornerConfiguration();
     if (cc && [capsule respondsToSelector:@selector(setCornerConfiguration:)])
         ((void (*)(id, SEL, id))objc_msgSend)(capsule, @selector(setCornerConfiguration:), cc);
@@ -340,8 +410,8 @@ static ZPGlassView *ZHRecipeCapsuleForBar(UIView *bar) {
 
 // 风格钉住：overrideUserInterfaceStyle 钉知乎主题（ZPAppIsNight 口径——优先
 // ZHThemeManage isNightMode，与发色点同源）。知乎主题与系统外观不一致时，
-// 玻璃的明暗必须跟知乎走（DYKiller 对其 Regular 槽位 setOverrideUserInterfaceStyle:
-// 同款动作）。ZHLayoutRecipeProbe 每轮都会调用，主题切换经既有 apply 路径自动同步；
+// 玻璃的明暗必须跟知乎走（SJJ configureSlot 样式先行同款动作）。
+// ZHLayoutSJJProbe 每轮都会调用，主题切换经既有 apply 路径自动同步；
 // 先比对现值再写，保持幂等。
 static void ZHGlassApplyTheme(UIView *v) {
     if (!v) return;
@@ -349,35 +419,65 @@ static void ZHGlassApplyTheme(UIView *v) {
     if (v.overrideUserInterfaceStyle != want) v.overrideUserInterfaceStyle = want;
 }
 
-// bg 写入侦测（核心取证）：探针 v1 起实证胶囊的 backgroundColor 被外部
-// 写成 rgba(0,0,0,1)（本插件源码无任何对玻璃视图 backgroundColor 的赋
-// 值，定性为外部写入）。旧版每轮读到非 nil 就写 nil 钉制——逐行对照定
-// 案（RECIPE_DIFF 嫌疑 1）：两家成功样本对玻璃视图本体 bg 一指不碰，我
-// 们独有的回写是在和写入方反复抢同一属性。本轮删回写、只记录：每轮观
-// 察 bg，非 nil 且与上轮观察值不同（或上轮为 nil）才计数一次（同值持
-// 续存在不重复计——不回写后同一次写入会一直留存，按轮计数必然虚增）；
-// 观察到 nil 时清上轮标记，下一次非 nil 重新计数。首次值/末次值/累计
-// 次数进诊断（计数口径为「观察到的相异写入」，与旧版按轮钉制计数不可
-// 直接比大小，在此标注）。
-static NSString *gBgCapFirst = nil, *gBgCapLast = nil; // 配方胶囊被写入记录（RETAIN）
-static NSUInteger gBgCapCount = 0;
-static NSString *gBgCapSeen = nil; // 上轮观察到的 bg 描述（RETAIN；nil=上轮为 nil 或未观察）
-static void ZPRecordBg(UIView *v) {
-    if (!v) return;
-    UIColor *bg = v.backgroundColor;
-    if (!bg) {
-        if (gBgCapSeen) { [gBgCapSeen release]; gBgCapSeen = nil; }
-        return;
+// bg 写入方捕获（本轮第二使命）：历代探针实证胶囊的 backgroundColor
+// 被外部写入（首白末黑、共 2 次）而同窗材质胶囊 0 次，本插件源码无
+// 任何对胶囊 bg 的赋值——写入方身份至今未定。本轮由 ZPGlassView 覆
+// 写 setBackgroundColor: 在写入发生的当场捕获：值 + 调用方（返回地
+// 址经 dladdr 解析为 <镜像名>+0x<镜像内偏移>；主程序即
+// osee2unifiedRelease+0x…、系统库报库名）。至多留前 4 次详细记录
+// （gBgRecords），总次数另计 gBgWriteTotal；首次/末次值保留
+// gBgCapFirst/gBgCapLast 供诊断速览。只记不钉：覆写记录完即放行
+// super，插件绝不回写胶囊 bg（两家样本对玻璃视图本体 bg 一指不碰
+// 的纪律不变）。
+static NSString *gBgCapFirst = nil, *gBgCapLast = nil; // 胶囊被写入值记录（RETAIN）
+static NSUInteger gBgWriteTotal = 0;
+static NSMutableArray *gBgRecords = nil; // 前 4 次详细记录（alloc/init 持有）
+// 本镜像基址（dladdr 自身函数求得，捕获时用来跳过自家栈帧）
+static void *ZPSelfImageBase(void) {
+    static void *base = NULL;
+    if (!base) {
+        Dl_info info;
+        if (dladdr((void *)ZPSelfImageBase, &info)) base = info.dli_fbase;
     }
-    NSString *d = ZPColorDesc(bg);
-    if ([d isEqualToString:gBgCapSeen]) return; // 同值持续存在：同一次写入，不重复计
-    [gBgCapSeen release];
-    gBgCapSeen = [d retain];
+    return base;
+}
+// 返回地址 → 「<镜像名>+0x<偏移>」；解析失败报「未知」
+static NSString *ZPCallerDesc(void *ra) {
+    if (!ra) return @"未知";
+    Dl_info info;
+    if (!dladdr(ra, &info) || !info.dli_fbase) return @"未知";
+    const char *path = info.dli_fname ? info.dli_fname : "";
+    const char *slash = strrchr(path, '/');
+    const char *name = slash ? slash + 1 : path;
+    return [NSString stringWithFormat:@"%s+0x%lx", name,
+            (unsigned long)((uintptr_t)ra - (uintptr_t)info.dli_fbase)];
+}
+static void ZPRecordBgWrite(UIColor *color, void *retAddr) {
+    // retAddr 是覆写方法的直接返回地址（objc_msgSend 尾调 IMP，指向发
+    // 送方代码内紧挨着消息发送的下一条指令）；若它落在本镜像内（自家
+    // 代码触发的写入），再用 backtrace 往外找第一帧非本镜像的地址作
+    // 调用方，避免把自家帧误报成写入方。
+    void *caller = retAddr;
+    Dl_info probe;
+    if (caller && dladdr(caller, &probe) && probe.dli_fbase == ZPSelfImageBase()) {
+        void *frames[10];
+        int n = backtrace(frames, 10);
+        for (int i = 1; i < n; i++) {
+            Dl_info fi;
+            if (dladdr(frames[i], &fi) && fi.dli_fbase != ZPSelfImageBase()) {
+                caller = frames[i];
+                break;
+            }
+        }
+    }
+    NSString *d = ZPColorDesc(color);
     if (!gBgCapFirst) gBgCapFirst = [d retain];
     [gBgCapLast release];
     gBgCapLast = [d retain];
-    gBgCapCount++;
-    // 只记录，绝不回写 v.backgroundColor（配方第 1 条）
+    gBgWriteTotal++;
+    if (!gBgRecords) gBgRecords = [[NSMutableArray alloc] init];
+    if (gBgRecords.count < 4)
+        [gBgRecords addObject:[NSString stringWithFormat:@"%@ ← %@", d, ZPCallerDesc(caller)]];
 }
 
 #pragma mark - 开关回调（单例 handler，静态 RETAIN）
@@ -446,46 +546,50 @@ static id gBlackBlock = nil;     // 纯黑行模型的 action block（同上）
 }
 @end
 
-#pragma mark - 布局（照抄配方版：apply 幂等：开 -> 配方胶囊落位；关 -> 隐藏）
+#pragma mark - 布局（SJJ 全序列版：apply 幂等：开 -> host+胶囊落位；关 -> 隐藏 host）
 
-// 配方胶囊落位（每轮 apply 走一遍，全程两家式幂等——RECIPE_DIFF 嫌疑 2）：
-//   位置核查——胶囊不在当前 keyWindow 才重插一次（addSubview 到窗口顶
-//   层）；已在位永不重排（删旧版每轮 bringSubviewToFront）。
-//   hidden 同步——开则置 NO（变更才写）。
-//   frame——与目标 {90,300,260,64} 不同才写（窗口直挂，frame 即窗口坐标）。
-//   圆角——contentView.layer.cornerRadius 每轮重设（XHS plateOn 每轮唯一
-//   必写项；塑形其余部分只在创建时做一次，见 ZHRecipeCapsuleForBar）。
-//   风格——ZHGlassApplyTheme 钉知乎主题（内含比对、变更才写）；装 effect
-//   前必须先钉好（配方次序），故排在后装之前。
-//   bg——ZPRecordBg 只记录、不回写（配方第 1 条）。
-//   effect 后装——胶囊已入树且 effect 尚为空时，才建 fx（Regular、
-//   interactive 装入前在 effect 上设 YES、无 tint）经 applyEffect: 装入
-//   一次；已装则永不重赋（DYKiller 只在参数真变时重建）。
-// 原栏本身完全不动——不隐藏、不清场、不改背景。窗口未就绪时本轮不施工
-// （不入树、不隐藏），等下一轮触发。
-static void ZHLayoutRecipeProbe(UIView *bar) {
+// SJJ 落位（每轮 apply 走一遍，全程幂等；次序照 SJJChatGlassStore 的
+// 建槽入树 → 钉风格 → 装 effect）：
+//   host——不在当前 keyWindow 才重挂一次（addSubview）；frame 与目标
+//   {90,300,260,64} 不同才写；hidden 与开关同步（变更才写）。
+//   胶囊——不在 host 内才以 insertSubview:atIndex:0 垫入（SJJ 建槽恒
+//   index 0、已在位永不重排）；frame 与 host bounds 不同才写；
+//   hidden 同步。
+//   风格——ZHGlassApplyTheme 把胶囊 overrideUserInterfaceStyle 钉知乎
+//   主题（内含比对、变更才写），排在装 effect 之前（SJJ configureSlot
+//   样式先行同款）。
+//   effect——胶囊 effect 为 nil 时才建 fx（Regular、interactive 装入
+//   前在 effect 上设 YES、无 tint）经 zpUpdateMaterial: 装入（其内
+//   变更门控复核）；已装永不重赋。
+//   bg——ZPGlassView 的 setBackgroundColor: 覆写在写入当场捕获（值+
+//   调用方），布局节不再轮询、不回写。
+// 原栏本身完全不动——不隐藏、不清场、不改背景。窗口未就绪时本轮不
+// 施工，等下一轮触发。
+static void ZHLayoutSJJProbe(UIView *bar) {
     ZHRegisterBar(bar);
-    ZPGlassView *capsule = ZHRecipeCapsuleForBar(bar);
+    UIView *host = ZHSJJHostForBar(bar);
+    ZPGlassView *capsule = ZHSJJCapsuleForBar(bar, host);
     if (!capsule) return; // 玻璃类不可用：静默不建探针
     UIWindow *win = ZPProbeKeyWindow();
     if (!win) return;
-    if (capsule.superview != win) [win addSubview:capsule]; // 只插一次、永不重排
+    if (host.superview != win) [win addSubview:host]; // 只挂一次、不重排
+    CGRect hostTarget = CGRectMake(90, 300, 260, 64);
+    if (!CGRectEqualToRect(host.frame, hostTarget)) host.frame = hostTarget;
+    if (host.hidden) host.hidden = NO;
+    if (capsule.superview != host) [host insertSubview:capsule atIndex:0]; // SJJ 恒 index 0
+    if (!CGRectEqualToRect(capsule.frame, host.bounds)) capsule.frame = host.bounds;
     if (capsule.hidden) capsule.hidden = NO;
-    CGRect target = CGRectMake(90, 300, 260, 64);
-    if (!CGRectEqualToRect(capsule.frame, target)) capsule.frame = target;
-    capsule.contentView.layer.cornerRadius = target.size.height / 2; // 每轮重设（XHS 口径）
     ZHGlassApplyTheme(capsule);
-    ZPRecordBg(capsule);
     if (!capsule.effect) {
         id fx = ZHMakeGlassEffect(YES);
-        if (fx) [capsule applyEffect:fx];
+        if (fx) [capsule zpUpdateMaterial:fx];
     }
 }
 
-// 玻璃关：只隐藏胶囊（视图留树上、effect 不卸，下次开直接恢复显形）
-static void ZHHideRecipeProbe(UIView *bar) {
-    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    if (capsule) capsule.hidden = YES;
+// 玻璃关：只隐藏 host（胶囊随 host 一起隐、effect 不卸，下次开直接恢复）
+static void ZHHideSJJProbe(UIView *bar) {
+    UIView *host = objc_getAssociatedObject(bar, &kHostKey);
+    if (host) host.hidden = YES;
 }
 
 // keyWindow 选取（与 ZPAppIsNight 同口径：windows 里找 isKeyWindow，回落第一只）
@@ -509,8 +613,8 @@ static void ZHApplyBar(UIView *bar) {
         objc_setAssociatedObject(bar, &kGestureKey, lp, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [lp release];
     }
-    if (ZHGlassEnabled()) ZHLayoutRecipeProbe(bar);
-    else ZHHideRecipeProbe(bar);
+    if (ZHGlassEnabled()) ZHLayoutSJJProbe(bar);
+    else ZHHideSJJProbe(bar);
 }
 
 static void ZHRequestApply(UIView *bar) {
@@ -524,8 +628,9 @@ static void ZHRequestApply(UIView *bar) {
 
 // 触发链统一走 ZHRequestApply 的下一拍 apply：底栏各 hook（setupUI/
 // layoutItems/setItems/select/unselect/主题/layout/didMoveToWindow）只排队不
-// 施工；每轮 apply 按配方幂等清单维护探针（位置核查/frame/圆角/风格/bg
-// 只记录）——页面切换/主题切换/选中变化都会带来新一轮侦测样本。
+// 施工；每轮 apply 按 SJJ 幂等清单维护探针（host/胶囊位置核查/frame/
+// 风格/effect 为 nil 才装）——页面切换/主题切换/选中变化都会带来新一
+// 轮侦测样本。
 
 #pragma mark - 设置页插行（锚点：contactsCellInfo 行模型对象本身，连插三行）
 
@@ -694,40 +799,44 @@ static NSString *ZPSuperviewChain(UIView *v) {
     return parts.count ? [parts componentsJoinedByString:@" < "] : @"(无父视图)";
 }
 
-// 配方胶囊的诊断块：胶囊本值 frame + 窗口 frame 实测
-// （convertRect:toView:nil）、superview 类名链、window 是否非空、effect
-// 对象类名、本轮新增三计数（setEffect: 外部调用次数 + 最近传入类名 /
-// applyEffect: 安装次数）、bg 写入记录（只记不钉）、完整子树（全部子
-// 视图含系统内部背板，见 ZPDiagWalk）。承载即胶囊本人（无容器）。
-static void ZPAppendRecipeDiag(NSMutableString *s, UIView *bar) {
+// SJJ 胶囊的诊断块：host 本值 frame + 窗口 frame 实测
+// （convertRect:toView:nil）、superview 类名链、window 是否非空；胶囊
+// frame（host 内坐标）+ 在 host 子视图中的位次、effect 对象类名、
+// effect 通道计数（setEffect: 外部调用次数 + 最近传入类名 /
+// zpUpdateMaterial: 安装次数）、bg 写入记录（总次数 + 前 4 次详细：
+// 值 ← 调用方镜像+偏移，只记不钉）、完整子树——从 host 起打印（背板
+// _UIVisualEffectBackdropView 在不在一眼可见，见 ZPDiagWalk）。
+static void ZPAppendSJJDiag(NSMutableString *s, UIView *bar) {
+    UIView *host = objc_getAssociatedObject(bar, &kHostKey);
     ZPGlassView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    [s appendString:@"配方胶囊（keyWindow 直挂·裸玻璃·ZPGlassView 防线）:\n"];
-    if (!capsule) {
+    [s appendString:@"SJJ 胶囊（host 层级内·index 0 垫底·旗标门控公开通道）:\n"];
+    if (!host || !capsule) {
         [s appendString:@"  胶囊: 未创建（玻璃类不可用或尚未落位）\n"];
         return;
     }
-    [s appendFormat:@"  胶囊 frame(本值)=%@ 窗口frame(实测)=%@ hidden=%d 容器=无（裸盘）\n",
-         NSStringFromCGRect(capsule.frame),
-         NSStringFromCGRect([capsule convertRect:capsule.bounds toView:nil]),
-         (int)capsule.hidden];
-    [s appendFormat:@"  承载 frame(本值)=%@ 窗口frame(实测)=%@ superview链=%@ window=%@\n",
-         NSStringFromCGRect(capsule.frame),
-         NSStringFromCGRect([capsule convertRect:capsule.bounds toView:nil]),
-         ZPSuperviewChain(capsule), capsule.window ? @"非空" : @"nil"];
-    [s appendFormat:@"  effect类名 胶囊=%@\n", ZPEffectClassName(capsule)];
-    [s appendFormat:@"  effect通道计数 setEffect外部调用=%lu 最近传入=%@ applyEffect安装=%lu\n",
+    [s appendFormat:@"  host frame(本值)=%@ 窗口frame(实测)=%@ hidden=%d superview链=%@ window=%@\n",
+         NSStringFromCGRect(host.frame),
+         NSStringFromCGRect([host convertRect:host.bounds toView:nil]),
+         (int)host.hidden, ZPSuperviewChain(host), host.window ? @"非空" : @"nil"];
+    [s appendFormat:@"  胶囊 frame(host内)=%@ hidden=%d 子视图位=%ld effect类名=%@\n",
+         NSStringFromCGRect(capsule.frame), (int)capsule.hidden,
+         (long)[host.subviews indexOfObjectIdenticalTo:capsule],
+         ZPEffectClassName(capsule)];
+    [s appendFormat:@"  effect通道计数 setEffect外部调用=%lu 最近传入=%@ zpUpdateMaterial安装=%lu\n",
          (unsigned long)gSetEffectExtCount, gSetEffectLastClass ?: @"-",
-         (unsigned long)gApplyEffectCount];
-    [s appendFormat:@"  bg 写入记录 胶囊: 次数=%lu 首次=%@ 末次=%@（只记不钉）\n",
-         (unsigned long)gBgCapCount, gBgCapFirst ?: @"-", gBgCapLast ?: @"-"];
-    [s appendString:@"  配方胶囊子树（胶囊起）:\n"];
-    ZPDiagWalk(capsule, s, 1);
+         (unsigned long)gZPInstallCount];
+    [s appendFormat:@"  bg 写入记录 胶囊: 总次数=%lu 首次=%@ 末次=%@（只记不钉）\n",
+         (unsigned long)gBgWriteTotal, gBgCapFirst ?: @"-", gBgCapLast ?: @"-"];
+    for (NSString *rec in gBgRecords)
+        [s appendFormat:@"    写入: %@\n", rec];
+    [s appendString:@"  SJJ 胶囊子树（host 起）:\n"];
+    ZPDiagWalk(host, s, 1);
 }
 
-// 诊断文本（照抄配方版）：知乎主题值 / 系统 trait / 颜色钩已装 / 纯黑命中集
+// 诊断文本（SJJ 全序列版）：知乎主题值 / 系统 trait / 颜色钩已装 / 纯黑命中集
 // 解析数 / 原栏 hidden 状态（本插件不写此值）/ 三玻璃类 NSClassFromString
-// 命中布尔 / UIAccessibility 三开关运行时实读 / 配方胶囊探针块（见
-// ZPAppendRecipeDiag，含三计数与完整子树）。
+// 命中布尔 / UIAccessibility 三开关运行时实读 / SJJ 胶囊探针块（见
+// ZPAppendSJJDiag，含 effect 通道计数、bg 写入方记录与 host 起完整子树）。
 // 全程只读，不改任何状态；临时对象均为 autorelease，MRC 安全。
 static NSString *ZPBuildDiagnostics(void) {
     NSMutableString *s = [NSMutableString stringWithString:@"[zhplugin 诊断]\n"];
@@ -753,7 +862,7 @@ static NSString *ZPBuildDiagnostics(void) {
          NSStringFromCGRect(bar.frame), ZPColorDesc(bar.backgroundColor)];
     [s appendFormat:@"纯黑命中集: 已解析 %ld 个令牌（静态枚举全集 9）\n",
          (long)ZPCanvasResolvedCount()];
-    [s appendFormat:@"原栏 hidden=%d（照抄配方版：原栏完全不动，本插件不写此值）\n", (int)bar.hidden];
+    [s appendFormat:@"原栏 hidden=%d（SJJ 全序列版：原栏完全不动，本插件不写此值）\n", (int)bar.hidden];
     [s appendFormat:@"玻璃类命中 UIGlassEffect=%@ UIGlassContainerEffect=%@ UICornerConfiguration=%@\n",
          NSClassFromString(@"UIGlassEffect") ? @"YES" : @"NO",
          NSClassFromString(@"UIGlassContainerEffect") ? @"YES" : @"NO",
@@ -765,9 +874,7 @@ static NSString *ZPBuildDiagnostics(void) {
          UIAccessibilityIsReduceTransparencyEnabled() ? @"YES" : @"NO",
          UIAccessibilityDarkerSystemColorsEnabled() ? @"YES" : @"NO",
          UIAccessibilityIsInvertColorsEnabled() ? @"YES" : @"NO"];
-    ZPAppendRecipeDiag(s, bar);
-    if (!gBgCapCount)
-        [s appendString:@"bg 写入记录: 未观察到非 nil 写入\n"];
+    ZPAppendSJJDiag(s, bar);
 
     return s;
 }
@@ -822,7 +929,7 @@ static void ZHSettingsEnsureRows(id vc) {
         return;
     }
 
-    id glassInfo = ZPMakeSwitchInfo(infoCls, @"玻璃底栏", @"开启后，显示一只配方探针胶囊",
+    id glassInfo = ZPMakeSwitchInfo(infoCls, @"玻璃底栏", @"开启后，显示一只 SJJ 序列探针胶囊",
                                     ZHGlassEnabled(), YES, &gGlassBlock, &gGlassCellInfo);
     id blackInfo = ZPMakeSwitchInfo(infoCls, @"纯黑背景", @"开启后，夜间模式下背景使用纯黑",
                                     ZPBlackEnabled(), NO, &gBlackBlock, &gBlackCellInfo);
