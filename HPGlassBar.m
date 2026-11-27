@@ -540,6 +540,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     // 层级：胶囊 < 透镜 < 自建按钮
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
+}
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
 
