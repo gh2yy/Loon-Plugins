@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑悬浮底栏 v13.4 (2026-11-27)
+// HPGlassBar.m — 虎扑悬浮底栏 v13.5 (2026-11-27)
 // 本版以 v12 为基线（用户指定「那个可用的插件」），只加两件、其余逐字不动：
 // ①嫁接 v14 起的场景桥接 HPSceneBridge——现行改包带 UIScene 清单，缺桥接会黑屏；
 // ②首页信息流上滑隐藏底栏（下滑或回到顶部恢复；渐隐渐显 + 下沉/回位，0.15 秒快动效；只在首页根页面生效，切 tab/进帖子页强制显示）。
@@ -336,10 +336,10 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
 }
 
 
-#pragma mark - 首页滑动隐藏底栏（v13.4 新增）
+#pragma mark - 首页滑动隐藏底栏（v13.5 新增）
 // v13 首版按系统 UITabBarController 找首页，真机无反应：虎扑的标签控制器是 App 自写的，
 // 既不是 UITabBarController 子类、bar 的 controller 属性也拿不到它，滚动源根本没绑上。
-// v13.4 不再依赖标签控制器类型：沿响应链找托管底栏的 VC、按子 VC 可见性定当前标签页，
+// v13.5 不再依赖标签控制器类型：沿响应链找托管底栏的 VC、按子 VC 可见性定当前标签页，
 // 再叠加插件自己记录的选中序号（选中态钩子所得）把关；VC 路线找不到时整窗兜底扫描。
 
 static char kBarHiddenKey;
@@ -354,23 +354,17 @@ static char kBindRetryKey;
 @property (nonatomic, assign) UIView *bar;
 @end
 
-// 只滑动进出（用户定）：隐藏与出现共用同一条动画、互为逆向。
-// 平移不能直接加在底栏本体上：App 自己一直在管底栏的位置，每次排版都把平移顶回去——
-// v13.4 真机就是这样整程没藏住（更早版本靠淡变的透明度盖住了，看着像藏住而已）。
-// 改为平移底栏里的内容（胶囊/透镜/自建按钮，都是插件自己的视图，App 不碰），
-// 底栏本体 App 爱怎么排怎么排，内容整体滑出/滑入不受影响；隐藏时关掉底栏触摸，
-// 让出底部一带给信息流滑动。
+// 只滑动进出（用户定）：上滑整栏下滑消失、下滑整栏上滑回来，隐藏与出现互为逆向。
+// 前两版没藏住的真因（v13.3/v13.5 真机定案）：滑动期间 App 频繁重排底栏，凡是给
+// 正在平移中的视图重设 frame，平移量会被 frame 吸收掉——平移加在栏本体被栏的 frame
+// 吸收、加在子视图被子视图的 frame 吸收，动画刚起步就被吃掉；更早版本看着能藏是靠
+// 淡变的透明度在盖。这版仍平移栏本体，但在插件的排版钩子末尾（排版链最后一环、
+// 所有 frame 都设完之后）按隐藏标记重钉平移：每次重排的最终状态都是钉好的，
+// 吸收窗口不存在。动画中途撞上重排会直接落位，终点状态始终正确。
 static void HPApplyBarSlide(UIView *bar) {
     BOOL hidden = [objc_getAssociatedObject(bar, &kBarHiddenKey) boolValue];
-    CGFloat ty = hidden ? (bar.bounds.size.height + 40.0) : 0.0;
-    CGAffineTransform t = CGAffineTransformMakeTranslation(0, ty);
-    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
-    capsule.transform = t;
-    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
-    lens.transform = t;
-    NSArray *row = objc_getAssociatedObject(bar, &kRowKey);
-    for (UIView *gb in row) gb.transform = t;
-    bar.userInteractionEnabled = !hidden;
+    bar.transform = hidden ? CGAffineTransformMakeTranslation(0, bar.bounds.size.height + 40.0)
+                           : CGAffineTransformIdentity;
 }
 
 static void HPSetBarHidden(UIView *bar, BOOL hidden, BOOL animated) {
@@ -628,7 +622,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
 
-    HPBindFeedScrollViews(bar); // v13.4：首页滑动隐藏底栏的滚动源绑定
+    HPBindFeedScrollViews(bar); // v13.5：首页滑动隐藏底栏的滚动源绑定
     HPApplyBarSlide(bar); // 隐藏态下新重建的件跟上平移
 }
 
@@ -747,7 +741,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v13.4 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v13.5 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
