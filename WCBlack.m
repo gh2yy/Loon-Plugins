@@ -1,4 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.20 (2026-11-27)：反汇编定案 drawCell:
+// WCBlack.m — 微信深色模式纯黑背景 v8.21 (2026-11-27)：交叉引用定案朋友圈
+// 行的线是 WCTableViewManager drawSeparatorFor:AtIndexPath:mode: 在显示时
+// 才加进 cell 的分隔视图，钩该方法藏线。v8.20：反汇编定案 drawCell:
 // 的参数才是被描边的 cell（v8.19 读管理器 _cell 字段清了个空）；输入栏线
 // 扩扫整栏子树与外层容器。v8.19：朋友圈行上下线定案
 // 是 WCTableViewCellManager 在 drawCell: 里给 cell 图层设的边框，钩该方法清零；
@@ -37,7 +39,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.20"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.21"); });
     return l;
 }
 
@@ -573,6 +575,22 @@ static void WC_Mgr_drawCell(id s, SEL c, id arg) {
 static void WCInstallMgrHook(void) {
     Class c = NSClassFromString(@"WCTableViewCellManager");
     if (c && !gO_MgrDrawCell) gO_MgrDrawCell = WCSwapOwn(c, @selector(drawCell:), (IMP)WC_Mgr_drawCell);
+}
+// v8.21：交叉引用扫描定案——WCTableView 的分隔线根本不是 drawCell: 画的，
+// 是表格管理器 WCTableViewManager 的 drawSeparatorFor:AtIndexPath:mode:
+// 专门画的：它取一只分隔线视图（getSeparator）、按区段的上下线 inset 摆位、
+// addSubview 进 cell。它在 willDisplay 时才调用，我之前的钩子（drawCell:/
+// layout）全在它之前跑完，所以线每次都后脚出现、纹丝不动。钩它本人：
+// orig 画完立刻在同一只 cell 上按指纹藏线，时机严丝合缝。
+static IMP gO_MgrDrawSep;
+static void WC_Mgr_drawSep(id s, SEL c, id cell, id ip, NSInteger mode) {
+    ((void (*)(id, SEL, id, id, NSInteger))gO_MgrDrawSep)(s, c, cell, ip, mode);
+    if (!WCHideSep()) return;
+    if ([cell isKindOfClass:[UIView class]]) WCHideEdgeLinesDeep((UIView *)cell, 4);
+}
+static void WCInstallSepDrawHook(void) {
+    Class c = NSClassFromString(@"WCTableViewManager");
+    if (c && !gO_MgrDrawSep) gO_MgrDrawSep = WCSwapOwn(c, @selector(drawSeparatorFor:AtIndexPath:mode:), (IMP)WC_Mgr_drawSep);
 }
 
 static void WCSepTryMarkViaResponder(UITableView *tv);
@@ -1821,7 +1839,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.20 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.21 registered in plugin list");
             break;
         }
     }
@@ -1905,6 +1923,7 @@ static void WCInstall(void) {
     WCInstallVCTraitHook();
     WCInstallMMCellHook();
     WCInstallMgrHook();
+    WCInstallSepDrawHook();
     static id wcActiveToken = nil;
     if (!wcActiveToken) {
         wcActiveToken = [[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) { WCOnDidBecomeActive(); }] retain];
