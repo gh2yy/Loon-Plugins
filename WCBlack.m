@@ -1,4 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.23 诊断版 (2026-11-27)：设置页加
+// WCBlack.m — 微信深色模式纯黑背景 v8.24 诊断版 (2026-11-27)：诊断触发
+// 页修正为发现页 FindFriendEntryViewController（v8.23 误认 MoreViewController
+// =「我」页）。v8.23：设置页加
 // 诊断区，记录钩子计数与发现页首行的视图/图层树。v8.22：drawSeparatorFor:
 // 的参数是 cell 管理器不是 cell（v8.21 类型判断落空）；三路找真 cell +
 // 钩 willDisplay 补网 + 扫表格本体装饰线。v8.21：交叉引用定案朋友圈
@@ -42,7 +44,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.23"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.24"); });
     return l;
 }
 
@@ -662,8 +664,9 @@ static void WCDiagAppendView(UIView *v, int depth, NSMutableString *out) {
     }
     for (UIView *sub in v.subviews) WCDiagAppendView(sub, depth + 1, out);
 }
-static void WCDiagCapture(UITableView *tv) {
+static void WCDiagCapture(UITableView *tv, NSString *vcName) {
     NSMutableString *out = [NSMutableString string];
+    [out appendFormat:@"vc=%@\n", vcName ?: @"?"];
     [out appendFormat:@"hooks: drawCell=%ld drawSep=%ld willDisplay=%ld cellLayout=%ld\n",
         (long)gDiagDrawCell, (long)gDiagDrawSep, (long)gDiagWillDisplay, (long)gDiagCellLayout];
     [out appendFormat:@"table=%@ sepStyle=%ld visCells=%lu\n", NSStringFromClass([tv class]),
@@ -673,27 +676,31 @@ static void WCDiagCapture(UITableView *tv) {
         [out appendFormat:@"%@ f={%.0f,%.0f,%.0f,%.1f} hid=%d\n", NSStringFromClass([v class]),
             v.frame.origin.x, v.frame.origin.y, v.frame.size.width, v.frame.size.height, (int)v.hidden];
     }
-    [out appendString:@"-- first visible cell --\n"];
-    UITableViewCell *cell = tv.visibleCells.firstObject;
-    if (cell) WCDiagAppendView(cell, 0, out);
+    [out appendString:@"-- visible cells --\n"];
+    for (UITableViewCell *cell in tv.visibleCells) WCDiagAppendView(cell, 0, out);
     WCDiagSetText([[out copy] autorelease]);
 }
-static BOOL WCDiagIsMoreTable(UITableView *tv) {
+// v8.23 的诊断抓错了页：MoreViewController 是「我」页，发现页是
+// FindFriendEntryViewController（v8.24 修正）。顺带一个实测结论：
+// 「我」页整页显示里 drawSep=0、cellLayout=0——那两个钩子根本没被调用。
+static NSString *WCDiagFindEntryVC(UITableView *tv) {
     UIResponder *r = tv;
     while (r) {
         if ([r isKindOfClass:[UIViewController class]] &&
-            [NSStringFromClass([r class]) isEqualToString:@"MoreViewController"]) return YES;
+            [NSStringFromClass([r class]) isEqualToString:@"FindFriendEntryViewController"])
+            return @"FindFriendEntryViewController";
         r = [r nextResponder];
     }
-    return NO;
+    return nil;
 }
 static IMP gO_MgrWillDisplay;
 static void WC_Mgr_willDisplay(id s, SEL c, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
     gDiagWillDisplay++;
     ((void (*)(id, SEL, id, id, id))gO_MgrWillDisplay)(s, c, tv, cell, ip);
-    if (WCDiagIsMoreTable(tv)) {
-        WCDiagCapture(tv);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCDiagCapture(tv); });
+    NSString *diagVC = WCDiagFindEntryVC(tv);
+    if (diagVC) {
+        WCDiagCapture(tv, diagVC);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCDiagCapture(tv, diagVC); });
     }
     if (!WCHideSep()) return;
     if (cell) WCHideEdgeLinesDeep(cell, 4);
@@ -1966,7 +1973,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.23 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.24 registered in plugin list");
             break;
         }
     }
