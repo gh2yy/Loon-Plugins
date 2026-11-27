@@ -185,6 +185,7 @@ static void HPApplyCapsuleShadow(UIView *plate) {
 // 透镜闪现（v11 用户定）：选中透镜不再常驻，只在按下按钮时在该槽位亮起（0.12s 淡入、
 // 停留约 0.38s、0.3s 淡出后隐藏）。代数计数防连点时旧的淡出把新闪现掐掉；
 // 布局函数见 kLensFlashActiveKey 为真时不碰透镜的 hidden/alpha。
+static NSString *gFlashInfo = @"flash: (none yet)";
 static char kLensFlashGenKey;
 static char kLensFlashActiveKey;
 static void HPFlashLens(UIView *bar, CGRect lensFrame) {
@@ -394,12 +395,11 @@ static void HPHideBarBackground(UIView *bar, NSArray *btns) {
 #pragma mark - 诊断 HUD（v19-diag：把底栏层级打到屏幕上，截图即证据，定案后删）
 
 static UILabel *gHUD = nil;
-static NSString *gFlashInfo = @"flash: (none yet)";
-static void HPUpdateHUD(UIView *bar) {
+static void HPUpdateHUD(UIView *bar, Class btnCls) {
     UIView *cap = objc_getAssociatedObject(bar, &kCapsuleKey);
     UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
     NSArray *mine = objc_getAssociatedObject(bar, &kRowKey);
-    NSArray *btns = HPBarButtons(bar, gSwiftBtnCls);
+    NSArray *btns = HPBarButtons(bar, btnCls);
     NSMutableString *s = [NSMutableString stringWithFormat:@"v19-diag bar=%@ sub=%lu\n%@\n",
         NSStringFromClass([bar class]), (unsigned long)bar.subviews.count, gFlashInfo];
     if ([bar respondsToSelector:@selector(backgroundView)]) {
@@ -526,7 +526,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     // 层级：胶囊 < 透镜 < 自建按钮
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
-    HPUpdateHUD(bar);
+    HPUpdateHUD(bar, btnCls);
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
