@@ -1,7 +1,7 @@
-// HPGlassBar.m — 虎扑悬浮底栏 v12.1 (2026-11-27)
+// HPGlassBar.m — 虎扑悬浮底栏 v12.2 (2026-11-27)
 // 本版以 v12 为基线（用户指定「那个可用的插件」），只加两件、其余逐字不动：
 // ①嫁接 v14 起的场景桥接 HPSceneBridge——现行改包带 UIScene 清单，缺桥接会黑屏；
-// ②首页信息流上滑隐藏底栏（下滑或回到顶部恢复；只在首页根页面生效，切 tab/进帖子页强制显示）。
+// ②首页信息流上滑隐藏底栏（下滑或回到顶部恢复；渐隐渐显 + 下沉/回位，0.15 秒快动效；只在首页根页面生效，切 tab/进帖子页强制显示）。
 // 沿革：v1 挂错类零反应；v2 挂对 Swift 真底栏但玻璃自拼、槽位自算差 34pt；v3 修位置；v4 照 XHSNative
 //   plateOn 配方重做玻璃盘并过滤隐藏 button；v5 按用户定的做法重构按钮层（同 XHSNative 的 rebuildTabs 路线）：
 //   自建按钮复制原按钮的图标/标题/颜色/内部布局，原按钮隐藏；点击不走原按钮的触摸，直接调底栏自己的
@@ -336,7 +336,7 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
 }
 
 
-#pragma mark - 首页滑动隐藏底栏（v12.1 新增）
+#pragma mark - 首页滑动隐藏底栏（v12.2 新增）
 
 static char kBarHiddenKey;
 static char kFeedObsKey;
@@ -352,10 +352,15 @@ static void HPSetBarHidden(UIView *bar, BOOL hidden, BOOL animated) {
     NSNumber *cur = objc_getAssociatedObject(bar, &kBarHiddenKey);
     if (cur && cur.boolValue == hidden) return;
     objc_setAssociatedObject(bar, &kBarHiddenKey, @(hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // 渐隐渐显 + 下沉/回位，快动效 0.15 秒（v12.2 用户定）
     CGFloat ty = hidden ? (bar.bounds.size.height + 40.0) : 0.0;
-    [UIView animateWithDuration:animated ? 0.28 : 0.0 delay:0
-                        options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
-                     animations:^{ bar.transform = CGAffineTransformMakeTranslation(0, ty); }
+    CGFloat targetAlpha = hidden ? 0.0 : 1.0;
+    [UIView animateWithDuration:animated ? 0.15 : 0.0 delay:0
+                        options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+                         bar.transform = CGAffineTransformMakeTranslation(0, ty);
+                         bar.alpha = targetAlpha;
+                     }
                      completion:nil];
 }
 
@@ -565,7 +570,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
 
-    HPBindFeedScrollViews(bar); // v12.1：首页滑动隐藏底栏的滚动源绑定
+    HPBindFeedScrollViews(bar); // v12.2：首页滑动隐藏底栏的滚动源绑定
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -683,7 +688,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v12.1 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v12.2 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
