@@ -135,6 +135,35 @@
 //   诊断「玻璃导航」块：自建栏 frame、玻璃子树全量（背板在不
 //   在）、原栏 hidden、当前选中项、effect 通道计数与 bg 写入记
 //   录（保留探针时代的取证字段）。
+//   v3.10（去掉压在导航栏区域的浮动推广横幅）：用户 2026-11-27
+//     07:56 截图实证——首页底部一条蓝色浮动推广横幅（文案「是
+//     我！我想给…一个见面礼」，服务端下发）原浮在原栏上方，原
+//     栏摘除后掉到屏幕底部与自建胶囊重叠打架。用户拍板遍历普
+//     查、同类全去。静态普查定案（详见 PATCH_NOTES v3.10 段）：
+//     这类横幅是「应用内推广通知」（InAppNotification /
+//     PromoReach）一家——服务端下发 icon+文案+链接，经请求漏斗
+//     取回后以独立窗口贴底展示：
+//       · 请求漏斗：ZHFloatNoticeManager 的 getFloatNotice… 四
+//         方法（ObjC 侧，+shareManager 单例）；
+//       · 模块漏斗：ZHInAppNotificationModuleAPI 的
+//         getFloatNoticeView… 三方法 + showFloatNoticeView… 一
+//         方法（模块系统按名调用，故二进制内无直接 xref）；
+//       · 展示漏斗：ZHFloatNoticeView（UIWindow 子类，
+//         +noticeView 以应用窗口 bounds+状态栏高建窗、
+//         setWindowLevel:，show/showUpAnimation 贴底升起，
+//         shouldDownToUpAnimate/swipeDown: 均证贴底）与 Swift
+//         FloatNoticeView / FloatNewNoticeView（同模块新实现，
+//         父类 ZHPromoWindow 亦 UIWindow，bindWithTitle:icon:
+//         nightIcon:content:buttonText: + show）。
+//     拦法（新段4，ZPInstall 内独立安装、与玻璃开关无关、常开）：
+//     上述请求/模块方法一律换成空转实现（不调原实现、不触发完
+//     成回调——回调不来即无物可展示、无状态待清理），三只窗口
+//     的 show/makeKeyAndVisible/makeVisible 换成空转 + 顺手
+//     hidden=YES。同轮生效、无巡逻。每次拦截按「类 名」计数，
+//     诊断尾部新增「横幅拦截」块（各类计数 + 合计）供核对覆盖
+//     面。不动：ZHPromoWindow 基类本身（其另一子类是等级引导
+//     弹窗 LevelGuideAlertView，不属横幅）、二级页自带底栏、页
+//     内 inline 推广卡、居中弹窗、功能性小窗（音频/视频 PiP）。
 //
 //// 纯黑背景口径（本轮静态定案，详见 PATCH_NOTES v3 段）：
 //   知乎颜色总发色点是 ZHThemeManage（ZHCoreTheme）：
@@ -268,6 +297,7 @@ static BOOL ZHNavIsBuilt(UIView *bar); // 前置声明，定义在布局节（�
 static void ZHNavKickRetry(UIView *bar); // 前置声明，定义在布局节（安装段启动清扫用）
 static UIWindow *ZPKeyWindow(void); // 前置声明，定义在布局节（导航落位用）
 static NSString *ZPBuildDiagnostics(void); // 前置声明，定义在设置页节（诊断行）
+static void ZPAppendBannerDiag(NSMutableString *s); // 前置声明，定义在横幅拦截节（v3.10）
 static NSString *ZPColorDesc(UIColor *c); // 前置声明，定义在诊断行节（bg 侦测记录先用）
 static BOOL gThemeHookInstalled = NO; // 主题段已装标记：+load 期即安装，诊断行也要读，故在此声明（安装节不再重复定义）
 
@@ -1523,7 +1553,7 @@ static NSString *ZPBuildDiagnostics(void) {
          gThemeHookInstalled ? @"YES" : @"NO",
          ZPBlackEnabled() ? @"ON" : @"OFF", ZHGlassEnabled() ? @"ON" : @"OFF"];
     UIView *bar = [gLiveBars allObjects].firstObject;
-    if (!bar) { [s appendString:@"底栏: 尚无实例\n"]; return s; }
+    if (!bar) { [s appendString:@"底栏: 尚无实例\n"]; ZPAppendBannerDiag(s); return s; }
     [s appendFormat:@"底栏 %@ bounds=%@ frame=%@ bg=%@\n",
          NSStringFromClass(object_getClass(bar)), NSStringFromCGRect(bar.bounds),
          NSStringFromCGRect(bar.frame), ZPColorDesc(bar.backgroundColor)];
@@ -1543,6 +1573,7 @@ static NSString *ZPBuildDiagnostics(void) {
          UIAccessibilityDarkerSystemColorsEnabled() ? @"YES" : @"NO",
          UIAccessibilityIsInvertColorsEnabled() ? @"YES" : @"NO"];
     ZPAppendNavDiag(s, bar);
+    ZPAppendBannerDiag(s);
 
     return s;
 }
@@ -1814,6 +1845,100 @@ static BOOL gInstalled = NO;
 static BOOL gBirthHookInstalled = NO;
 static BOOL gSettingsHookInstalled = NO;
 
+#pragma mark - Hook（横幅拦截，v3.10 段4）
+
+// 普查定案见文件头 v3.10 段：应用内推广通知（FloatNotice）一家的
+// 请求漏斗 + 模块漏斗 + 展示漏斗。拦截计数（MRC：静态字典
+// alloc/init 全程持有）：键 =「类 选择器」，值 = NSNumber 次数；
+// 诊断尾部整表打印核对覆盖面。计数只在主线程的展示路径上写（知
+// 乎的请求/展示都走主线程），不另加锁——与本文件既有计数风格一致。
+static NSMutableDictionary *gBannerBlockCounts = nil;
+static BOOL gBannerHookInstalled = NO;
+static void ZPCountBannerBlock(id self, SEL _cmd) {
+    if (!gBannerBlockCounts) gBannerBlockCounts = [[NSMutableDictionary alloc] init];
+    NSString *key = [NSString stringWithFormat:@"%@ %@",
+                     NSStringFromClass(object_getClass(self)), NSStringFromSelector(_cmd)];
+    NSNumber *n = gBannerBlockCounts[key];
+    gBannerBlockCounts[key] = @(n ? n.unsignedLongValue + 1 : 1);
+}
+
+// 请求/模块漏斗的空转实现：统一返回 0（真实方法均为请求式/void，
+// 期望指针或布尔的调用方拿到 0 即「无通知」的正确语义）；绝不调
+// 原实现、绝不触发完成回调——回调不来即无物可展示、无状态待清理。
+static NSInteger ZP_Banner_req1(id self, SEL _cmd, id a1) {
+    ZPCountBannerBlock(self, _cmd); return 0;
+}
+static NSInteger ZP_Banner_req4(id self, SEL _cmd, id a1, id a2, BOOL b, id a3) {
+    ZPCountBannerBlock(self, _cmd); return 0;
+}
+static NSInteger ZP_Banner_req5(id self, SEL _cmd, id a1, id a2, BOOL b, id a3, id a4) {
+    ZPCountBannerBlock(self, _cmd); return 0;
+}
+static NSInteger ZP_Banner_apiShow(id self, SEL _cmd, id a1, id a2, id a3, id a4, id a5, id a6, id a7) {
+    ZPCountBannerBlock(self, _cmd); return 0;
+}
+// 展示漏斗的空转实现（三只通知窗口的 show/makeKeyAndVisible/
+// makeVisible）：不调原实现，顺手把窗口 hidden 钉 YES——即便某条
+// 未知路径已把它建成，show 被拦下时它也保持不可见、不吃触摸。
+static void ZP_Banner_winShow(id self, SEL _cmd) {
+    ZPCountBannerBlock(self, _cmd);
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(self, @selector(setHidden:), YES);
+}
+
+static void ZPAppendBannerDiag(NSMutableString *s) {
+    [s appendFormat:@"横幅拦截（v3.10）: 已装=%@\n", gBannerHookInstalled ? @"YES" : @"NO"];
+    if (!gBannerBlockCounts || gBannerBlockCounts.count == 0) {
+        [s appendString:@"  本进程尚无拦截记录\n"];
+        return;
+    }
+    NSUInteger total = 0;
+    for (NSString *k in [[gBannerBlockCounts allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+        NSUInteger c = gBannerBlockCounts[k].unsignedLongValue;
+        total += c;
+        [s appendFormat:@"  %@ = %lu\n", k, (unsigned long)c];
+    }
+    [s appendFormat:@"  合计 = %lu\n", (unsigned long)total];
+}
+
+// 段4：横幅拦截（FloatNotice 一家；与玻璃开关无关、常开）。
+// 目标方法均已静态核实在各目标类自身方法表内（ZHSwap 改的是类
+// 自有实现，不会污染父类）。逐类独立装：一类缺失/失败只跳过该类。
+static void ZPInstallBannerHooks(void) {
+    if (gBannerHookInstalled) return;
+    int ok = 0, total = 0;
+    Class mgCls = NSClassFromString(@"ZHFloatNoticeManager");
+    if (mgCls) {
+        total += 4;
+        if (ZHSwap(mgCls, @selector(getFloatNoticeIfNeed:), (IMP)ZP_Banner_req1)) ok++;
+        if (ZHSwap(mgCls, @selector(getFloatNoticeIfNeedSource:contentToken:needFringe:CallBack:), (IMP)ZP_Banner_req4)) ok++;
+        if (ZHSwap(mgCls, @selector(getFloatNoticeIfNeedSource:contentToken:needFringe:CompletionView:CompletionWindow:), (IMP)ZP_Banner_req5)) ok++;
+        if (ZHSwap(mgCls, @selector(getFloatNoticeSource:contentToken:needFringe:CompletionView:CompletionWindow:), (IMP)ZP_Banner_req5)) ok++;
+    } else NSLog(@"[zhplugin] install segment banner: ZHFloatNoticeManager missing, skip");
+    Class apiCls = NSClassFromString(@"ZHInAppNotificationModuleAPI");
+    if (apiCls) {
+        total += 4;
+        if (ZHSwap(apiCls, @selector(getFloatNoticeViewWithCompletion:), (IMP)ZP_Banner_req1)) ok++;
+        if (ZHSwap(apiCls, @selector(getFloatNoticeViewWithSource:contentToken:needFringe:Completion:), (IMP)ZP_Banner_req4)) ok++;
+        if (ZHSwap(apiCls, @selector(getFloatNoticeViewWithSource:contentToken:needFringe:CompletionView:CompletionWindow:), (IMP)ZP_Banner_req5)) ok++;
+        if (ZHSwap(apiCls, @selector(showFloatNoticeViewWithTitle:icon:nightIcon:content:buttonText:delegate:context:), (IMP)ZP_Banner_apiShow)) ok++;
+    } else NSLog(@"[zhplugin] install segment banner: ZHInAppNotificationModuleAPI missing, skip");
+    Class nvCls = NSClassFromString(@"ZHFloatNoticeView");
+    if (nvCls) {
+        total += 3;
+        if (ZHSwap(nvCls, @selector(show), (IMP)ZP_Banner_winShow)) ok++;
+        if (ZHSwap(nvCls, @selector(makeKeyAndVisible), (IMP)ZP_Banner_winShow)) ok++;
+        if (ZHSwap(nvCls, @selector(makeVisible), (IMP)ZP_Banner_winShow)) ok++;
+    } else NSLog(@"[zhplugin] install segment banner: ZHFloatNoticeView missing, skip");
+    for (NSString *cn in @[@"FloatNoticeView", @"FloatNewNoticeView"]) {
+        Class c = NSClassFromString(cn);
+        if (!c) { NSLog(@"[zhplugin] install segment banner: %@ missing, skip", cn); continue; }
+        total += 1;
+        if (ZHSwap(c, @selector(show), (IMP)ZP_Banner_winShow)) ok++;
+    }
+    gBannerHookInstalled = (ok > 0);
+    NSLog(@"[zhplugin] install segment banner: swapped %d/%d installed=%d", ok, total, gBannerHookInstalled);
+}
+
 // 段1：纯黑——主题发色点 hook（与底栏/设置两段解耦，互不拖累）
 static void ZPInstallThemeHook(void) {
     if (gThemeHookInstalled) return;
@@ -1951,7 +2076,7 @@ static void ZHLaunchSweepStart(void) {
                    dispatch_get_main_queue(), ^{ ZHLaunchSweepTick(); });
 }
 
-// 三段独立安装：一段抛异常不许拖累其它段（WCBlack v4.7 教训）。
+// 四段独立安装：一段抛异常不许拖累其它段（WCBlack v4.7 教训）。
 // 主题段通常已在 +load 装好，这里的调用是未装成时的补装/无操作（函数内有已装守卫）。
 static void ZPInstall(void) {
     @try {
@@ -1971,6 +2096,12 @@ static void ZPInstall(void) {
         NSLog(@"[zhplugin] install segment settings: OK");
     } @catch (NSException *e) {
         NSLog(@"[zhplugin] install segment settings: FAILED: %@", e);
+    }
+    @try {
+        ZPInstallBannerHooks();
+        NSLog(@"[zhplugin] install segment banner: OK");
+    } @catch (NSException *e) {
+        NSLog(@"[zhplugin] install segment banner: FAILED: %@", e);
     }
     ZHLaunchSweepStart(); // 冷启直达清扫（v3.1）：找栏 + 排 apply/重试，玻璃关时自跳过
 }
@@ -2020,7 +2151,7 @@ static void ZPInstall(void) {
     [[NSNotificationCenter defaultCenter] removeObserver:self
                                                     name:UIApplicationDidFinishLaunchingNotification
                                                   object:nil];
-    // 启动已完成、宿主类与 UIApplication 均就绪，再延迟约 1 秒分三段独立安装。
+    // 启动已完成、宿主类与 UIApplication 均就绪，再延迟约 1 秒分四段独立安装。
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ ZPInstall(); });
 }
