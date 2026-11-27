@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑悬浮底栏 v13 (2026-11-27)
+// HPGlassBar.m — 虎扑悬浮底栏 v13.1 (2026-11-27)
 // 本版以 v12 为基线（用户指定「那个可用的插件」），只加两件、其余逐字不动：
 // ①嫁接 v14 起的场景桥接 HPSceneBridge——现行改包带 UIScene 清单，缺桥接会黑屏；
 // ②首页信息流上滑隐藏底栏（下滑或回到顶部恢复；渐隐渐显 + 下沉/回位，0.15 秒快动效；只在首页根页面生效，切 tab/进帖子页强制显示）。
@@ -336,13 +336,19 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
 }
 
 
-#pragma mark - 首页滑动隐藏底栏（v13 新增）
+#pragma mark - 首页滑动隐藏底栏（v13.1 新增）
+// v13 首版按系统 UITabBarController 找首页，真机无反应：虎扑的标签控制器是 App 自写的，
+// 既不是 UITabBarController 子类、bar 的 controller 属性也拿不到它，滚动源根本没绑上。
+// v13.1 不再依赖标签控制器类型：沿响应链找托管底栏的 VC、按子 VC 可见性定当前标签页，
+// 再叠加插件自己记录的选中序号（选中态钩子所得）把关；VC 路线找不到时整窗兜底扫描。
 
 static char kBarHiddenKey;
 static char kFeedObsKey;
 static char kFeedSVsKey;
 static char kFeedVCKey;
 static char kSVLastOffKey;
+static char kSelIdxKey;
+static char kBindRetryKey;
 
 @interface HPFeedObserver : NSObject
 @property (nonatomic, assign) UIView *bar;
@@ -352,7 +358,7 @@ static void HPSetBarHidden(UIView *bar, BOOL hidden, BOOL animated) {
     NSNumber *cur = objc_getAssociatedObject(bar, &kBarHiddenKey);
     if (cur && cur.boolValue == hidden) return;
     objc_setAssociatedObject(bar, &kBarHiddenKey, @(hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    // 渐隐渐显 + 下沉/回位，快动效 0.15 秒（v13 用户定）
+    // 渐隐渐显 + 下沉/回位，快动效 0.15 秒（用户定）
     CGFloat ty = hidden ? (bar.bounds.size.height + 40.0) : 0.0;
     CGFloat targetAlpha = hidden ? 0.0 : 1.0;
     [UIView animateWithDuration:animated ? 0.15 : 0.0 delay:0
@@ -364,15 +370,39 @@ static void HPSetBarHidden(UIView *bar, BOOL hidden, BOOL animated) {
                      completion:nil];
 }
 
-static UITabBarController *HPFindTBC(UIView *bar) {
-    id c = HPGetObj(bar, @"controller");
-    if (c && [c isKindOfClass:[UITabBarController class]]) return (UITabBarController *)c;
+static UIViewController *HPHostVC(UIView *bar) {
     id r = bar;
     while (r) {
-        if ([r isKindOfClass:[UITabBarController class]]) return (UITabBarController *)r;
+        if ([r isKindOfClass:[UIViewController class]]) return (UIViewController *)r;
         r = [r respondsToSelector:@selector(nextResponder)] ? [r nextResponder] : nil;
     }
     return nil;
+}
+
+// 当前停在首页根页面时返回首页根 VC，否则 nil
+static UIViewController *HPHomeRootVC(UIView *bar) {
+    UIViewController *host = HPHostVC(bar);
+    if (!host) return nil;
+    UIViewController *active = nil;
+    if ([host isKindOfClass:[UITabBarController class]]) {
+        UITabBarController *t = (UITabBarController *)host;
+        if ([t selectedIndex] != 0) return nil;
+        active = [t selectedViewController];
+    } else {
+        NSArray *kids = [host childViewControllers];
+        if (kids.count == 0) return nil;
+        for (UIViewController *k in kids) {
+            UIView *v = k.view;
+            if (v && v.window && !v.hidden && v.alpha > 0.01) { active = k; break; }
+        }
+        if (!active || active != kids.firstObject) return nil;
+    }
+    if ([active isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *nav = (UINavigationController *)active;
+        if (nav.viewControllers.count > 1) return nil; // 已推入子页面，不在首页根
+        return nav.viewControllers.firstObject;
+    }
+    return active;
 }
 
 @implementation HPFeedObserver
@@ -380,8 +410,8 @@ static UITabBarController *HPFindTBC(UIView *bar) {
                         change:(NSDictionary *)change context:(void *)context {
     if (![object isKindOfClass:[UIScrollView class]] || !self.bar) return;
     UIScrollView *sv = (UIScrollView *)object;
-    UITabBarController *tbc = HPFindTBC(self.bar);
-    if (!tbc || [tbc selectedIndex] != 0) return;
+    NSNumber *selIdx = objc_getAssociatedObject(self.bar, &kSelIdxKey);
+    if (selIdx && selIdx.integerValue != 0) return;
     if (!sv.window) return;
     CGFloat y = sv.contentOffset.y;
     NSNumber *last = objc_getAssociatedObject(sv, &kSVLastOffKey);
@@ -393,8 +423,8 @@ static UITabBarController *HPFindTBC(UIView *bar) {
 }
 @end
 
-static void HPCollectFeedSVs(UIView *v, NSMutableArray *out) {
-    if (out.count >= 4) return;
+static void HPCollectFeedSVs(UIView *v, UIView *skip, NSMutableArray *out) {
+    if (out.count >= 4 || v == skip) return;
     if ([v isKindOfClass:[UIScrollView class]]) {
         UIScrollView *sv = (UIScrollView *)v;
         CGRect f = sv.frame;
@@ -402,11 +432,19 @@ static void HPCollectFeedSVs(UIView *v, NSMutableArray *out) {
             sv.contentSize.height > f.size.height * 1.15)
             [out addObject:sv];
     }
-    for (UIView *s in v.subviews) HPCollectFeedSVs(s, out);
+    for (UIView *s in v.subviews) HPCollectFeedSVs(s, skip, out);
+}
+
+static void HPUnbindFeedSVs(UIView *bar, HPFeedObserver *obs) {
+    NSMutableArray *bound = objc_getAssociatedObject(bar, &kFeedSVsKey);
+    for (UIScrollView *sv in bound) {
+        @try { [sv removeObserver:obs forKeyPath:@"contentOffset"]; } @catch (NSException *e) {}
+    }
+    [bound removeAllObjects];
+    objc_setAssociatedObject(bar, &kFeedVCKey, nil, OBJC_ASSOCIATION_ASSIGN);
 }
 
 static void HPBindFeedScrollViews(UIView *bar) {
-    UITabBarController *tbc = HPFindTBC(bar);
     HPFeedObserver *obs = objc_getAssociatedObject(bar, &kFeedObsKey);
     if (!obs) {
         obs = [[HPFeedObserver alloc] init];
@@ -415,36 +453,38 @@ static void HPBindFeedScrollViews(UIView *bar) {
         [obs release];
     }
     NSMutableArray *bound = objc_getAssociatedObject(bar, &kFeedSVsKey);
-    UIViewController *selVC = tbc ? [tbc selectedViewController] : nil;
-    UIViewController *rootVC = selVC;
-    if ([selVC isKindOfClass:[UINavigationController class]]) {
-        UINavigationController *nav = (UINavigationController *)selVC;
-        rootVC = (nav.viewControllers.count > 1) ? nil : nav.viewControllers.firstObject;
-    }
-    BOOL onHome = tbc && [tbc selectedIndex] == 0 && rootVC != nil;
-    UIViewController *boundVC = objc_getAssociatedObject(bar, &kFeedVCKey);
-    if (!onHome) {
-        if (bound.count) {
-            for (UIScrollView *sv in bound) {
-                @try { [sv removeObserver:obs forKeyPath:@"contentOffset"]; } @catch (NSException *e) {}
-            }
-            [bound removeAllObjects];
-            objc_setAssociatedObject(bar, &kFeedVCKey, nil, OBJC_ASSOCIATION_ASSIGN);
-        }
-        HPSetBarHidden(bar, NO, YES);
-        return;
-    }
-    if (boundVC == rootVC && bound.count > 0) return;
-    if (bound) for (UIScrollView *sv in bound) {
-        @try { [sv removeObserver:obs forKeyPath:@"contentOffset"]; } @catch (NSException *e) {}
-    }
-    NSMutableArray *found = [NSMutableArray array];
-    if (rootVC.view) HPCollectFeedSVs(rootVC.view, found);
     if (!bound) {
         bound = [NSMutableArray array];
         objc_setAssociatedObject(bar, &kFeedSVsKey, bound, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    [bound removeAllObjects];
+    NSNumber *selIdx = objc_getAssociatedObject(bar, &kSelIdxKey);
+    BOOL homeTab = !selIdx || selIdx.integerValue == 0;
+    UIViewController *rootVC = HPHomeRootVC(bar);
+    NSMutableArray *found = [NSMutableArray array];
+    if (rootVC && rootVC.view) HPCollectFeedSVs(rootVC.view, nil, found);
+    if (found.count == 0 && homeTab && bar.window)
+        HPCollectFeedSVs(bar.window, bar, found); // 兜底：整窗找（跳过底栏自身）
+    if (found.count == 0) {
+        HPUnbindFeedSVs(bar, obs);
+        HPSetBarHidden(bar, NO, YES);
+        // 还在首页标签却没找到滚动源，多半是信息流数据还没加载完，隔一会重试几次
+        NSNumber *rc = objc_getAssociatedObject(bar, &kBindRetryKey);
+        NSInteger n = rc ? rc.integerValue : 0;
+        if (homeTab && n < 5) {
+            objc_setAssociatedObject(bar, &kBindRetryKey, @(n + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ HPBindFeedScrollViews(bar); });
+        }
+        return;
+    }
+    objc_setAssociatedObject(bar, &kBindRetryKey, @0, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UIViewController *boundVC = objc_getAssociatedObject(bar, &kFeedVCKey);
+    if (boundVC == rootVC && bound.count == found.count) {
+        BOOL same = YES;
+        for (UIScrollView *sv in found) if (![bound containsObject:sv]) { same = NO; break; }
+        if (same) return;
+    }
+    HPUnbindFeedSVs(bar, obs);
     for (UIScrollView *sv in found) {
         [sv addObserver:obs forKeyPath:@"contentOffset"
                 options:NSKeyValueObservingOptionNew context:NULL];
@@ -548,6 +588,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     UIView *selBtn = objc_getAssociatedObject(bar, &kSelBtnKey);
     NSUInteger sel = selBtn ? [btns indexOfObject:selBtn] : NSNotFound;
     if (sel == NSNotFound) sel = 0;
+    objc_setAssociatedObject(bar, &kSelIdxKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     for (NSUInteger i = 0; i < row.count; i++) {
         HPGlassButton *gb = row[i];
         BOOL s = (i == sel);
@@ -570,7 +611,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
 
-    HPBindFeedScrollViews(bar); // v13：首页滑动隐藏底栏的滚动源绑定
+    HPBindFeedScrollViews(bar); // v13.1：首页滑动隐藏底栏的滚动源绑定
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -688,7 +729,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v13 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v13.1 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
