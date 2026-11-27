@@ -55,9 +55,5 @@ http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/basketbal
 # 虎扑广场顶部话题
 ^https:\/\/bbs\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/bbsallapi\/tab\/cardModule response-body-json-jq '.data = {}'
 
-[Rule]
-# 会员双卡数据走会员中心 H5 的 vip-stg 接口（原生接口均不喂此卡、抓包已证），整域拒绝断其数据
-DOMAIN,vip-stg.hupu.com,REJECT
-
 [Mitm]
-hostname = games.mobileapi.hupu.com, w1.hoopchina.com.cn, bbs.mobileapi.hupu.com, goblin.hupu.com, fairy.mobileapi.hupu.com, bbsrankapi.hupu.com, api-access.pangolin-sdk-toutiao.com, api-access.pangolin-sdk-toutiao1.com, vip-stg.hupu.com
+hostname = games.mobileapi.hupu.com, w1.hoopchina.com.cn, bbs.mobileapi.hupu.com, goblin.hupu.com, fairy.mobileapi.hupu.com, bbsrankapi.hupu.com, api-access.pangolin-sdk-toutiao.com, api-access.pangolin-sdk-toutiao1.com
