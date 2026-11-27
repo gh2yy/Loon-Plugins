@@ -173,8 +173,8 @@ static void HPSetPlateFrame(UIView *plate, CGRect f) {
 static void HPApplyCapsuleShadow(UIView *plate) {
     CALayer *l = plate.layer;
     l.shadowColor = [UIColor blackColor].CGColor;
-    l.shadowOpacity = 0.22;
-    l.shadowRadius = 14;
+    l.shadowOpacity = 0.14;
+    l.shadowRadius = 10;
     l.shadowOffset = CGSizeMake(0, 5);
     l.shadowPath = [UIBezierPath bezierPathWithRoundedRect:plate.bounds
                                               cornerRadius:plate.bounds.size.height / 2].CGPath;
@@ -352,13 +352,18 @@ static void HPHideBarBackground(UIView *bar, NSArray *btns) {
         UIView *bg = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(backgroundView));
         if (bg && !HPIsAncestorOfAny(bg, btns)) bg.hidden = YES;
     }
+    // mixView：App 自己的混合层（v45 实测它在胶囊下留了一层灰底、还把玻璃蒙灰），一并隐藏
+    if ([bar respondsToSelector:@selector(mixView)]) {
+        UIView *mv = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(mixView));
+        if (mv && !HPIsAncestorOfAny(mv, btns)) mv.hidden = YES;
+    }
     CGRect bounds = bar.bounds;
     for (UIView *v in bar.subviews) {
         if (v == capsule || v == lens) continue;
         if ([mine containsObject:v]) continue;
         if (HPIsAncestorOfAny(v, btns)) continue;
         CGRect f = v.frame;
-        BOOL fullBg = f.size.width >= bounds.size.width * 0.9 && f.size.height >= bounds.size.height * 0.9;
+        BOOL fullBg = f.size.width >= bounds.size.width * 0.9 && f.size.height >= bounds.size.height * 0.55;
         BOOL topLine = f.size.height <= 1.0 && f.size.width >= bounds.size.width * 0.9;
         if (fullBg || topLine) v.hidden = YES;
     }
