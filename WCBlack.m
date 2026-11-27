@@ -1,4 +1,5 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.24 诊断版 (2026-11-27)：诊断触发
+// WCBlack.m — 微信深色模式纯黑背景 v8.25 诊断版 (2026-11-27)：诊断行点击
+// 复制全文到剪贴板（v8.24 的格子文本难翻，用户指出）。v8.24：诊断触发
 // 页修正为发现页 FindFriendEntryViewController（v8.23 误认 MoreViewController
 // =「我」页）。v8.23：设置页加
 // 诊断区，记录钩子计数与发现页首行的视图/图层树。v8.22：drawSeparatorFor:
@@ -44,7 +45,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.24"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.25"); });
     return l;
 }
 
@@ -1831,7 +1832,7 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
     if (s == 0) return @"总开关";
     if (s == 2) return @"其他";
-    if (s == 3) return @"诊断（打开一次发现页后，截图这一段）";
+    if (s == 3) return @"诊断（打开一次发现页后，点下面这行复制，粘贴到聊天）";
     return @"各模块颜色（仅深色模式生效）";
 }
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
@@ -1887,7 +1888,15 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
 }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section == 3) return;
+    if (ip.section == 3) {
+        if (gDiagText) [UIPasteboard generalPasteboard].string = gDiagText;
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:(gDiagText ? @"诊断已复制" : @"还没有诊断记录")
+            message:(gDiagText ? @"去聊天里粘贴发给我就行。" : @"先去打开一次发现页，再回来点这一行。")
+            preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+        return;
+    }
     if (ip.section == 2) {
         BOOL on = !WCHideSep();
         [[NSUserDefaults standardUserDefaults] setBool:on forKey:kWCHideSepKey];
@@ -1973,7 +1982,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.24 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.25 registered in plugin list");
             break;
         }
     }
