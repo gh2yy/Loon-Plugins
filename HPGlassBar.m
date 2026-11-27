@@ -564,9 +564,55 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v12 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v14 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
+
+
+// ===== 场景桥接（v14 新增）：改戳包带 UIScene 清单启动时，App 仍按老式在 AppDelegate 里建 window，
+// 没挂到场景上会黑屏（v44 实测）。本类在清单里被指名为场景委托，场景连接时把 AppDelegate 的
+// window 挂到该场景并 makeKeyAndVisible。无清单的老包永远不会实例化本类，无副作用。MRC。
+@interface HPSceneBridge : NSObject <UISceneDelegate>
+@property (nonatomic, retain) UIWindow *window;
+@end
+
+@implementation HPSceneBridge
+
+- (void)hpAttachWindowToScene:(UIScene *)scene {
+    if (![scene isKindOfClass:[UIWindowScene class]]) return;
+    if (self.window && self.window.windowScene == (UIWindowScene *)scene) return;
+    id appDelegate = [[UIApplication sharedApplication] delegate];
+    UIWindow *w = nil;
+    if (appDelegate && [appDelegate respondsToSelector:@selector(window)]) {
+        w = [appDelegate performSelector:@selector(window)];
+    }
+    if (!w) w = self.window;
+    if (w) {
+        w.windowScene = (UIWindowScene *)scene;
+        self.window = w;
+        [w makeKeyAndVisible];
+        NSLog(@"[HPGlass] scene bridge attached window: %@", w);
+    }
+}
+
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
+    [self hpAttachWindowToScene:scene];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [self hpAttachWindowToScene:scene]; });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [self hpAttachWindowToScene:scene]; });
+}
+
+- (void)sceneDidBecomeActive:(UIScene *)scene {
+    [self hpAttachWindowToScene:scene];
+}
+
+- (void)dealloc {
+    [_window release];
+    [super dealloc];
+}
+
+@end
 
 @interface HPGlassLoader : NSObject
 @end
