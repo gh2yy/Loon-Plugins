@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v26 (2026-11-27)
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v27-diag (2026-11-27)
 // v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
 //   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
 //   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
@@ -23,6 +23,9 @@ static char kRowKey;
 static char kRowSigKey;
 static char kMyHiddenKey;
 static char kPlateTreatedKey;
+static int gHUDLayoutCalls = 0;
+static int gHUDUpdateCalls = 0;
+static UILabel *gHUDLabel = nil;
 
 #pragma mark - 工具
 
@@ -369,6 +372,41 @@ static void HPHideBarBackground(UIView *bar, NSArray *btns) {
     bar.backgroundColor = [UIColor clearColor];
 }
 
+// 诊断 HUD（v27-diag）：把盘/按钮行/选中来源打在屏幕左上，用户截一张图即可定案。
+// 递归找盘（v26 只查直接子视图，盘若嵌在容器里就查不到——这是三修全落空的头号嫌疑）。
+static UIView *HPFindPlatter(UIView *root, int *depthOut, NSString **supOut) {
+    NSMutableArray *level = [NSMutableArray arrayWithObject:root];
+    for (int d = 0; d < 6; d++) {
+        NSMutableArray *next = [NSMutableArray array];
+        for (UIView *v in level) {
+            if (v != root && [NSStringFromClass([v class]) containsString:@"PlatterView"] &&
+                v.frame.size.width > 30 && v.frame.size.height > 20) {
+                if (depthOut) *depthOut = d;
+                if (supOut) *supOut = NSStringFromClass([v.superview class]);
+                return v;
+            }
+            [next addObjectsFromArray:v.subviews];
+        }
+        level = next;
+    }
+    return nil;
+}
+static void HPShowHUD(UIView *bar, NSString *text) {
+    UIWindow *win = bar.window ?: [UIApplication sharedApplication].keyWindow;
+    if (!win) return;
+    if (!gHUDLabel) {
+        gHUDLabel = [[UILabel alloc] initWithFrame:CGRectMake(8, 64, win.bounds.size.width - 16, 100)];
+        gHUDLabel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.72];
+        gHUDLabel.textColor = [UIColor greenColor];
+        gHUDLabel.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+        gHUDLabel.numberOfLines = 0;
+        gHUDLabel.userInteractionEnabled = NO;
+        [win addSubview:gHUDLabel];
+    }
+    if (![gHUDLabel.text isEqualToString:text]) gHUDLabel.text = text;
+    [win bringSubviewToFront:gHUDLabel];
+}
+
 static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     CGRect bounds = bar.bounds;
     if (bounds.size.width < 50 || bounds.size.height < 30) return;
@@ -379,11 +417,10 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
 
     // 系统选择盘（v26）：只读它的位置、只改它的填充浓度，绝不动它的 frame/层级/动画。
     // 它照原按钮框生成，是选中态的权威指示：盘心落在哪个槽，哪个槽就是当前选中。
-    UIView *hpPlate = nil;
-    for (UIView *v in bar.subviews) {
-        if ([NSStringFromClass([v class]) containsString:@"PlatterView"] &&
-            v.frame.size.width > 30 && v.frame.size.height > 20) { hpPlate = v; break; }
-    }
+    int hpPlateDepth = 0;
+    NSString *hpPlateSup = @"-";
+    UIView *hpPlate = HPFindPlatter(bar, &hpPlateDepth, &hpPlateSup);
+    CGRect plateInBar = hpPlate ? [bar convertRect:hpPlate.bounds fromView:hpPlate] : CGRectZero;
     if (hpPlate && !objc_getAssociatedObject(hpPlate, &kPlateTreatedKey)) {
         objc_setAssociatedObject(hpPlate, &kPlateTreatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         UIColor *pbg = hpPlate.backgroundColor;
@@ -455,8 +492,10 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     // 选中态（v26 改）：先看系统盘停在哪个槽——updateButton 钩子的记录在切换时并不可靠
     // （实测图标状态冻在初始 tab），盘的位置是系统自己的指示，不会骗人；钩子记录只作兜底。
     NSUInteger sel = NSNotFound;
-    if (hpPlate && hpPlate.frame.size.width >= slotW * 0.5 && hpPlate.frame.size.width <= slotW * 1.6) {
-        CGFloat plateMidX = CGRectGetMidX(hpPlate.frame);
+    BOOL plateSelUsed = NO;
+    if (hpPlate && plateInBar.size.width >= slotW * 0.5 && plateInBar.size.width <= slotW * 1.6) {
+        CGFloat plateMidX = CGRectGetMidX(plateInBar);
+        plateSelUsed = YES;
         CGFloat best = 1e9;
         for (NSUInteger i = 0; i < btns.count; i++) {
             CGFloat c = slotX0 + ((CGFloat)i + 0.5) * slotW;
@@ -492,6 +531,20 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     // 层级：胶囊 < 透镜 < 自建按钮
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
+
+    // 诊断 HUD（v27-diag）：每排版一次刷新一行字
+    gHUDLayoutCalls++;
+    NSString *hud = [NSString stringWithFormat:
+        @"HP v27 | lay#%d ub#%d\nbtns=%lu row=(%.0f,%.0f,%.0f,%.0f) slot=%.0f meas=%@\nplate:%@ f=(%.0f,%.0f,%.0f,%.0f) sup=%@ d=%d\nsel=%lu(%@) cap=(%.0f,%.0f,%.0f,%.0f)",
+        gHUDLayoutCalls, gHUDUpdateCalls, (unsigned long)btns.count,
+        rowRect.origin.x, rowRect.origin.y, rowRect.size.width, rowRect.size.height,
+        slotW, measured ? @"Y" : @"N",
+        hpPlate ? NSStringFromClass([hpPlate class]) : @"nil",
+        plateInBar.origin.x, plateInBar.origin.y, plateInBar.size.width, plateInBar.size.height,
+        hpPlateSup, hpPlateDepth,
+        (unsigned long)sel, plateSelUsed ? @"plate" : @"fallback",
+        capRect.origin.x, capRect.origin.y, capRect.size.width, capRect.size.height];
+    HPShowHUD(bar, hud);
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -555,6 +608,7 @@ static void HP_SwiftBar_layoutSubviews(UIView *self, SEL _cmd) {
     HPLayoutSwiftBar(self, gSwiftBtnCls);
 }
 static void HP_SwiftBar_updateButton(UIView *self, SEL _cmd, UIView *btn, BOOL selected) {
+    gHUDUpdateCalls++;
     ((void (*)(id, SEL, id, BOOL))gOrigSwiftUpdateBtn)(self, _cmd, btn, selected);
     if (selected && btn) {
         objc_setAssociatedObject(self, &kSelBtnKey, btn, OBJC_ASSOCIATION_ASSIGN);
@@ -629,7 +683,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v26 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v27-diag install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
