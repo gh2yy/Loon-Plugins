@@ -6,6 +6,12 @@
 //   Clear 玻璃当底板（与药丸同在 contentView 里才能融合）。②点首页/专区时「我的」闪——
 //   排版/跟随读到的系统药丸位置是旧值（隐藏盘内药丸停在上一个槽），把刚点的选中覆盖了
 //   一拍；加点击优先窗：点击后 1.2 秒内药丸读数不得与点击结果相左。
+// v34（v33 实测两修）：底板已回来；但①「我的」还闪——1.2 秒窗过了之后，排版照样采信停在
+//   旧槽的药丸读数、把选中改回去：改「待确认」状态机，点击后药丸读数与点击一致（系统
+//   追上了）才解除待确认、恢复采信，期间读数一律不采。②点击时出现两个焦点、一个还畸形——
+//   系统盘又活了（疑似新实例，旧的藏了、新的没藏）：畸形那个是系统透镜在目标槽的弹簧
+//   中途形变、窜出胶囊上沿（我们的药丸被容器裁剪、物理上出不了胶囊）；改每轮排版全栏
+//   扫一遍、所有 PlatterView 实例一律藏，药丸跟随改读最后一个（最新）盘。
 // v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
 //   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
 //   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
@@ -41,6 +47,7 @@ static char kCurSelKey;
 static char kCapRectKey;
 static char kPillAnimKey;
 static char kTapTimeKey;
+static char kTapPendingKey;
 static void HPRefreshSelectionFromPill(UIView *bar, BOOL animated);
 static void HPSetSelection(UIView *bar, NSUInteger sel, BOOL animated);
 static void HPSchedulePillSync(UIView *bar);
@@ -317,6 +324,7 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
         // v33：同时记点击时刻——点击优先窗内，系统药丸的读数不许推翻点击结果。
         objc_setAssociatedObject(bar, &kTapSelKey, @(self.hpIndex), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(bar, &kTapTimeKey, @([[NSDate date] timeIntervalSince1970]), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(bar, &kTapPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         HPSetSelection(bar, (NSUInteger)self.hpIndex, YES);
     }
     if (bar && orig && [bar respondsToSelector:@selector(didClickedWithButton:)])
@@ -529,8 +537,18 @@ static BOOL HPRecentTap(UIView *bar, NSInteger *tapSelOut) {
 static void HPRefreshSelectionFromPill(UIView *bar, BOOL animated) {
     NSInteger sel = HPSelectionFromPill(bar);
     if (sel < 0) return;
-    NSInteger rt = -1;
-    if (HPRecentTap(bar, &rt) && sel != rt) return; // 点击优先窗内，旧读数作废
+    // v34 待确认状态机：点击后系统药丸的读数先一律不采，直到它与点击的槽位一致
+    // （说明系统追上了）才解除待确认并恢复采信——v33 的 1.2 秒时间窗不够，
+    // 窗一过排版就又被停在旧槽的读数把选中改回去（「我的」闪的根源）。
+    NSNumber *pend = objc_getAssociatedObject(bar, &kTapPendingKey);
+    if (pend.boolValue) {
+        NSNumber *ts = objc_getAssociatedObject(bar, &kTapSelKey);
+        if (ts && sel == ts.integerValue) {
+            objc_setAssociatedObject(bar, &kTapPendingKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            HPSetSelection(bar, (NSUInteger)sel, animated);
+        }
+        return;
+    }
     HPSetSelection(bar, (NSUInteger)sel, animated);
 }
 
@@ -729,9 +747,29 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     // 系统选择盘（v32）：整盘隐藏——选中指示改由容器里的自有药丸承担。盘只剩两个用处：
     // 它的框仍是胶囊几何的定案来源（v28)；它内部的药丸在程序切页时仍会移动，
     // KVO 跟随它做程序切换的选中校验。藏视图不影响它内部排版与动画。
+    // v34：v33 实测点击时冒出两个焦点——系统盘又活了（疑似换了新实例，只藏旧的那只
+    // 没用）。改全栏扫：所有 PlatterView 实例一律藏；几何/药丸跟随用最后一只（最新）。
     int hpPlateDepth = 0;
     NSString *hpPlateSup = @"-";
-    UIView *hpPlate = HPFindPlatter(bar, &hpPlateDepth, &hpPlateSup);
+    UIView *hpPlate = nil;
+    {
+        NSMutableArray *level = [NSMutableArray arrayWithObject:bar];
+        UIView *last = nil;
+        for (int d = 0; d < 6 && level.count; d++) {
+            NSMutableArray *next = [NSMutableArray array];
+            for (UIView *v in level) {
+                if (v != bar && [NSStringFromClass([v class]) containsString:@"PlatterView"] &&
+                    v.frame.size.width > 30 && v.frame.size.height > 20) {
+                    v.hidden = YES;
+                    last = v;
+                }
+                [next addObjectsFromArray:v.subviews];
+            }
+            level = next;
+        }
+        hpPlate = last;
+    }
+    if (!hpPlate) hpPlate = HPFindPlatter(bar, &hpPlateDepth, &hpPlateSup);
     if (hpPlate) hpPlate.hidden = YES;
     CGRect plateInBar = hpPlate ? [bar convertRect:hpPlate.bounds fromView:hpPlate] : CGRectZero;
 
@@ -838,8 +876,13 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     objc_setAssociatedObject(bar, &kCapRectKey, [NSValue valueWithCGRect:capRect], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSNumber *tapSel = objc_getAssociatedObject(bar, &kTapSelKey);
     NSInteger selNow = -1;
-    NSInteger rtSel = -1;
-    if (HPRecentTap(bar, &rtSel) && rtSel >= 0 && rtSel < (NSInteger)row.count) selNow = rtSel;
+    // v34 待确认：点击后、系统还没追上之前，排版一律以点击的槽位为准
+    NSNumber *pend = objc_getAssociatedObject(bar, &kTapPendingKey);
+    if (pend.boolValue && tapSel && tapSel.unsignedIntegerValue < row.count) {
+        selNow = tapSel.integerValue;
+        if (HPSelectionFromPill(bar) == selNow)
+            objc_setAssociatedObject(bar, &kTapPendingKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     if (selNow < 0) selNow = HPSelectionFromPill(bar);
     if (selNow < 0 && tapSel && tapSel.unsignedIntegerValue < row.count) selNow = tapSel.integerValue;
     if (selNow < 0) {
@@ -994,7 +1037,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v33 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v34 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
