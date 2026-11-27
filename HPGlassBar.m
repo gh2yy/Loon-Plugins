@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v37-diag (2026-11-27)
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v38-diag2 (2026-11-27)
 // v32：容器路线（用户点选）——不再借系统盘当选中指示：系统盘整盘隐藏，改在原栏内嵌
 //   UIGlassContainerEffect 容器，底座与选中药丸都是自己的玻璃（药丸 Regular + interactive），
 //   选中态插件自管（点击即定、药丸位置只作程序切换时的跟随校验）。几何与图标管线沿 v31。
@@ -66,6 +66,7 @@ static char kTapTimeKey;
 static char kTapPendingKey;
 static char kTreeViewKey;
 static char kTreeBtnKey;
+static char kTreeTextKey;
 static void HPRefreshSelectionFromPill(UIView *bar, BOOL animated);
 static void HPRefreshTree(UIView *bar);
 static void HPSetSelection(UIView *bar, NSUInteger sel, BOOL animated);
@@ -590,14 +591,42 @@ static void HPSchedulePillSync(UIView *bar) {
 
 // v37-diag：底栏视图树 HUD——把子树类名/frame/hidden 打到浮动文本框里，
 // Lens/Platter/Glass 行加 >>> 标记。点 tab 后 0.8 秒自动刷新；小按钮「树」开关。
+// v38-diag2：v37 的按钮放在栏的父视图上点不动——父视图是全屏穿透容器、只认栏本体
+//   区域的触摸。改：按钮挪进底栏本体（右上角、胶囊右侧空区）；文本框只作显示（不
+//   依赖触摸），内容改分页——每点一次「树」翻一页（26 行/页），翻完自动关。
 @interface HPTreeHandler : NSObject
-@property (nonatomic, assign) UITextView *tv;
+@property (nonatomic, assign) UIView *bar;
+@property (nonatomic, assign) NSInteger page;
 - (void)toggle:(id)sender;
 @end
-@implementation HPTreeHandler
-- (void)toggle:(id)sender { self.tv.hidden = !self.tv.hidden; }
-@end
 static HPTreeHandler *gTreeHandler = nil;
+static void HPRenderTreePage(UIView *bar) {
+    UITextView *tv = objc_getAssociatedObject(bar, &kTreeViewKey);
+    NSString *full = objc_getAssociatedObject(bar, &kTreeTextKey);
+    if (!tv || !full) return;
+    NSArray *lines = [full componentsSeparatedByString:@"\n"];
+    NSInteger per = 26;
+    NSInteger pg = gTreeHandler.page;
+    NSInteger start = pg * per;
+    if (start >= (NSInteger)lines.count) start = 0;
+    NSInteger n = MIN(per, (NSInteger)lines.count - start);
+    tv.text = [[lines subarrayWithRange:NSMakeRange(start, n)] componentsJoinedByString:@"\n"];
+}
+@implementation HPTreeHandler
+- (void)toggle:(id)sender {
+    UITextView *tv = objc_getAssociatedObject(self.bar, &kTreeViewKey);
+    NSString *full = objc_getAssociatedObject(self.bar, &kTreeTextKey);
+    if (!tv || !full) return;
+    NSArray *lines = [full componentsSeparatedByString:@"\n"];
+    NSInteger pages = (lines.count + 25) / 26;
+    if (tv.hidden) { self.page = 0; tv.hidden = NO; }
+    else {
+        self.page++;
+        if (self.page >= pages) { tv.hidden = YES; self.page = 0; return; }
+    }
+    HPRenderTreePage(self.bar);
+}
+@end
 static void HPDumpView(UIView *v, UIView *bar, int depth, NSMutableString *out, int *lines) {
     if (*lines > 220 || depth > 9) return;
     (*lines)++;
@@ -613,38 +642,46 @@ static void HPDumpView(UIView *v, UIView *bar, int depth, NSMutableString *out, 
     for (UIView *s in v.subviews) HPDumpView(s, bar, depth + 1, out, lines);
 }
 static void HPRefreshTree(UIView *bar) {
-    UITextView *tv = objc_getAssociatedObject(bar, &kTreeViewKey);
-    if (!tv) return;
+    if (!objc_getAssociatedObject(bar, &kTreeViewKey)) return;
     NSMutableString *out = [NSMutableString stringWithFormat:@"BAR %@ bounds=(%.0f,%.0f)\n",
         NSStringFromClass([bar class]), bar.bounds.size.width, bar.bounds.size.height];
     int lines = 0;
     HPDumpView(bar, bar, 0, out, &lines);
-    tv.text = out;
+    objc_setAssociatedObject(bar, &kTreeTextKey, out, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UITextView *tv = objc_getAssociatedObject(bar, &kTreeViewKey);
+    if (tv && !tv.hidden) HPRenderTreePage(bar);
 }
 static void HPEnsureTreeHUD(UIView *bar) {
-    if (objc_getAssociatedObject(bar, &kTreeViewKey)) return;
+    if (objc_getAssociatedObject(bar, &kTreeViewKey)) {
+        UIView *tb = objc_getAssociatedObject(bar, &kTreeBtnKey);
+        if (tb) [bar bringSubviewToFront:tb];
+        return;
+    }
     UIView *host = bar.superview;
     if (!host) return;
     if (!gTreeHandler) gTreeHandler = [[HPTreeHandler alloc] init];
-    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 60, host.bounds.size.width, 300)];
+    gTreeHandler.bar = bar;
+    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, host.bounds.size.width, 300)];
     tv.backgroundColor = [UIColor colorWithWhite:0 alpha:0.78];
     tv.textColor = [UIColor whiteColor];
-    tv.font = [UIFont systemFontOfSize:8];
+    tv.font = [UIFont systemFontOfSize:9];
     tv.editable = NO;
+    tv.scrollEnabled = NO;
     tv.hidden = YES;
     tv.layer.zPosition = 9998;
+    tv.userInteractionEnabled = NO;
     [host addSubview:tv];
     objc_setAssociatedObject(bar, &kTreeViewKey, tv, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    gTreeHandler.tv = tv;
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    btn.frame = CGRectMake(host.bounds.size.width - 46, 24, 40, 30);
+    btn.frame = CGRectMake(bar.bounds.size.width - 38, 2, 34, 26);
     [btn setTitle:@"树" forState:UIControlStateNormal];
     [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btn.titleLabel.font = [UIFont systemFontOfSize:12];
     btn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
     btn.layer.cornerRadius = 6;
-    btn.layer.zPosition = 9999;
     [btn addTarget:gTreeHandler action:@selector(toggle:) forControlEvents:UIControlEventTouchUpInside];
-    [host addSubview:btn];
+    [bar addSubview:btn];
+    [bar bringSubviewToFront:btn];
     objc_setAssociatedObject(bar, &kTreeBtnKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     HPRefreshTree(bar);
 }
@@ -1106,7 +1143,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v37-diag install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v38-diag2 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
