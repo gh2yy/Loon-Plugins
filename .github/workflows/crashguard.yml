@@ -1,0 +1,40 @@
+name: crashguard
+on:
+  push:
+    branches: [appicon-build]
+    paths: ['.github/workflows/crashguard.yml', 'crashguard/**']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  crashguard:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build DCDCrashGuard dylib
+        run: |
+          set +e
+          mkdir -p results
+          sw_vers > results/toolchain.txt 2>&1
+          xcodebuild -version >> results/toolchain.txt 2>&1
+          ls -la crashguard/ > results/curl.log 2>&1
+          head -5 crashguard/DCDCrashGuard.m >> results/curl.log 2>&1
+          echo "== clang dylib build" > results/clang.log
+          xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=13.0 -dynamiclib -install_name @executable_path/DCDCrashGuard.dylib -framework UIKit -framework Foundation -o DCDCrashGuard.dylib crashguard/DCDCrashGuard.m >> results/clang.log 2>&1
+          echo "clang exit: $?" >> results/clang.log
+          file DCDCrashGuard.dylib >> results/clang.log 2>&1
+          otool -l DCDCrashGuard.dylib | grep -c "__mod_init_func" >> results/clang.log 2>&1
+          otool -L DCDCrashGuard.dylib >> results/clang.log 2>&1
+          base64 -i DCDCrashGuard.dylib > results/DCDCrashGuard.dylib.b64.txt 2>&1
+          cat results/toolchain.txt results/curl.log results/clang.log > results/summary.txt
+          cat results/summary.txt
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-crashguard
+          git add results
+          git commit -m "crashguard results" || echo "nothing to commit"
+          git push -f origin results-crashguard

@@ -1,0 +1,40 @@
+name: wcblackbuild
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  wcblackbuild:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build WCBlack dylib from repo source
+        run: |
+          set +e
+          mkdir -p results
+          sw_vers > results/toolchain.txt 2>&1
+          xcodebuild -version >> results/toolchain.txt 2>&1
+          ls -la WCBlack.m > results/src.log 2>&1
+          md5 -q WCBlack.m >> results/src.log 2>&1
+          echo "== clang dylib build" > results/clang.log
+          xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 -dynamiclib -install_name @executable_path/WCBlack.dylib -framework UIKit -framework Foundation -framework CoreGraphics -framework QuartzCore -o WCBlack.dylib WCBlack.m >> results/clang.log 2>&1
+          echo "clang exit: $?" >> results/clang.log
+          file WCBlack.dylib >> results/clang.log 2>&1
+          otool -L WCBlack.dylib >> results/clang.log 2>&1
+          echo "mod_init sections:" >> results/clang.log 2>&1
+          otool -l WCBlack.dylib | grep -A1 "__mod_init_func" >> results/clang.log 2>&1
+          ls -la WCBlack.dylib >> results/clang.log 2>&1
+          base64 -i WCBlack.dylib > results/WCBlack.dylib.b64.txt 2>&1
+          cat results/toolchain.txt results/src.log results/clang.log > results/summary.txt
+          cat results/summary.txt
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-wcblackbuild
+          git add results
+          git commit -m "wcblackbuild results" || echo "nothing to commit"
+          git push -f origin results-wcblackbuild

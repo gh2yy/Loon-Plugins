@@ -1,0 +1,73 @@
+name: appicon-build
+on:
+  push:
+    branches: [appicon-build]
+permissions:
+  contents: write
+jobs:
+  build16:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with actool (Xcode 16)
+        run: |
+          set +e
+          R=results/xcode16
+          mkdir -p "$R" out16
+          python3 - <<'PY'
+          import base64, pathlib
+          for p in pathlib.Path('appicon/HupuAppIcon.xcassets/AppIcon.appiconset').glob('*.b64'):
+              p.with_suffix('').write_bytes(base64.b64decode(p.read_text()))
+              print('decoded', p)
+          PY
+          xcodebuild -version > "$R/toolchain.txt" 2>&1
+          xcrun actool --version >> "$R/toolchain.txt" 2>&1
+          xcrun actool appicon/HupuAppIcon.xcassets --compile out16 --platform iphoneos --minimum-deployment-target 18.0 --app-icon AppIcon --output-partial-info-plist out16/partial.plist > "$R/build-log.txt" 2>&1
+          echo "actool exit: $?" >> "$R/build-log.txt"
+          cp out16/Assets.car "$R/Assets.car" 2>/dev/null
+          cp out16/partial.plist "$R/partial.plist" 2>/dev/null
+          xcrun assetutil --info out16/Assets.car > "$R/assetutil-info.json" 2>&1
+          ls -la out16 >> "$R/build-log.txt"
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-xcode16
+          git add results
+          git commit -m "actool xcode16 results" || echo "nothing to commit"
+          git push -f origin results-xcode16
+  build26:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with actool (Xcode 26)
+        run: |
+          set +e
+          R=results/xcode26
+          mkdir -p "$R" out26
+          python3 - <<'PY'
+          import base64, pathlib
+          for p in pathlib.Path('appicon/HupuAppIcon.xcassets/AppIcon.appiconset').glob('*.b64'):
+              p.with_suffix('').write_bytes(base64.b64decode(p.read_text()))
+              print('decoded', p)
+          PY
+          xcodebuild -version > "$R/toolchain.txt" 2>&1
+          xcrun actool --version >> "$R/toolchain.txt" 2>&1
+          xcrun actool appicon/HupuAppIcon.xcassets --compile out26 --platform iphoneos --minimum-deployment-target 18.0 --app-icon AppIcon --output-partial-info-plist out26/partial.plist > "$R/build-log.txt" 2>&1
+          echo "actool exit: $?" >> "$R/build-log.txt"
+          cp out26/Assets.car "$R/Assets.car" 2>/dev/null
+          cp out26/partial.plist "$R/partial.plist" 2>/dev/null
+          xcrun assetutil --info out26/Assets.car > "$R/assetutil-info.json" 2>&1
+          ls -la out26 >> "$R/build-log.txt"
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B results-xcode26
+          git add results
+          git commit -m "actool xcode26 results" || echo "nothing to commit"
+          git push -f origin results-xcode26
