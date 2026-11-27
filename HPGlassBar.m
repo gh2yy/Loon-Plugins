@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v36 (2026-11-27)
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v37-diag (2026-11-27)
 // v32：容器路线（用户点选）——不再借系统盘当选中指示：系统盘整盘隐藏，改在原栏内嵌
 //   UIGlassContainerEffect 容器，底座与选中药丸都是自己的玻璃（药丸 Regular + interactive），
 //   选中态插件自管（点击即定、药丸位置只作程序切换时的跟随校验）。几何与图标管线沿 v31。
@@ -23,6 +23,11 @@
 //   我们的跟随一直在读它；App 真正的透镜在另一只活盘里，没被藏、在栏后面跟着手指和
 //   选中移动，就是那个第二焦点。改法：活盘本身一概不动（承重件），只藏它内部的透镜
 //   本体（纯视觉叶子）；跟随源改读这枚活透镜的位置（藏了照样读 frame）。
+// v37-diag（v66 实测更差、路线纠正）：点了没选中态、双焦点还在、一个还藏在后面——v36 的
+//   「活盘透镜」判断错了：藏的那枚不是真透镜（真焦点不在那只盘里），换的跟随源反而把
+//   选中显示弄坏。停止猜结构：本版行为整段回滚 v35，只加一个视图树 HUD——把底栏完整
+//   子树（类名/frame/hidden，Lens/Platter 行加 >>> 标记）打出来，点任意 tab 后 0.8 秒
+//   自动刷新，右上角小按钮「树」开关。拿到真实层级再定下一版方案。
 // v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
 //   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
 //   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
@@ -59,7 +64,10 @@ static char kCapRectKey;
 static char kPillAnimKey;
 static char kTapTimeKey;
 static char kTapPendingKey;
+static char kTreeViewKey;
+static char kTreeBtnKey;
 static void HPRefreshSelectionFromPill(UIView *bar, BOOL animated);
+static void HPRefreshTree(UIView *bar);
 static void HPSetSelection(UIView *bar, NSUInteger sel, BOOL animated);
 static void HPSchedulePillSync(UIView *bar);
 static UIView *HPFindPlatter(UIView *root, int *depthOut, NSString **supOut);
@@ -342,6 +350,12 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
         ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(didClickedWithButton:), orig);
     // v30/v31：路由回来后等药丸弹簧落定，再按它的位置复核一次
     if (bar) HPSchedulePillSync(bar);
+    // v37-diag：点击后 0.8 秒刷新视图树（抓切换落定后的层级）
+    if (bar) {
+        UIView *b = bar;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ HPRefreshTree(b); });
+    }
 }
 @end
 
@@ -574,6 +588,67 @@ static void HPSchedulePillSync(UIView *bar) {
     });
 }
 
+// v37-diag：底栏视图树 HUD——把子树类名/frame/hidden 打到浮动文本框里，
+// Lens/Platter/Glass 行加 >>> 标记。点 tab 后 0.8 秒自动刷新；小按钮「树」开关。
+@interface HPTreeHandler : NSObject
+@property (nonatomic, assign) UITextView *tv;
+- (void)toggle:(id)sender;
+@end
+@implementation HPTreeHandler
+- (void)toggle:(id)sender { self.tv.hidden = !self.tv.hidden; }
+@end
+static HPTreeHandler *gTreeHandler = nil;
+static void HPDumpView(UIView *v, UIView *bar, int depth, NSMutableString *out, int *lines) {
+    if (*lines > 220 || depth > 9) return;
+    (*lines)++;
+    NSMutableString *ind = [NSMutableString string];
+    for (int i = 0; i < depth; i++) [ind appendString:@"  "];
+    NSString *cls = NSStringFromClass([v class]);
+    NSString *mark = ([cls containsString:@"Lens"] || [cls containsString:@"Platter"] ||
+                       [cls containsString:@"Glass"] || [cls containsString:@"Liquid"]) ? @">>> " : @"";
+    CGRect f = (v == bar) ? v.bounds : [v convertRect:v.bounds toView:bar];
+    [out appendFormat:@"%@%@%@ f=(%.0f,%.0f,%.0f,%.0f)%@ a=%.2f\n", ind, mark, cls,
+        f.origin.x, f.origin.y, f.size.width, f.size.height,
+        v.hidden ? @" HIDDEN" : @"", v.alpha];
+    for (UIView *s in v.subviews) HPDumpView(s, bar, depth + 1, out, lines);
+}
+static void HPRefreshTree(UIView *bar) {
+    UITextView *tv = objc_getAssociatedObject(bar, &kTreeViewKey);
+    if (!tv) return;
+    NSMutableString *out = [NSMutableString stringWithFormat:@"BAR %@ bounds=(%.0f,%.0f)\n",
+        NSStringFromClass([bar class]), bar.bounds.size.width, bar.bounds.size.height];
+    int lines = 0;
+    HPDumpView(bar, bar, 0, out, &lines);
+    tv.text = out;
+}
+static void HPEnsureTreeHUD(UIView *bar) {
+    if (objc_getAssociatedObject(bar, &kTreeViewKey)) return;
+    UIView *host = bar.superview;
+    if (!host) return;
+    if (!gTreeHandler) gTreeHandler = [[HPTreeHandler alloc] init];
+    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 60, host.bounds.size.width, 300)];
+    tv.backgroundColor = [UIColor colorWithWhite:0 alpha:0.78];
+    tv.textColor = [UIColor whiteColor];
+    tv.font = [UIFont systemFontOfSize:8];
+    tv.editable = NO;
+    tv.hidden = YES;
+    tv.layer.zPosition = 9998;
+    [host addSubview:tv];
+    objc_setAssociatedObject(bar, &kTreeViewKey, tv, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    gTreeHandler.tv = tv;
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    btn.frame = CGRectMake(host.bounds.size.width - 46, 24, 40, 30);
+    [btn setTitle:@"树" forState:UIControlStateNormal];
+    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+    btn.layer.cornerRadius = 6;
+    btn.layer.zPosition = 9999;
+    [btn addTarget:gTreeHandler action:@selector(toggle:) forControlEvents:UIControlEventTouchUpInside];
+    [host addSubview:btn];
+    objc_setAssociatedObject(bar, &kTreeBtnKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    HPRefreshTree(bar);
+}
+
 @interface HPSelectionObserver : NSObject
 @property (nonatomic, assign) UIView *bar;
 @end
@@ -765,33 +840,6 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     UIView *hpPlate = HPFindPlatter(bar, &hpPlateDepth, &hpPlateSup);
     if (hpPlate) hpPlate.hidden = YES;
     CGRect plateInBar = hpPlate ? [bar convertRect:hpPlate.bounds fromView:hpPlate] : CGRectZero;
-    // v36：另一只活盘——App 的真透镜在里面（在栏后面跟手指/选中移动的第二焦点）。
-    // 盘本身是承重件、一概不动；只藏它内部的透镜本体（类名含 LiquidLens，找不到
-    // 退回 HPFindPill 的槽位视图），并把这枚活透镜作跟随源（下方 KVO 块用）。
-    UIView *liveLens = nil;
-    {
-        NSMutableArray *level = [NSMutableArray arrayWithObject:bar];
-        for (int d = 0; d < 6 && level.count; d++) {
-            NSMutableArray *next = [NSMutableArray array];
-            for (UIView *v in level) {
-                if (v != bar && v != hpPlate &&
-                    [NSStringFromClass([v class]) containsString:@"PlatterView"] &&
-                    v.frame.size.width > 30 && v.frame.size.height > 20) {
-                    UIView *lens = nil;
-                    NSMutableArray *st = [NSMutableArray arrayWithObject:v];
-                    while (st.count && !lens) {
-                        UIView *u = st.lastObject; [st removeLastObject];
-                        if (u != v && [NSStringFromClass([u class]) containsString:@"LiquidLens"]) lens = u;
-                        else [st addObjectsFromArray:u.subviews];
-                    }
-                    if (!lens) lens = HPFindPill(v);
-                    if (lens) { lens.hidden = YES; liveLens = lens; }
-                }
-                [next addObjectsFromArray:v.subviews];
-            }
-            level = next;
-        }
-    }
 
     // 按钮集合签名（指针序列）变了才重建自建行
     NSMutableString *sig = [NSMutableString string];
@@ -852,9 +900,8 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     // v30：存槽位格（药丸跟随换算用）+ 药丸定位/观察 + 盘背景玻璃换 Clear（去灰，只做一次）
     objc_setAssociatedObject(bar, &kGridXKey, @(slotX0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(bar, &kGridWKey, @(slotW), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (hpPlate || liveLens) {
-        // v36：跟随源优先用活盘的真透镜；没有活盘时退回原盘内药丸（旧行为）
-        UIView *pill = liveLens ?: HPFindPill(hpPlate);
+    if (hpPlate) {
+        UIView *pill = HPFindPill(hpPlate);
         UIView *oldPill = objc_getAssociatedObject(bar, &kPillKey);
         if (pill != oldPill) {
             HPSelectionObserver *obs = objc_getAssociatedObject(bar, &kPillObsKey);
@@ -920,6 +967,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     if (!anim.boolValue) HPSetSelection(bar, (NSUInteger)selNow, NO);
     else HPApplySel(bar, (NSUInteger)selNow);
     [bar bringSubviewToFront:contShell];
+    HPEnsureTreeHUD(bar); // v37-diag
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -1058,7 +1106,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v36 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v37-diag install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
