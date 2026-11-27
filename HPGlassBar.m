@@ -16,7 +16,6 @@
 static char kCapsuleKey;
 static char kLensKey;
 static char kSelBtnKey;
-static BOOL gInSpringSync = NO; // 弹簧动画中的同步才许动透镜 frame，普通布局同步不许抢
 static char kRowKey;
 static char kRowSigKey;
 static char kMyHiddenKey;
@@ -123,8 +122,8 @@ static UIColor *HPPlateFillColor(void) {
 static UIColor *HPLensFillColor(void) {
     return [UIColor colorWithDynamicProvider:^UIColor * _Nonnull(UITraitCollection * _Nonnull traits) {
         if (traits.userInterfaceStyle == UIUserInterfaceStyleDark)
-            return [UIColor colorWithWhite:1.0 alpha:0.22];
-        return [UIColor colorWithWhite:0.0 alpha:0.16];
+            return [UIColor colorWithWhite:1.0 alpha:0.18];
+        return [UIColor colorWithWhite:0.0 alpha:0.08];
     }];
 }
 
@@ -188,30 +187,29 @@ static void HPApplyCapsuleShadow(UIView *plate) {
 // 布局函数见 kLensFlashActiveKey 为真时不碰透镜的 hidden/alpha。
 static char kLensFlashGenKey;
 static char kLensFlashActiveKey;
-// v22：透镜显形管理（只管 hidden/alpha 与代数，不再瞬移 frame——位置由 updateButton 的弹簧同步驱动，
-// 这样点选时透镜是「滑」到目标槽而不是先瞬移再假装滑；重选当前 tab 时它就在原地亮一下，正合焦点语义）
-static void HPShowLens(UIView *host, NSTimeInterval hold) {
-    UIView *lens = objc_getAssociatedObject(host, &kLensKey);
+static void HPFlashLens(UIView *bar, CGRect lensFrame) {
+    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
     if (!lens) return;
-    NSNumber *g = objc_getAssociatedObject(host, &kLensFlashGenKey);
+    NSNumber *g = objc_getAssociatedObject(bar, &kLensFlashGenKey);
     NSInteger gen = g ? g.integerValue + 1 : 1;
-    objc_setAssociatedObject(host, &kLensFlashGenKey, @(gen), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(host, &kLensFlashActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kLensFlashGenKey, @(gen), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kLensFlashActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    HPSetPlateFrame(lens, lensFrame);
     lens.hidden = NO;
     [UIView animateWithDuration:0.12 delay:0
                         options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
                      animations:^{ lens.alpha = 1.0; } completion:nil];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(hold * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.38 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        NSNumber *cur = objc_getAssociatedObject(host, &kLensFlashGenKey);
-        if (!cur || cur.integerValue != gen) return;
+        NSNumber *cur = objc_getAssociatedObject(bar, &kLensFlashGenKey);
+        if (!cur || cur.integerValue != gen) return; // 已被更新的点击接管
         [UIView animateWithDuration:0.3 delay:0 options:UIViewAnimationOptionCurveEaseIn
                          animations:^{ lens.alpha = 0.0; }
                          completion:^(BOOL finished) {
-            NSNumber *cur2 = objc_getAssociatedObject(host, &kLensFlashGenKey);
+            NSNumber *cur2 = objc_getAssociatedObject(bar, &kLensFlashGenKey);
             if (cur2 && cur2.integerValue == gen) {
                 lens.hidden = YES;
-                objc_setAssociatedObject(host, &kLensFlashActiveKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                objc_setAssociatedObject(bar, &kLensFlashActiveKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
         }];
     });
@@ -224,11 +222,8 @@ static void HPShowLens(UIView *host, NSTimeInterval hold) {
 @property (nonatomic, retain) UIView *badgeDot;
 @property (nonatomic, assign) UIView *origButton;
 @property (nonatomic, assign) UIView *bar;
-@property (nonatomic, assign) UIView *hostView;
 @property (nonatomic, retain) UIImage *normalImage;
 @property (nonatomic, retain) UIImage *selectedImage;
-@property (nonatomic, retain) UIImage *snapNormal;
-@property (nonatomic, retain) UIImage *snapSelected;
 @property (nonatomic, retain) UIColor *normalColor;
 @property (nonatomic, retain) UIColor *selectedColor;
 @property (nonatomic, copy) NSString *title;
@@ -266,23 +261,20 @@ static void HPShowLens(UIView *host, NSTimeInterval hold) {
     [_badgeDot release];
     [_normalImage release];
     [_selectedImage release];
-    [_snapNormal release];
-    [_snapSelected release];
     [_normalColor release];
     [_selectedColor release];
     [_title release];
     [super dealloc];
 }
 - (void)refreshAppearance {
-    UIImage *img = self.hpSelected ? (self.snapSelected ?: self.selectedImage ?: self.snapNormal ?: self.normalImage)
-                                   : (self.snapNormal ?: self.normalImage);
+    UIImage *img = self.hpSelected ? (self.selectedImage ?: self.normalImage) : self.normalImage;
     self.iconView.image = img;
     self.textLabel.text = self.title;
     self.textLabel.textColor = self.hpSelected ? (self.selectedColor ?: self.normalColor) : self.normalColor;
 }
 - (void)hpDown {
     self.iconView.alpha = 0.55;
-    (void)self.hostView; // v23 起点击反馈由分段控件的系统选中盘承担，不再自画透镜
+    if (self.bar) HPFlashLens(self.bar, CGRectInset(self.frame, 4, 5)); // 焦点只在点击时展示
 }
 - (void)hpUp { self.iconView.alpha = 1.0; }
 - (void)hpTapped {
@@ -293,20 +285,6 @@ static void HPShowLens(UIView *host, NSTimeInterval hold) {
         ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(didClickedWithButton:), orig);
 }
 @end
-
-// v22：图标改走层快照——把原按钮图标视图的实际渲染截下来用，像素级照搬 App 自己的画法
-//（借属性里的 UIImage 会丢掉它内部的着色/合成，用户实测图标不对）。按状态各存一份，源图指针变了才重截。
-static char kSnapNormSrcKey;
-static char kSnapSelSrcKey;
-static UIImage *HPSnapshotView(UIView *v) {
-    CGSize sz = v.bounds.size;
-    if (sz.width < 2 || sz.height < 2) return nil;
-    UIGraphicsBeginImageContextWithOptions(sz, NO, 0);
-    [v.layer renderInContext:UIGraphicsGetCurrentContext()];
-    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return img;
-}
 
 // 从原按钮只取数据（标题/两态图标/两态颜色/字体），内部布局用自有固定规格，不再量原按钮的几何：
 // 图标框 27pt 居中在上、文字在下成组居中；红点只借原按钮判「有没有」，位置自定于图标右上角。
@@ -321,35 +299,10 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
     CGFloat W = gb.bounds.size.width, H = gb.bounds.size.height;
     CGFloat iconS = 27.0;
     CGRect iconF = CGRectMake((W - iconS) / 2, 7.0, iconS, iconS);
+    gb.iconView.frame = iconF;
     UIView *oIcon = HPGetObj(orig, @"tabImageView");
     if (!oIcon) oIcon = HPGetObj(orig, @"imageView");
     gb.iconView.hidden = oIcon ? oIcon.hidden : NO;
-    // 层快照采集：按「源图指针身份」归档——已知是选中图的渲染永远归选中槽，防切换瞬间
-    // 旧按钮还没换图时把选中图误存成未选中（v53 实测两态串了）；未知指针才按当前选中态归档。
-    BOOL origIsSel = (objc_getAssociatedObject(bar, &kSelBtnKey) == orig);
-    if (oIcon && [oIcon isKindOfClass:[UIImageView class]]) {
-        UIImage *srcImg = [(UIImageView *)oIcon image];
-        if (srcImg) {
-            id normSrc = objc_getAssociatedObject(gb, &kSnapNormSrcKey);
-            id selSrc = objc_getAssociatedObject(gb, &kSnapSelSrcKey);
-            BOOL fileSel = (srcImg == selSrc) ? YES : (srcImg == normSrc) ? NO : origIsSel;
-            id filedSrc = fileSel ? selSrc : normSrc;
-            if (srcImg != filedSrc) {
-                UIImage *snap = HPSnapshotView(oIcon);
-                if (snap) {
-                    if (fileSel) { gb.snapSelected = snap; objc_setAssociatedObject(gb, &kSnapSelSrcKey, srcImg, OBJC_ASSOCIATION_ASSIGN); }
-                    else { gb.snapNormal = snap; objc_setAssociatedObject(gb, &kSnapNormSrcKey, srcImg, OBJC_ASSOCIATION_ASSIGN); }
-                }
-            }
-        }
-    }
-    UIImage *snapForState = origIsSel ? (gb.snapSelected ?: gb.snapNormal) : gb.snapNormal;
-    if (snapForState) {
-        CGSize ss = snapForState.size;
-        if (ss.width > 1 && ss.height > 1 && ss.width <= 44 && ss.height <= 44)
-            iconF = CGRectMake((W - ss.width) / 2, 7.0 + (iconS - ss.height) / 2, ss.width, ss.height);
-    }
-    gb.iconView.frame = iconF;
     UIView *oLabel = HPGetObj(orig, @"label");
     if (!oLabel) oLabel = HPGetObj(orig, @"titleLabel");
     gb.textLabel.frame = CGRectMake(0, CGRectGetMaxY(iconF) + 2.0, W, 15.0);
@@ -409,6 +362,9 @@ static void HPHideBarBackground(UIView *bar, NSArray *btns) {
     // 不再按尺寸猜，非按钮非我方的一律藏。
     for (UIView *v in [bar.subviews copy]) {
         if (v == capsule || v == lens) continue;
+        // v24 关键修正：系统自带选择盘 _UITabBarItemPlatterView 必须留着——v45 的 duang 弹簧
+        // 就是它在动，v17 白名单把它藏掉后原生动效就再没回来过（v49–v54 一直在手写凑）。
+        if ([NSStringFromClass([v class]) containsString:@"PlatterView"]) continue;
         if ([mine containsObject:v]) continue;
         if ([btns containsObject:v]) continue;
         if (HPIsAncestorOfAny(v, btns)) continue;
@@ -435,88 +391,19 @@ static void HPHideBarBackground(UIView *bar, NSArray *btns) {
     }
 }
 
-// v21 重构（用户定）：玻璃栏整体搬出原底栏——自有悬浮层盖在原栏位置、原栏整栏隐藏
-//（系统 platter、背景、mixView 全在原栏里，一并消失，不再逐个打地鼠）；
-// 自建按钮住在悬浮层里，点击仍调原栏 didClickedWithButton:(原按钮) 走原路由。
-static char kOverlayKey;
-static UIView *HPOverlayForBar(UIView *bar) {
-    UIView *ov = objc_getAssociatedObject(bar, &kOverlayKey);
-    if (!ov) {
-        ov = [[UIView alloc] initWithFrame:bar.frame];
-        ov.backgroundColor = [UIColor clearColor];
-        objc_setAssociatedObject(bar, &kOverlayKey, ov, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [ov release];
-        ov = objc_getAssociatedObject(bar, &kOverlayKey);
-    }
-    UIView *sup = bar.superview;
-    if (sup && ov.superview != sup) {
-        [ov removeFromSuperview];
-        NSUInteger idx = [sup.subviews indexOfObject:bar];
-        if (idx != NSNotFound) [sup insertSubview:ov atIndex:idx + 1];
-        else [sup addSubview:ov];
-    }
-    if (sup) [sup bringSubviewToFront:ov];
-    ov.frame = bar.frame;
-    return ov;
-}
-
-// v23：选中透镜借 UISegmentedControl 的系统选中盘（iOS 26 自带玻璃盘+原生弹簧+拉伸，
-// 量产案例 DDTabBar/UnionTabView 同法）——自己不再画透镜。控件只当视觉层：不接收触摸、
-// 段数与槽宽跟随自建行，选中索引由同步驱动；它自带的底图/分隔要藏掉，只留选中盘。
-static char kSegKey;
-static char kSegCountKey;
-static UISegmentedControl *HPEnsureSeg(UIView *host, NSUInteger count) {
-    UISegmentedControl *seg = objc_getAssociatedObject(host, &kSegKey);
-    NSNumber *oldCount = objc_getAssociatedObject(host, &kSegCountKey);
-    if (seg && oldCount.unsignedIntegerValue != count) {
-        [seg removeFromSuperview];
-        objc_setAssociatedObject(host, &kSegKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        seg = nil;
-    }
-    if (!seg) {
-        NSMutableArray *items = [NSMutableArray array];
-        for (NSUInteger i = 0; i < count; i++) [items addObject:@""];
-        seg = [[UISegmentedControl alloc] initWithItems:items];
-        seg.apportionsSegmentWidthsByContent = NO;
-        seg.userInteractionEnabled = NO;
-        seg.momentary = NO;
-        UIImage *empty = [[UIImage alloc] init];
-        [seg setBackgroundImage:empty forState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
-        [seg setBackgroundImage:empty forState:UIControlStateSelected barMetrics:UIBarMetricsDefault];
-        [seg setBackgroundImage:empty forState:UIControlStateHighlighted barMetrics:UIBarMetricsDefault];
-        [seg setDividerImage:empty forLeftSegmentState:UIControlStateNormal rightSegmentState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
-        [empty release];
-        objc_setAssociatedObject(host, &kSegKey, seg, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [seg release];
-        seg = objc_getAssociatedObject(host, &kSegKey);
-        objc_setAssociatedObject(host, &kSegCountKey, @(count), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    if (seg.superview != host) [host addSubview:seg];
-    return seg;
-}
-static void HPHideSegChrome(UISegmentedControl *seg) {
-    if (seg.bounds.size.width < 10) return;
-    for (UIView *v in seg.subviews) {
-        BOOL wide = v.frame.size.width >= seg.bounds.size.width * 0.9;
-        if ([v isKindOfClass:[UIImageView class]] || wide) v.alpha = 0.0;
-    }
-}
-
-static void HPSyncOverlayBar(UIView *bar, Class btnCls) {
+static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     CGRect bounds = bar.bounds;
     if (bounds.size.width < 50 || bounds.size.height < 30) return;
-    if (!bar.superview) return;
     NSArray *btns = HPBarButtons(bar, btnCls);
     if (btns.count == 0) return;
-    UIView *host = HPOverlayForBar(bar);
-    HPEnsurePlates(host);
-    UIView *oldLens = objc_getAssociatedObject(host, &kLensKey);
-    if (oldLens) [oldLens removeFromSuperview]; // v23 起悬浮层不用自画透镜（系统选中盘接管）
+    HPEnsurePlates(bar);
+    HPHideBarBackground(bar, btns);
 
+    // 按钮集合签名（指针序列）变了才重建自建行
     NSMutableString *sig = [NSMutableString string];
     for (UIView *b in btns) [sig appendFormat:@"%p;", (void *)b];
-    NSString *oldSig = objc_getAssociatedObject(host, &kRowSigKey);
-    NSMutableArray *row = objc_getAssociatedObject(host, &kRowKey);
+    NSString *oldSig = objc_getAssociatedObject(bar, &kRowSigKey);
+    NSMutableArray *row = objc_getAssociatedObject(bar, &kRowKey);
     if (!row || ![sig isEqualToString:oldSig]) {
         if (row) for (HPGlassButton *gb in row) [gb removeFromSuperview];
         row = [NSMutableArray array];
@@ -524,16 +411,16 @@ static void HPSyncOverlayBar(UIView *bar, Class btnCls) {
             HPGlassButton *gb = [[HPGlassButton alloc] initWithFrame:CGRectZero];
             gb.origButton = orig;
             gb.bar = bar;
-            gb.hostView = host;
-            [host addSubview:gb];
+            [bar addSubview:gb];
             [row addObject:gb];
             [gb release];
             objc_setAssociatedObject(orig, &kMyHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-        objc_setAssociatedObject(host, &kRowKey, row, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(host, &kRowSigKey, [sig copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(bar, &kRowKey, row, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(bar, &kRowSigKey, [sig copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
+    // 槽位几何：固定规格（槽宽 86、高 58、端部留白 12），只借原按钮行定纵向位置；宽度只随按钮数变
     CGRect rowRect = CGRectNull;
     for (UIView *orig in btns) {
         CGRect f = HPRectInBar(bar, orig);
@@ -550,15 +437,28 @@ static void HPSyncOverlayBar(UIView *bar, Class btnCls) {
     CGFloat capY = CGRectGetMidY(rowRect) - capH / 2;
     if (capY < 2) capY = 2;
     if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
+    // 胶囊与系统选择盘同框：v45 两层感就是两者差了 8pt 没对齐；对齐后盘在胶囊里滑、边缘重合
+    for (UIView *v in bar.subviews) {
+        if ([NSStringFromClass([v class]) containsString:@"PlatterView"] &&
+            v.frame.size.width > 50 && v.frame.size.height > 20) {
+            capX = v.frame.origin.x; capY = v.frame.origin.y;
+            capW = v.frame.size.width; capH = v.frame.size.height;
+            slotW = (capW - 24) / (CGFloat)btns.count;
+            break;
+        }
+    }
     CGRect capRect = CGRectMake(capX, capY, capW, capH);
 
+    // 同步数据 + 隐藏原按钮
     for (NSUInteger i = 0; i < btns.count; i++) {
         UIView *orig = btns[i];
         HPGlassButton *gb = row[i];
         gb.frame = CGRectMake(capX + 12 + (CGFloat)i * slotW, capY, slotW, capH);
         HPSyncGlassButton(gb, bar, orig);
+        orig.hidden = YES;
     }
 
+    // 选中态：以 updateButton 钩子记录的原按钮为准
     UIView *selBtn = objc_getAssociatedObject(bar, &kSelBtnKey);
     NSUInteger sel = selBtn ? [btns indexOfObject:selBtn] : NSNotFound;
     if (sel == NSNotFound) sel = 0;
@@ -568,20 +468,23 @@ static void HPSyncOverlayBar(UIView *bar, Class btnCls) {
         if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
     }
 
-    UIView *capsule = objc_getAssociatedObject(host, &kCapsuleKey);
+    // 胶囊 + 透镜：透镜贴合整个槽位（横向内缩 4、纵向内缩 5），不再比按钮小一圈
+    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
     HPSetPlateFrame(capsule, capRect);
     HPApplyCapsuleShadow(capsule);
+    CGFloat lensH = capH - 10;
+    HPSetPlateFrame(lens, CGRectMake(capX + 12 + (CGFloat)sel * slotW + 4,
+                                     capY + (capH - lensH) / 2, slotW - 8, lensH));
+    // 透镜不常驻：布局只管把它放到选中槽位，显隐由点击闪现控制（闪现中则不干预）
+    NSNumber *flashing = objc_getAssociatedObject(bar, &kLensFlashActiveKey);
+    if (!flashing.boolValue) { lens.hidden = YES; lens.alpha = 0.0; }
 
-    UISegmentedControl *seg = HPEnsureSeg(host, btns.count);
-    for (NSUInteger i = 0; i < btns.count; i++) [seg setWidth:slotW forSegmentAtIndex:i];
-    seg.frame = CGRectMake(capX + 12, capY, slotW * (CGFloat)btns.count, capH);
-    if (seg.selectedSegmentIndex != (NSInteger)sel) seg.selectedSegmentIndex = (NSInteger)sel;
-    HPHideSegChrome(seg);
-
-    [host bringSubviewToFront:seg];
-    for (HPGlassButton *gb in row) [host bringSubviewToFront:gb];
-
-    bar.hidden = YES; // 原栏整栏隐藏：platter/背景/mixView 随它一起消失
+    // 层级：胶囊 < 系统选择盘 < 透镜 < 自建按钮
+    for (UIView *v in bar.subviews)
+        if ([NSStringFromClass([v class]) containsString:@"PlatterView"]) { [bar bringSubviewToFront:v]; break; }
+    [bar bringSubviewToFront:lens];
+    for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -642,17 +545,15 @@ static Class gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gObjcBtnCls;
 
 static void HP_SwiftBar_layoutSubviews(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigSwiftLayout)(self, _cmd);
-    HPSyncOverlayBar(self, gSwiftBtnCls);
+    HPLayoutSwiftBar(self, gSwiftBtnCls);
 }
 static void HP_SwiftBar_updateButton(UIView *self, SEL _cmd, UIView *btn, BOOL selected) {
     ((void (*)(id, SEL, id, BOOL))gOrigSwiftUpdateBtn)(self, _cmd, btn, selected);
     if (selected && btn) {
         objc_setAssociatedObject(self, &kSelBtnKey, btn, OBJC_ASSOCIATION_ASSIGN);
-        [UIView animateWithDuration:0.55 delay:0 usingSpringWithDamping:0.75 initialSpringVelocity:0.6
-                            options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
-                         animations:^{ HPSyncOverlayBar(self, gSwiftBtnCls); } completion:nil];
-    } else if (!selected && btn) {
-        HPSyncOverlayBar(self, gSwiftBtnCls); // 取消选中的按钮同步一次，把它落定的未选中态图标截准
+        [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+            HPLayoutSwiftBar(self, gSwiftBtnCls);
+        } completion:nil];
     }
 }
 static void HP_ObjcBar_layoutSubviews(UIView *self, SEL _cmd) {
@@ -721,7 +622,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v23 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v24 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
@@ -780,9 +681,9 @@ static void HPInstall(void) {
     NSLog(@"[HPGlass] bridge forwarded userActivity: %@", act.activityType);
 }
 
-// 场景清单一旦声明，系统就不再向 AppDelegate 投递链接/通用链接事件（掘金适配清单的「深链静默失效」），
-// 而虎扑的分享回跳等正走 AppDelegate 的 openURL——桥接必须转发。冷启动的事件在 willConnect 就到达、
-// 业务还没就绪，先暂存，首次 sceneDidBecomeActive 后统一补发（同一 URL 只发一次，防双发）。
+// 场景清单一旦声明，系统就不再向 AppDelegate 投递链接/通用链接事件（深链静默失效），
+// 而虎扑的分享回跳等正走 AppDelegate 的 openURL——桥接必须转发。冷启动事件先暂存，
+// 首次 sceneDidBecomeActive 后统一补发（同一 URL 只发一次，防双发）。
 - (void)hpFlushPending {
     if (self.hpFlushed) return;
     self.hpFlushed = YES;
