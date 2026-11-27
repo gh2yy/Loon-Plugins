@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v29 (2026-11-27)
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v30 (2026-11-27)
 // v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
 //   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
 //   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
@@ -24,6 +24,12 @@ static char kRowSigKey;
 static char kMyHiddenKey;
 static char kPlateTreatedKey;
 static char kTapSelKey;
+static char kPillKey;
+static char kPillObsKey;
+static char kGridXKey;
+static char kGridWKey;
+static void HPRefreshSelectionFromPill(UIView *bar);
+static UIView *HPFindPlatter(UIView *root, int *depthOut, NSString **supOut);
 static int gHUDLayoutCalls = 0;
 static int gHUDUpdateCalls = 0;
 
@@ -306,6 +312,8 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
     }
     if (bar && orig && [bar respondsToSelector:@selector(didClickedWithButton:)])
         ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(didClickedWithButton:), orig);
+    // v30：路由回来后一拍再按药丸位置对一次（那时 App 状态已落定）
+    if (bar) dispatch_async(dispatch_get_main_queue(), ^{ HPRefreshSelectionFromPill(bar); });
 }
 @end
 
@@ -413,6 +421,101 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
     }
     [gb refreshAppearance];
 }
+
+#pragma mark - v30 药丸跟随（选中态换源：不再靠点击/钩子推断，直接跟系统药丸本体）
+
+static NSInteger gHPLayCount = 0;
+static NSInteger gHPKvoCount = 0;
+
+static void HPApplySel(UIView *bar, NSUInteger sel) {
+    NSArray *row = objc_getAssociatedObject(bar, &kRowKey);
+    for (NSUInteger i = 0; i < row.count; i++) {
+        HPGlassButton *gb = row[i];
+        BOOL s = (i == sel);
+        if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
+    }
+}
+
+// 在盘的子树里找药丸本体：槽位大小的视图（排除铺满盘的玻璃背景），取最深、最小的一只
+static UIView *HPFindPill(UIView *plate) {
+    UIView *best = nil; CGFloat bestArea = CGFLOAT_MAX; NSInteger bestDepth = -1;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:plate];
+    NSMutableArray *depths = [NSMutableArray arrayWithObject:@0];
+    while (stack.count) {
+        UIView *v = stack.lastObject; [stack removeLastObject];
+        NSNumber *dn = depths.lastObject; [depths removeLastObject];
+        NSInteger dep = dn.integerValue;
+        for (UIView *s in v.subviews) { [stack addObject:s]; [depths addObject:@(dep + 1)]; }
+        if (v == plate) continue;
+        CGRect f = v.frame;
+        BOOL full = f.size.width >= plate.bounds.size.width * 0.9 && f.size.height >= plate.bounds.size.height * 0.9;
+        if (full) continue;
+        if (f.size.width >= 50 && f.size.width <= 135 && f.size.height >= 26 && f.size.height <= 62) {
+            CGFloat area = f.size.width * f.size.height;
+            if (dep > bestDepth || (dep == bestDepth && area < bestArea)) { best = v; bestDepth = dep; bestArea = area; }
+        }
+    }
+    return best;
+}
+
+static void HPShowHUD(UIView *bar) {
+    UIWindow *win = bar.window; if (!win) return;
+    UILabel *lab = (UILabel *)[win viewWithTag:9901];
+    if (!lab) {
+        lab = [[UILabel alloc] initWithFrame:CGRectMake(6, 54, 428, 46)];
+        lab.tag = 9901; lab.numberOfLines = 2; lab.font = [UIFont systemFontOfSize:10];
+        lab.textColor = [UIColor greenColor];
+        lab.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.55];
+        lab.userInteractionEnabled = NO;
+        [win addSubview:lab]; [lab release];
+    }
+    [win bringSubviewToFront:lab];
+    UIView *pill = objc_getAssociatedObject(bar, &kPillKey);
+    NSString *pillDesc = pill ? [NSString stringWithFormat:@"%@ (%.0f,%.0f,%.0f,%.0f)",
+        NSStringFromClass(pill.class), pill.frame.origin.x, pill.frame.origin.y,
+        pill.frame.size.width, pill.frame.size.height] : @"none";
+    int pd = 0; NSString *ps = nil;
+    UIView *plate = HPFindPlatter(bar, &pd, &ps);
+    NSMutableString *subs = [NSMutableString string];
+    if (plate) for (UIView *s in plate.subviews) {
+        [subs appendFormat:@"%@(%.0f,%.0f,%.0f,%.0f) ", NSStringFromClass(s.class),
+         s.frame.origin.x, s.frame.origin.y, s.frame.size.width, s.frame.size.height];
+        if (subs.length > 140) break;
+    }
+    NSNumber *tapSel = objc_getAssociatedObject(bar, &kTapSelKey);
+    lab.text = [NSString stringWithFormat:@"HP v30 lay#%ld kvo#%ld tap=%@ pill=%@\nsubs: %@",
+        (long)gHPLayCount, (long)gHPKvoCount, tapSel ?: @"-", pillDesc, subs];
+}
+
+static void HPRefreshSelectionFromPill(UIView *bar) {
+    UIView *pill = objc_getAssociatedObject(bar, &kPillKey);
+    if (!pill || !pill.superview) return;
+    NSNumber *gx = objc_getAssociatedObject(bar, &kGridXKey);
+    NSNumber *gw = objc_getAssociatedObject(bar, &kGridWKey);
+    NSArray *row = objc_getAssociatedObject(bar, &kRowKey);
+    if (!gx || !gw || !row.count) return;
+    CGRect pf = [pill.superview convertRect:pill.frame toView:bar];
+    CGFloat cx = CGRectGetMidX(pf);
+    NSUInteger sel = 0; CGFloat bestD = CGFLOAT_MAX;
+    for (NSUInteger i = 0; i < row.count; i++) {
+        CGFloat c = gx.doubleValue + gw.doubleValue * ((CGFloat)i + 0.5);
+        CGFloat dd = fabs(cx - c); if (dd < bestD) { bestD = dd; sel = i; }
+    }
+    HPApplySel(bar, sel);
+    HPShowHUD(bar);
+}
+
+@interface HPSelectionObserver : NSObject
+@property (nonatomic, assign) UIView *bar;
+@end
+@implementation HPSelectionObserver
+- (void)observeValueForKeyPath:(NSString *)kp ofObject:(id)obj change:(NSDictionary *)chg context:(void *)ctx {
+    (void)kp; (void)obj; (void)chg; (void)ctx;
+    gHPKvoCount++;
+    UIView *bar = self.bar; if (!bar) return;
+    dispatch_async(dispatch_get_main_queue(), ^{ HPRefreshSelectionFromPill(bar); });
+}
+@end
 
 #pragma mark - 布局（Swift 真底栏：重构按钮层）
 
@@ -541,18 +644,60 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
         capRect = plateInBar;
         capX = capRect.origin.x; capY = capRect.origin.y; capW = capRect.size.width; capH = capRect.size.height;
     }
-    // v29 对中：焦点药丸住在盘里、按盘的格子居中；按钮网格改用盘的等分格。
-    // v28 只把胶囊挪到盘的框、按钮还按旧格（起 95、步 86）摆，图标整体偏右约 8pt，
-    // 焦点和图标对不上就是这么来的。
-    CGFloat gridX = capX + 12, gridSlotW = slotW;
-    if (!measured && hpPlate) { gridX = plateInBar.origin.x; gridSlotW = plateInBar.size.width / (CGFloat)btns.count; }
+    // v30：存槽位格（药丸跟随换算用）+ 药丸定位/观察 + 盘背景玻璃换 Clear（去灰，只做一次）
+    objc_setAssociatedObject(bar, &kGridXKey, @(slotX0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(bar, &kGridWKey, @(slotW), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (hpPlate) {
+        UIView *pill = HPFindPill(hpPlate);
+        UIView *oldPill = objc_getAssociatedObject(bar, &kPillKey);
+        if (pill != oldPill) {
+            HPSelectionObserver *obs = objc_getAssociatedObject(bar, &kPillObsKey);
+            if (!obs) {
+                obs = [[HPSelectionObserver alloc] init];
+                obs.bar = bar;
+                objc_setAssociatedObject(bar, &kPillObsKey, obs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                [obs release];
+            }
+            if (oldPill) {
+                [oldPill removeObserver:obs forKeyPath:@"frame"];
+                [oldPill removeObserver:obs forKeyPath:@"center"];
+                [oldPill removeObserver:obs forKeyPath:@"bounds"];
+            }
+            if (pill) {
+                [pill addObserver:obs forKeyPath:@"frame" options:0 context:NULL];
+                [pill addObserver:obs forKeyPath:@"center" options:0 context:NULL];
+                [pill addObserver:obs forKeyPath:@"bounds" options:0 context:NULL];
+            }
+            objc_setAssociatedObject(bar, &kPillKey, pill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (pill) HPRefreshSelectionFromPill(bar);
+        if (!objc_getAssociatedObject(hpPlate, &kPlateTreatedKey)) {
+            objc_setAssociatedObject(hpPlate, &kPlateTreatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            Class glassCls = NSClassFromString(@"UIGlassEffect");
+            if (glassCls && [glassCls respondsToSelector:@selector(effectWithStyle:)]) {
+                id clearFx = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassCls, @selector(effectWithStyle:), 1);
+                NSMutableArray *stack = [NSMutableArray arrayWithObject:hpPlate];
+                while (stack.count) {
+                    UIView *v = stack.lastObject; [stack removeLastObject];
+                    for (UIView *s in v.subviews) [stack addObject:s];
+                    if (v != hpPlate && [v isKindOfClass:[UIVisualEffectView class]] &&
+                        v.frame.size.width >= hpPlate.bounds.size.width * 0.9 &&
+                        v.frame.size.height >= hpPlate.bounds.size.height * 0.9) {
+                        ((UIVisualEffectView *)v).effect = clearFx;
+                    }
+                }
+            }
+        }
+    }
+    // v30 对中：按钮格回 v14 的实测格（slotX0/slotW，盘覆盖不许动它）——v28 挪成 138、
+    // v29 挪成盘三分格 128.7，她两次都判不居中；v45/v56 用的就是这套格、当时没这条意见。
 
     // 同步数据 + 隐藏原按钮
     for (NSUInteger i = 0; i < btns.count; i++) {
         UIView *orig = btns[i];
         HPGlassButton *gb = row[i];
         gb.frame = measured ? CGRectMake(slotX0 + (CGFloat)i * slotW, rowRect.origin.y, slotW, rowRect.size.height)
-                            : CGRectMake(gridX + (CGFloat)i * gridSlotW, capY, gridSlotW, capH);
+                            : CGRectMake(slotX0 + (CGFloat)i * slotW, capY + 2, slotW, capH - 4);
         HPSyncGlassButton(gb, bar, orig);
         orig.hidden = YES;
     }
@@ -589,18 +734,18 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
     HPSetPlateFrame(capsule, capRect);
     HPApplyCapsuleShadow(capsule);
-    // v29 去灰：胶囊（清玻璃+浅色填充）压到盘的上层，把盘的灰洗淡一层——只动我方视图层级，
-    // 盘自己的东西一概不碰（v28 清它填充的路已撤：对灰无效、还疑似带出图标白底）。
-    if (hpPlate) [bar bringSubviewToFront:capsule];
+    // v30：胶囊回盘下层（v29 压上层洗灰实测无变化，撤）。
     CGFloat lensH = capH - 10;
     HPSetPlateFrame(lens, measured ? CGRectMake(slotX0 + (CGFloat)sel * slotW - 4, rowRect.origin.y - 3,
                                                 slotW + 8, rowRect.size.height + 6)
-                                   : CGRectMake(gridX + (CGFloat)sel * gridSlotW + 4,
-                                                capY + (capH - lensH) / 2, gridSlotW - 8, lensH));
+                                   : CGRectMake(slotX0 + (CGFloat)sel * slotW + 4,
+                                                capY + (capH - lensH) / 2, slotW - 8, lensH));
     // 透镜不常驻：布局只管把它放到选中槽位，显隐由点击闪现控制（闪现中则不干预）
     NSNumber *flashing = objc_getAssociatedObject(bar, &kLensFlashActiveKey);
     if (!flashing.boolValue) { lens.hidden = YES; lens.alpha = 0.0; }
 
+    gHPLayCount++;
+    HPShowHUD(bar);
     // 层级：胶囊 < 透镜 < 自建按钮
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
@@ -742,7 +887,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v29 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v30 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
