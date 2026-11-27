@@ -1,7 +1,11 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v32 (2026-11-27)
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v33 (2026-11-27)
 // v32：容器路线（用户点选）——不再借系统盘当选中指示：系统盘整盘隐藏，改在原栏内嵌
 //   UIGlassContainerEffect 容器，底座与选中药丸都是自己的玻璃（药丸 Regular + interactive），
 //   选中态插件自管（点击即定、药丸位置只作程序切换时的跟随校验）。几何与图标管线沿 v31。
+// v33（v32 实测两修）：①底板没了——光一个容器效果不渲染底，剩一层灰膜；容器内加回一层
+//   Clear 玻璃当底板（与药丸同在 contentView 里才能融合）。②点首页/专区时「我的」闪——
+//   排版/跟随读到的系统药丸位置是旧值（隐藏盘内药丸停在上一个槽），把刚点的选中覆盖了
+//   一拍；加点击优先窗：点击后 1.2 秒内药丸读数不得与点击结果相左。
 // v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
 //   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
 //   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
@@ -36,6 +40,7 @@ static char kMyPillKey;
 static char kCurSelKey;
 static char kCapRectKey;
 static char kPillAnimKey;
+static char kTapTimeKey;
 static void HPRefreshSelectionFromPill(UIView *bar, BOOL animated);
 static void HPSetSelection(UIView *bar, NSUInteger sel, BOOL animated);
 static void HPSchedulePillSync(UIView *bar);
@@ -309,7 +314,9 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
     // 启动时响 3 次），图标选中态以后以这份点击记录为准，比任何推断都直接。
     if (bar) {
         // v32：选中态自管——点击当场定选中并驱动自有药丸滑动，不再等任何外部信号。
+        // v33：同时记点击时刻——点击优先窗内，系统药丸的读数不许推翻点击结果。
         objc_setAssociatedObject(bar, &kTapSelKey, @(self.hpIndex), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(bar, &kTapTimeKey, @([[NSDate date] timeIntervalSince1970]), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         HPSetSelection(bar, (NSUInteger)self.hpIndex, YES);
     }
     if (bar && orig && [bar respondsToSelector:@selector(didClickedWithButton:)])
@@ -507,9 +514,24 @@ static NSInteger HPSelectionFromPill(UIView *bar) {
     return sel;
 }
 
+// 点击优先窗：刚点击过（1.2 秒内）时返回 YES 并带出点击的槽位。这段时间里系统药丸的
+// 位置是旧值（盘被藏后它停在上一个槽，v32 实测点首页/专区时「我的」被它刷亮一拍），
+// 任何与点击结果相左的药丸读数都作废；程序切页没有点击、不受此窗影响。
+static BOOL HPRecentTap(UIView *bar, NSInteger *tapSelOut) {
+    NSNumber *tt = objc_getAssociatedObject(bar, &kTapTimeKey);
+    NSNumber *ts = objc_getAssociatedObject(bar, &kTapSelKey);
+    if (!tt || !ts) return NO;
+    if ([[NSDate date] timeIntervalSince1970] - tt.doubleValue > 1.2) return NO;
+    if (tapSelOut) *tapSelOut = ts.integerValue;
+    return YES;
+}
+
 static void HPRefreshSelectionFromPill(UIView *bar, BOOL animated) {
     NSInteger sel = HPSelectionFromPill(bar);
-    if (sel >= 0) HPSetSelection(bar, (NSUInteger)sel, animated);
+    if (sel < 0) return;
+    NSInteger rt = -1;
+    if (HPRecentTap(bar, &rt) && sel != rt) return; // 点击优先窗内，旧读数作废
+    HPSetSelection(bar, (NSUInteger)sel, animated);
 }
 
 // 药丸的弹簧是逐帧驱动的，位置变化会连珠炮一样报过来——等它静下来 0.28 秒再对一次，
@@ -571,6 +593,12 @@ static void HPEnsureContainer(UIView *bar) {
     cont.layer.masksToBounds = YES;
     [shell addSubview:cont];
     [cont release];
+    // v33：底板——v32 只有容器效果本身、不渲染底，只剩一层灰膜（用户实测）。补一层 Clear
+    // 玻璃铺满容器当底板，与药丸同住 contentView，容器的融合才有对象。
+    UIVisualEffectView *base = HPGlassView(1, NO); // Clear
+    base.layer.cornerRadius = 31;
+    [cont.contentView addSubview:base];
+    [base release];
     UIVisualEffectView *pill = HPGlassView(0, YES); // Regular + interactive（用户定的样本口径）
     pill.layer.cornerRadius = 26;
     [cont.contentView addSubview:pill];
@@ -588,6 +616,12 @@ static void HPSetContainerFrame(UIView *shell, CGRect f) {
     if (!cont) return;
     cont.frame = shell.bounds;
     cont.layer.cornerRadius = f.size.height / 2;
+    // 底板是 contentView 的第一个子视图（HPEnsureContainer 里先于药丸加入）
+    UIVisualEffectView *base = (UIVisualEffectView *)cont.contentView.subviews.firstObject;
+    if (base) {
+        base.frame = cont.bounds;
+        base.layer.cornerRadius = f.size.height / 2;
+    }
     // 夜间亮边沿 v12 口径：深色给容器 0.5pt 淡白边定轮廓，白天不加
     BOOL dark = shell.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
     cont.layer.borderWidth = dark ? 0.5 : 0.0;
@@ -803,7 +837,10 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     // 上次状态 > 0；定下后按钮两态与自有药丸位置都由 HPSetSelection 一并落位。
     objc_setAssociatedObject(bar, &kCapRectKey, [NSValue valueWithCGRect:capRect], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSNumber *tapSel = objc_getAssociatedObject(bar, &kTapSelKey);
-    NSInteger selNow = HPSelectionFromPill(bar);
+    NSInteger selNow = -1;
+    NSInteger rtSel = -1;
+    if (HPRecentTap(bar, &rtSel) && rtSel >= 0 && rtSel < (NSInteger)row.count) selNow = rtSel;
+    if (selNow < 0) selNow = HPSelectionFromPill(bar);
     if (selNow < 0 && tapSel && tapSel.unsignedIntegerValue < row.count) selNow = tapSel.integerValue;
     if (selNow < 0) {
         NSNumber *cur = objc_getAssociatedObject(bar, &kCurSelKey);
@@ -957,7 +994,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v32 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v33 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
