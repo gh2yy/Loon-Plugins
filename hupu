@@ -1,5 +1,5 @@
-#!name = 虎扑去广告、热榜、游戏推广卡与详情页深色
-#!desc = 去开屏与信息流等全部接口广告和首页热榜频道，过滤首页推荐流里伪装成帖子的游戏推广卡，帖子详情页深色背景改纯黑（底部栏不动：发布键按位置写死，删项会错位）
+#!name = 虎扑去广告、热榜、问深聊、游戏推广卡与详情页深色
+#!desc = 去开屏与信息流等全部接口广告、帖子页问深聊和首页热榜频道，过滤首页推荐流里伪装成帖子的游戏推广卡，帖子详情页深色背景改纯黑（底部栏不动：发布键按位置写死，删项会错位）
 #!author = gh2yy
 #!date = 2026-11-27
 #!tag = 虎扑,去tab
@@ -12,14 +12,15 @@
 # - 2026-11-27 Muse：游戏卡 v2 再漏检（《凡人问道》卡文案齐全仍漏）改 v3：规则加 games 域名一条并放宽路径前缀，脚本加疑似诊断通知（带 action* 键或单组文案的条目不删、弹通知报键名清单），据真实结构定案特征。同日适配商店最新版 8.2.70（用户抓包定案）：新增 goblin.hupu.com 的 interfaceAd/getOther 广告清空（开屏 pid=999 与信息流/评论/资讯等全部广告位统一改无填充，开屏直接进首页）；底部三项版（删 post+deeptalk）真机实测错位：第 3 位是按位置写死的发布键、「我的」顶上后误弹发布，与 8.1.9 同症、商店版插件层无解；改四项版只删 deeptalk，post 留位；全部脚本行升 ?v=6。
 
 [Script]
-http-request ^https?:\/\/goblin\.hupu\.com\/.*interfaceAd\/getOther\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=6, timeout=10, tag=虎扑-去广告含开屏
-http-response ^https?:\/\/goblin\.hupu\.com\/.*interfaceAd\/getOther\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=6, requires-body=true, timeout=10, tag=虎扑-去广告含开屏-响应兜底
-http-response ^https?:\/\/bbs\.mobileapi\.hupu\.com\/.*bbsallapi\/recommend\/v2\/getRecommendList script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=6, requires-body=true, timeout=10, tag=虎扑-去游戏推广卡
-http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/.*bbsallapi\/recommend\/v2\/getRecommendList script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=6, requires-body=true, timeout=10, tag=虎扑-去游戏推广卡-games域名
-http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/init script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=6, requires-body=true, timeout=10, tag=虎扑-去首页热榜
-http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/frontendofflinepkg\/upgradeListByCodes script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=6, requires-body=true, timeout=10, tag=虎扑-详情包换黑包
-http-response ^https?:\/\/w1\.hoopchina\.com\.cn\/games\/static\/bbs-m-web\/.*\.css script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=6, requires-body=true, timeout=10, tag=虎扑-详情页深色
-http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/basketballapi\/news\/v3\/tab script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=6, requires-body=true, timeout=10, tag=虎扑-NBA入口精简
+http-request ^https?:\/\/goblin\.hupu\.com\/.*interfaceAd\/getOther\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=7, timeout=10, tag=虎扑-去广告含开屏
+http-response ^https?:\/\/goblin\.hupu\.com\/.*interfaceAd\/getOther\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=7, requires-body=true, timeout=10, tag=虎扑-去广告含开屏-响应兜底
+http-response ^https?:\/\/bbs\.mobileapi\.hupu\.com\/.*\/threads\/refactor\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=7, requires-body=true, timeout=10, tag=虎扑-去问深聊
+http-response ^https?:\/\/bbs\.mobileapi\.hupu\.com\/.*bbsallapi\/recommend\/v2\/getRecommendList script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=7, requires-body=true, timeout=10, tag=虎扑-去游戏推广卡
+http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/.*bbsallapi\/recommend\/v2\/getRecommendList script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=7, requires-body=true, timeout=10, tag=虎扑-去游戏推广卡-games域名
+http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/init script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=7, requires-body=true, timeout=10, tag=虎扑-去首页热榜
+http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/bplapi\/device\/v1\/frontendofflinepkg\/upgradeListByCodes script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=7, requires-body=true, timeout=10, tag=虎扑-详情包换黑包
+http-response ^https?:\/\/w1\.hoopchina\.com\.cn\/games\/static\/bbs-m-web\/.*\.css script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=7, requires-body=true, timeout=10, tag=虎扑-详情页深色
+http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/basketballapi\/news\/v3\/tab script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=7, requires-body=true, timeout=10, tag=虎扑-NBA入口精简
 
 [Rewrite]
 ^https?:\/\/api-access\.pangolin-sdk-toutiao\d?\.com\/api\/ad\/union\/sdk\/get_ads\/.* reject-200
