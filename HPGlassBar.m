@@ -528,13 +528,6 @@ static IMP gOrigSwiftLayout, gOrigSwiftUpdateBtn;
 static IMP gOrigObjcLayout, gOrigObjcSetSel, gOrigObjcSetupSel, gOrigObjcReload;
 static Class gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gObjcBtnCls;
 
-static void (*gOrigSwiftAddSubview)(id, SEL, UIView *) = NULL;
-static void HP_SwiftBar_didAddSubview(UIView *self, SEL _cmd, UIView *subview) {
-    if (gOrigSwiftAddSubview) gOrigSwiftAddSubview(self, _cmd, subview);
-    // App 重建底栏时若在布局之后才铺底板，催一次布局让白名单把它藏掉（setNeedsLayout 会合并，无递归）
-    [self setNeedsLayout];
-}
-
 static void HP_SwiftBar_layoutSubviews(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigSwiftLayout)(self, _cmd);
     HPLayoutSwiftBar(self, gSwiftBtnCls);
@@ -604,8 +597,6 @@ static void HPInstall(void) {
     BOOL any = NO;
     if (gSwiftBarCls) {
         gOrigSwiftLayout = HPSwap(gSwiftBarCls, @selector(layoutSubviews), (IMP)HP_SwiftBar_layoutSubviews);
-        if (!gOrigSwiftAddSubview)
-            gOrigSwiftAddSubview = (void (*)(id, SEL, UIView *))HPSwap(gSwiftBarCls, @selector(didAddSubview:), (IMP)HP_SwiftBar_didAddSubview);
         gOrigSwiftUpdateBtn = HPSwap(gSwiftBarCls, @selector(updateButtonWithButton:selected:), (IMP)HP_SwiftBar_updateButton);
         any = (gOrigSwiftLayout != NULL);
     }
@@ -616,7 +607,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v17 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v18 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
