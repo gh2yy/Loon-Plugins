@@ -1,4 +1,8 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.28 (2026-11-27)：发现页横线真源头——
+// WCBlack.m — 微信深色模式纯黑背景 v8.29 (2026-11-27)：语音模式「按住
+// 说话」胶囊并入 field 模块——按钮 MMRecordButton 本体不涂色，灰是其底下
+// 的背景图/图层渲染，在按钮内部标题之下放 field 色板盖住（范围按按钮
+// 自己的 backgroundRectForBounds:），关模块时随 field 色板统一隐藏。
+// v8.28：发现页横线真源头——
 // 发现页 FindFriendEntryViewController 不用 WCTableViewManager，自己给每行
 // MMTableViewCell 下发 setCustomSeparatorLineEdges:topInset:bottomInset:，
 // 该方法由挂在 UITableViewCell 上的 FinderVideoCell 分类实现（宿主类与
@@ -56,7 +60,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.28"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.29"); });
     return l;
 }
 
@@ -281,6 +285,43 @@ static void WCEnsureFieldPlate(UIView *grow) {
     if (!CGRectEqualToRect(plate.frame, grow.bounds)) plate.frame = grow.bounds;
     plate.hidden = NO;
 }
+// v8.29：语音模式的「按住 说话」胶囊并入 field 模块（用户 19:39 点名）。
+// 按钮本体是 MMRecordButton（MMTransparentButton→MMUIButton 系），全链
+// 不涂背景色；那片 #2C2C2C 是它底下的背景图/图层渲染，WCFieldScan 只认
+// backgroundColor、够不着——与文字模式 v5.2 同构。不抢它的渲染：在按钮
+// 内部、标题标签正下方放一张 field 色板盖住，范围按按钮自己的
+// backgroundRectForBounds:（胶囊有水平 outset），每拍重申位置；
+// 登记进 WCFieldPlates，关模块/浅色时由 sweep 的还原分支统一隐藏。
+static void WCEnsureRecordPlate(UIView *btn) {
+    UIColor *cfg = WCConfigColor(@"field");
+    if (!cfg) return;
+    UIView *plate = objc_getAssociatedObject(btn, &kWCUnderlayKey);
+    if (!plate) {
+        plate = [[UIView alloc] initWithFrame:btn.bounds];
+        plate.userInteractionEnabled = NO;
+        plate.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        plate.clipsToBounds = YES;
+        objc_setAssociatedObject(btn, &kWCUnderlayKey, plate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [WCFieldPlates() addObject:plate];
+        [plate release];
+    }
+    CGRect br = [btn isKindOfClass:[UIButton class]] ? [(UIButton *)btn backgroundRectForBounds:btn.bounds] : btn.bounds;
+    if (br.size.width <= 0 || br.size.height <= 0) br = btn.bounds;
+    UIView *label = [btn isKindOfClass:[UIButton class]] ? [(UIButton *)btn titleLabel] : nil;
+    NSInteger li = (label && label.superview == btn) ? (NSInteger)[btn.subviews indexOfObject:label] : -1;
+    NSInteger want = (li >= 0) ? li - 1 : (NSInteger)btn.subviews.count - 1;
+    NSInteger pi = (plate.superview == btn) ? (NSInteger)[btn.subviews indexOfObject:plate] : -1;
+    if (plate.superview != btn || pi != want) {
+        [plate removeFromSuperview];
+        NSInteger at = (li >= 0) ? li : (NSInteger)btn.subviews.count;
+        [btn insertSubview:plate atIndex:at];
+    }
+    if (!CGRectEqualToRect(plate.frame, br)) plate.frame = br;
+    CGFloat radius = br.size.height / 2;
+    if (plate.layer.cornerRadius != radius) plate.layer.cornerRadius = radius;
+    if (plate.backgroundColor != cfg) plate.backgroundColor = cfg;
+    plate.hidden = NO;
+}
 // v5.3：输入框右端话筒区残留原色（14:30 截图实测：框内其余全是 (26,26,26)，右端
 // 约 30pt 仍是 (44,44,44)，且只在键盘弹起、编辑态出现，压在色板之上）。身份未明
 // 就不点名：每拍在输入条整棵子树里按几何+渲染色猎——横向必须落在输入框框内、
@@ -372,6 +413,7 @@ static void WCFieldPatchHunt(UIView *grow) {
 static void WCFieldPlatesIn(UIView *root, int depth) {
     if (!root || depth < 0) return;
     if ([NSStringFromClass([root class]) isEqualToString:@"MMGrowTextView"]) { WCEnsureFieldPlate(root); WCFieldPatchHunt(root); }
+    else if ([NSStringFromClass([root class]) isEqualToString:@"MMRecordButton"]) { WCEnsureRecordPlate(root); }
     for (UIView *s in root.subviews) WCFieldPlatesIn(s, depth - 1);
 }
 
@@ -1975,7 +2017,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.28 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.29 registered in plugin list");
             break;
         }
     }
