@@ -549,8 +549,28 @@ static IMP HPSwap(Class cls, SEL sel, IMP newImp) {
     return method_setImplementation(m, newImp);
 }
 
+static CGRect (*gOrigStatusBarFrame)(id, SEL) = NULL;
+static CGRect HP_UIApp_statusBarFrame(id self, SEL _cmd) {
+    UIApplication *app = (UIApplication *)self;
+    for (UIScene *s in app.connectedScenes) {
+        if ([s isKindOfClass:[UIWindowScene class]] &&
+            s.activationState == UISceneActivationStateForegroundActive) {
+            return ((UIWindowScene *)s).statusBarManager.statusBarFrame;
+        }
+    }
+    CGRect orig = gOrigStatusBarFrame ? gOrigStatusBarFrame(self, _cmd) : CGRectZero;
+    if (orig.size.height > 0) return orig;
+    // 场景还没连上时系统给 0；App 启动时读到 0 就会把顶部排到灵动岛下面，先按机型给真值兜底
+    CGFloat h = (UIScreen.mainScreen.bounds.size.height >= 852) ? 59 : 44;
+    return CGRectMake(0, 0, UIScreen.mainScreen.bounds.size.width, h);
+}
+
 static BOOL gInstalled = NO;
 static void HPInstall(void) {
+    if (!gOrigStatusBarFrame) {
+        gOrigStatusBarFrame = (CGRect (*)(id, SEL))HPSwap([UIApplication class],
+            @selector(statusBarFrame), (IMP)HP_UIApp_statusBarFrame);
+    }
     if (gInstalled) return;
     gSwiftBarCls = HPFindClass(@"_TtC4HPUI10HPUITabBar", @"HPUITabBar", @[@"Button", @"Config"]);
     gSwiftBtnCls = HPFindClass(@"_TtC4HPUI16HPUITabBarButton", @"HPUITabBarButton", @[]);
@@ -569,7 +589,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v15 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v16 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
@@ -583,9 +603,26 @@ static void HPInstall(void) {
 
 @implementation HPSceneBridge
 
-- (void)hpPokeLayoutInView:(UIView *)v {
-    [v setNeedsLayout];
-    for (UIView *sub in v.subviews) [self hpPokeLayoutInView:sub];
+- (void)hpFixSafeArea:(UIWindow *)w scene:(UIScene *)scene {
+    // App 在场景存在前读到的安全区是 0、顶部按 0 排版被灵动岛压住（v45/v46 实测，
+    // 全树重排无效——它读的是启动那一刻的值）。这里用场景的真实状态栏高度补差：
+    // 自然安全区涨上来后补差自动收回，不会叠加。
+    if (![scene isKindOfClass:[UIWindowScene class]]) return;
+    UIViewController *root = w.rootViewController;
+    if (!root) return;
+    CGFloat targetTop = ((UIWindowScene *)scene).statusBarManager.statusBarFrame.size.height;
+    if (targetTop <= 0) targetTop = 59;
+    CGFloat targetBottom = (w.bounds.size.height >= 812) ? 34 : 0;
+    UIEdgeInsets nat = w.safeAreaInsets;
+    CGFloat needTop = targetTop - nat.top; if (needTop < 0) needTop = 0;
+    CGFloat needBottom = targetBottom - nat.bottom; if (needBottom < 0) needBottom = 0;
+    UIEdgeInsets add = root.additionalSafeAreaInsets;
+    if (fabs(add.top - needTop) > 0.5 || fabs(add.bottom - needBottom) > 0.5) {
+        add.top = needTop; add.bottom = needBottom;
+        root.additionalSafeAreaInsets = add;
+        NSLog(@"[HPGlass] safe area fix: natural top=%.0f bottom=%.0f -> add top=%.0f bottom=%.0f",
+              nat.top, nat.bottom, needTop, needBottom);
+    }
 }
 
 - (void)hpAttachWindowToScene:(UIScene *)scene {
@@ -596,17 +633,13 @@ static void HPInstall(void) {
         w = [appDelegate performSelector:@selector(window)];
     }
     if (!w) return;
-    BOOL fresh = (w.windowScene != (UIWindowScene *)scene);
-    if (fresh) {
+    if (w.windowScene != (UIWindowScene *)scene) {
         w.windowScene = (UIWindowScene *)scene;
         self.window = w;
         [w makeKeyAndVisible];
         NSLog(@"[HPGlass] scene bridge attached window: %@", w);
     }
-    // App 在场景存在之前就按旧状态栏高度排好了顶部布局，挂场景后强制全树重排一次，
-    // 让它按新身份的真实安全区/状态栏高度重新读值（v45 实测顶部被灵动岛压住）。
-    [self hpPokeLayoutInView:w];
-    [w layoutIfNeeded];
+    [self hpFixSafeArea:w scene:scene];
 }
 
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
