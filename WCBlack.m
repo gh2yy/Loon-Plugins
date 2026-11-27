@@ -1,4 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.21 (2026-11-27)：交叉引用定案朋友圈
+// WCBlack.m — 微信深色模式纯黑背景 v8.22 (2026-11-27)：drawSeparatorFor:
+// 的参数是 cell 管理器不是 cell（v8.21 类型判断落空）；三路找真 cell +
+// 钩 willDisplay 补网 + 扫表格本体装饰线。v8.21：交叉引用定案朋友圈
 // 行的线是 WCTableViewManager drawSeparatorFor:AtIndexPath:mode: 在显示时
 // 才加进 cell 的分隔视图，钩该方法藏线。v8.20：反汇编定案 drawCell:
 // 的参数才是被描边的 cell（v8.19 读管理器 _cell 字段清了个空）；输入栏线
@@ -39,7 +41,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.21"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.22"); });
     return l;
 }
 
@@ -582,15 +584,69 @@ static void WCInstallMgrHook(void) {
 // addSubview 进 cell。它在 willDisplay 时才调用，我之前的钩子（drawCell:/
 // layout）全在它之前跑完，所以线每次都后脚出现、纹丝不动。钩它本人：
 // orig 画完立刻在同一只 cell 上按指纹藏线，时机严丝合缝。
+// v8.22：v8.21 又落空——drawSeparatorFor: 的第一个参数根本不是 cell，
+// 是 cell 的管理器（它被发了 seperateLineMode，只可能是管理器），我的
+// isKindOfClass:[UIView] 判断直接落空、什么都没干。这版三路找真 cell：
+// 参数本身是视图就用它；否则读管理器的 _cell 字段；再否则用管理器的
+// tableView 按 indexPath 现查。再加一道网：钩管理器自己的
+// tableView:willDisplayCell:forRowAtIndexPath:（画线就是从这儿发起的，
+// 参数里带真 cell），orig 回来后对真 cell 藏线，并扫一遍表格本体的
+// 装饰线（线也可能被加在表格而不是 cell 上）。
+static void WC_HideTableDecorations(UITableView *tv) {
+    if (!tv) return;
+    CGFloat W = tv.bounds.size.width;
+    if (W < 50) return;
+    for (UIView *v in tv.subviews) {
+        if (v.hidden) continue;
+        if ([v isKindOfClass:[UITableViewCell class]]) continue;
+        if ([v isKindOfClass:[UILabel class]] || [v isKindOfClass:[UIControl class]]) continue;
+        if (WCIsHairlineFrame(v.frame, W)) v.hidden = YES;
+    }
+    for (CALayer *l in tv.layer.sublayers) {
+        if (l.hidden) continue;
+        if (WCIsHairlineFrame(l.frame, W)) l.hidden = YES;
+    }
+}
 static IMP gO_MgrDrawSep;
-static void WC_Mgr_drawSep(id s, SEL c, id cell, id ip, NSInteger mode) {
-    ((void (*)(id, SEL, id, id, NSInteger))gO_MgrDrawSep)(s, c, cell, ip, mode);
+static void WC_Mgr_drawSep(id s, SEL c, id info, id ip, NSInteger mode) {
+    ((void (*)(id, SEL, id, id, NSInteger))gO_MgrDrawSep)(s, c, info, ip, mode);
     if (!WCHideSep()) return;
-    if ([cell isKindOfClass:[UIView class]]) WCHideEdgeLinesDeep((UIView *)cell, 4);
+    UIView *host = nil;
+    if ([info isKindOfClass:[UIView class]]) host = (UIView *)info;
+    if (!host && info) {
+        Ivar iv = class_getInstanceVariable([info class], "_cell");
+        if (iv) {
+            const char *enc = ivar_getTypeEncoding(iv);
+            if (enc && enc[0] == '@') {
+                id v = object_getIvar(info, iv);
+                if ([v isKindOfClass:[UIView class]]) host = (UIView *)v;
+            }
+        }
+    }
+    if (host) WCHideEdgeLinesDeep(host, 4);
+    if ([s respondsToSelector:@selector(tableView)]) {
+        id tv = [s performSelector:@selector(tableView)];
+        if ([tv isKindOfClass:[UITableView class]]) {
+            if (!host && ip) {
+                id cell = [(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip];
+                if ([cell isKindOfClass:[UIView class]]) WCHideEdgeLinesDeep((UIView *)cell, 4);
+            }
+            WC_HideTableDecorations((UITableView *)tv);
+        }
+    }
+}
+static IMP gO_MgrWillDisplay;
+static void WC_Mgr_willDisplay(id s, SEL c, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
+    ((void (*)(id, SEL, id, id, id))gO_MgrWillDisplay)(s, c, tv, cell, ip);
+    if (!WCHideSep()) return;
+    if (cell) WCHideEdgeLinesDeep(cell, 4);
+    WC_HideTableDecorations(tv);
 }
 static void WCInstallSepDrawHook(void) {
     Class c = NSClassFromString(@"WCTableViewManager");
-    if (c && !gO_MgrDrawSep) gO_MgrDrawSep = WCSwapOwn(c, @selector(drawSeparatorFor:AtIndexPath:mode:), (IMP)WC_Mgr_drawSep);
+    if (!c) return;
+    if (!gO_MgrDrawSep) gO_MgrDrawSep = WCSwapOwn(c, @selector(drawSeparatorFor:AtIndexPath:mode:), (IMP)WC_Mgr_drawSep);
+    if (!gO_MgrWillDisplay) gO_MgrWillDisplay = WCSwapOwn(c, @selector(tableView:willDisplayCell:forRowAtIndexPath:), (IMP)WC_Mgr_willDisplay);
 }
 
 static void WCSepTryMarkViaResponder(UITableView *tv);
@@ -1839,7 +1895,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.21 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.22 registered in plugin list");
             break;
         }
     }
