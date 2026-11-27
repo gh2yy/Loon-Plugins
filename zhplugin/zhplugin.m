@@ -164,6 +164,43 @@
 //     面。不动：ZHPromoWindow 基类本身（其另一子类是等级引导
 //     弹窗 LevelGuideAlertView，不属横幅）、二级页自带底栏、页
 //     内 inline 推广卡、居中弹窗、功能性小窗（音频/视频 PiP）。
+//   v3.11（横幅拦截补漏：段4 提前到 +load + 三窗 setHidden:
+//     兜底）：v3.10 真机实测未命中——用户 2026-11-27 11:33 诊
+//     断：段4 已装=YES、13 点计数全 0，而蓝色横幅（与 07:56
+//     截图同一条）本进程内确实在首页出现过。逐段反汇编定案
+//     （详见 PATCH_NOTES v3.11 段）：横幅确是 FloatNotice 一
+//     家、且必经已钩的链——两只首页容器（ZHAppExploreA /
+//     ZHFeedsContainerExploreA）的 viewDidAppear: →
+//     showUserGuideIfNeed（内含 [ZHTars statusWithKey:
+//     @"dev_remove_feed_fringe"] 远程开关与三个 pushGuide 前
+//     置）→ 模块 API getFloatNoticeViewWithCompletion: →
+//     Manager getFloatNoticeIfNeed: → getFloatNoticeSource:…
+//     （ZHGET /feed_fringe）→ +[ZHFloatNoticeView noticeView]
+//     建 ObjC 窗 → 完成回调回容器 block：[view
+//     setDetailViewURL:] → [view show] → [container
+//     setFloatNoticeView:]（weak 属性只是持窗，供
+//     viewWillDisappear:/关闭通知时 dismiss，不是展示路本
+//     身）。13 点全落空是时序问题：段4 原在 didFinishLaunching
+//     +1s 才装，而 showUserGuideIfNeed 由启动期首次
+//     viewDidAppear: 触发，取数+回调+show 整链赶在 1 秒内跑
+//     完；窗就此常驻，Manager 侧又有当日次数/日期闸门，同进
+//     程内不再重走整链 → 计数永远 0。两条旁路已证伪：容器属
+//     性的 getter/setter 在编译代码里仅上述 block 与关闭/消
+//     失路径调用（无「容器自建自展」的第二条路；先前一轮用
+//     selxref 扫 __stubs 误报零调用，实为 __objc_stubs 才对，
+//     本轮已用桩映射重扫为准）；ZHPromoWindow 的 visible /
+//     makeKeyAndVisible 在这一家无任何调用者，Swift 两窗只经
+//     自有 show 展示。本版改动：①段4 整体提前到 +load 安装
+//     （与主题段/出生钩同级：只做 IMP 交换与 addMethod、不向
+//     知乎对象发消息），+1s 的 ZPInstall 调用保留作补装（守
+//     卫在内）；②给三只通知窗各加 setHidden: 覆盖
+//     （class_addMethod 影子、只落子类不碰父类）：任何路径要
+//     把窗 setHidden:NO 一律改钉 YES 并单独计数——窗口显形
+//     的最终共同漏斗在此，在 show 空转之外再兜一层；顺带把
+//     ZHFloatNoticeView 的 showUpAnimation 换空转（唯一调用
+//     者是自家 show，防外部直调）。诊断「横幅拦截」块新增
+//     v3.11 子块（安装时机 +load/+1s + 新增点计数），与
+//     v3.10 的 13 点分开列。v3.10 的 13 点保留不撤。
 //
 //// 纯黑背景口径（本轮静态定案，详见 PATCH_NOTES v3 段）：
 //   知乎颜色总发色点是 ZHThemeManage（ZHCoreTheme）：
@@ -1885,25 +1922,82 @@ static void ZP_Banner_winShow(id self, SEL _cmd) {
     ((void (*)(id, SEL, BOOL))objc_msgSend)(self, @selector(setHidden:), YES);
 }
 
+// ---- v3.11 新增点（与 v3.10 的 13 点分开计数，便于判读）----
+// 背景见文件头 v3.11 段：真身展示链已定案、13 点全落空是安装
+// 时序问题（段4 原 +1s 装、链在启动 1 秒内跑完）。本版除把段4
+// 整体提前到 +load 外，再给三只通知窗加 setHidden: 影子兜底：
+// 窗口显形的最终共同漏斗就是 setHidden:NO——show 被空转拦下
+// 之外，任何未知路径（直接 setHidden:NO、经 ZHPromoWindow 的
+// visible、UIWindow 的 makeKeyAndVisible 内部 unhide 等）要让
+// 窗出屏都必须过这一关，一律改钉 YES。影子用 class_addMethod
+// 只落在三只子类上（静态已核三类均无自有 setHidden:），不碰
+// UIWindow/UIView/ZHPromoWindow 基类，LevelGuideAlertView 等
+// 同父类者不受影响。super 起点：安装时解析 UIView 的
+// setHidden: IMP（三类的继承链上最近的自有实现就是它——
+// ZHPromoWindow 未覆写 setHidden:，静态已核），钩子内直调。
+static NSMutableDictionary *gBannerBlockCounts311 = nil;
+static BOOL gBannerInstallAtLoad = NO;
+static int gBanner311Ok = 0, gBanner311Total = 0;
+static IMP gSuperWinSetHidden = NULL;
+static void ZPCountBannerBlock311(id self, SEL _cmd) {
+    if (!gBannerBlockCounts311) gBannerBlockCounts311 = [[NSMutableDictionary alloc] init];
+    NSString *key = [NSString stringWithFormat:@"%@ %@",
+                     NSStringFromClass(object_getClass(self)), NSStringFromSelector(_cmd)];
+    NSNumber *n = gBannerBlockCounts311[key];
+    gBannerBlockCounts311[key] = @(n ? n.unsignedLongValue + 1 : 1);
+}
+static void ZP_Banner_winSetHidden(id self, SEL _cmd, BOOL hidden) {
+    if (!hidden) ZPCountBannerBlock311(self, _cmd); // 只记「要显形」的拦截
+    if (gSuperWinSetHidden) {
+        ((void (*)(id, SEL, BOOL))gSuperWinSetHidden)(self, _cmd, YES);
+    } else {
+        struct objc_super sup = { self, class_getSuperclass(object_getClass(self)) };
+        ((void (*)(struct objc_super *, SEL, BOOL))objc_msgSendSuper)(&sup, _cmd, YES);
+    }
+}
+// showUpAnimation 的空转（v3.11 计数）：不调原实现，同轮钉隐藏。
+static void ZP_Banner_winShow311(id self, SEL _cmd) {
+    ZPCountBannerBlock311(self, _cmd);
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(self, @selector(setHidden:), YES);
+}
+
 static void ZPAppendBannerDiag(NSMutableString *s) {
     [s appendFormat:@"横幅拦截（v3.10）: 已装=%@\n", gBannerHookInstalled ? @"YES" : @"NO"];
     if (!gBannerBlockCounts || gBannerBlockCounts.count == 0) {
         [s appendString:@"  本进程尚无拦截记录\n"];
+    } else {
+        NSUInteger total = 0;
+        for (NSString *k in [[gBannerBlockCounts allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+            NSNumber *num = gBannerBlockCounts[k];
+            NSUInteger c = num ? num.unsignedLongValue : 0;
+            total += c;
+            [s appendFormat:@"  %@ = %lu\n", k, (unsigned long)c];
+        }
+        [s appendFormat:@"  合计 = %lu\n", (unsigned long)total];
+    }
+    // v3.11 子块：安装时机 + 新增点（三窗 setHidden: 影子 +
+    // showUpAnimation）单独计数，与上面 13 点分开判读。
+    [s appendFormat:@"横幅拦截（v3.11 新增）: 安装时机=%@ 新增点=%d/%d\n",
+     gBannerInstallAtLoad ? @"+load" : @"+1s", gBanner311Ok, gBanner311Total];
+    if (!gBannerBlockCounts311 || gBannerBlockCounts311.count == 0) {
+        [s appendString:@"  本进程尚无 v3.11 拦截记录\n"];
         return;
     }
-    NSUInteger total = 0;
-    for (NSString *k in [[gBannerBlockCounts allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
-        NSNumber *num = gBannerBlockCounts[k];
+    NSUInteger total311 = 0;
+    for (NSString *k in [[gBannerBlockCounts311 allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+        NSNumber *num = gBannerBlockCounts311[k];
         NSUInteger c = num ? num.unsignedLongValue : 0;
-        total += c;
+        total311 += c;
         [s appendFormat:@"  %@ = %lu\n", k, (unsigned long)c];
     }
-    [s appendFormat:@"  合计 = %lu\n", (unsigned long)total];
+    [s appendFormat:@"  合计 = %lu\n", (unsigned long)total311];
 }
 
 // 段4：横幅拦截（FloatNotice 一家；与玻璃开关无关、常开）。
 // 目标方法均已静态核实在各目标类自身方法表内（ZHSwap 改的是类
 // 自有实现，不会污染父类）。逐类独立装：一类缺失/失败只跳过该类。
+// 安装时机：v3.11 起由 +load 调用（见 ZHPluginLoader），ZPInstall
+// 的 +1s 调用为未装成时的补装（gBannerHookInstalled 守卫）。
 static void ZPInstallBannerHooks(void) {
     if (gBannerHookInstalled) return;
     int ok = 0, total = 0;
@@ -1936,8 +2030,33 @@ static void ZPInstallBannerHooks(void) {
         total += 1;
         if (ZHSwap(c, @selector(show), (IMP)ZP_Banner_winShow)) ok++;
     }
+    // ---- v3.11 新增点（单独计数 gBanner311Ok/gBanner311Total）----
+    // 三窗 setHidden: 影子：先解析 UIView 的 setHidden: IMP 备直调
+    // super（三类继承链上最近的自有实现均为它）；class_addMethod
+    // 只落子类。若某类已有自有 setHidden:（静态已核三类均无）导致
+    // addMethod 失败，只跳过该类——绝不用 ZHSwap 改它（会落到父类
+    // 实现上、污染全家）。ZHFloatNoticeView 另加 showUpAnimation
+    // 空转（防外部直调绕开 show）。
+    {
+        Method mWinHidden = class_getInstanceMethod([UIView class], @selector(setHidden:));
+        gSuperWinSetHidden = mWinHidden ? method_getImplementation(mWinHidden) : NULL;
+        for (NSString *cn in @[@"ZHFloatNoticeView", @"FloatNoticeView", @"FloatNewNoticeView"]) {
+            Class c = NSClassFromString(cn);
+            if (!c) { NSLog(@"[zhplugin] install segment banner(v3.11): %@ missing, skip shadow", cn); continue; }
+            gBanner311Total += 1;
+            if (class_addMethod(c, @selector(setHidden:), (IMP)ZP_Banner_winSetHidden, "v20@0:8B16"))
+                gBanner311Ok++;
+            else
+                NSLog(@"[zhplugin] install segment banner(v3.11): setHidden: shadow failed on %@ (own impl exists?), skip", cn);
+        }
+        if (nvCls) {
+            gBanner311Total += 1;
+            if (ZHSwap(nvCls, @selector(showUpAnimation), (IMP)ZP_Banner_winShow311)) gBanner311Ok++;
+        }
+    }
     gBannerHookInstalled = (ok > 0);
-    NSLog(@"[zhplugin] install segment banner: swapped %d/%d installed=%d", ok, total, gBannerHookInstalled);
+    NSLog(@"[zhplugin] install segment banner: swapped %d/%d installed=%d v311 %d/%d",
+          ok, total, gBannerHookInstalled, gBanner311Ok, gBanner311Total);
 }
 
 // 段1：纯黑——主题发色点 hook（与底栏/设置两段解耦，互不拖累）
@@ -2111,6 +2230,11 @@ static void ZPInstall(void) {
 @end
 @implementation ZHPluginLoader
 // +load 分工（本轮定案）：主题段在此即装，底栏/设置两段仍延迟到启动后 +1s；
+// 例外（v3.11）：横幅段（段4）也提前到 +load 装——其拦截链由首页
+// 容器首次 viewDidAppear: 在启动期触发、整链在 1 秒内跑完，+1s
+// 装等于永远迟到（v3.10 实测 13 点全零的根因，详见文件头 v3.11
+// 段）。段4 在 +load 只做 IMP 交换与 addMethod，与主题段同级最小
+// 动作；+1s 的 ZPInstall 仍会再调一次（已装守卫使其为空转）。
 // 例外（v3.3）：底栏段的 didMoveToWindow 出生钩单只提前到 +load 装（段2a），
 // 否则赶不上原栏的首次入窗——它负责的只是摘除+保留，不施工。
 // 为什么主题段必须提前：内容区画布色是页面在 viewDidLoad 建成时一次性取走的存量，
@@ -2140,6 +2264,16 @@ static void ZPInstall(void) {
         NSLog(@"[zhplugin] load: birth hook installed at +load (installed=%d)", gBirthHookInstalled);
     } @catch (NSException *e) {
         NSLog(@"[zhplugin] load: birth hook at +load FAILED (will retry at +1s): %@", e);
+    }
+    @try {
+        // 横幅段（v3.11 提前）：拦截链由首页首次 viewDidAppear: 在
+        // 启动期触发，+1s 装永远迟到（见文件头 v3.11 段）。此处只
+        // 做 IMP 交换与 addMethod，不向知乎对象发消息。
+        ZPInstallBannerHooks();
+        if (gBannerHookInstalled) gBannerInstallAtLoad = YES;
+        NSLog(@"[zhplugin] load: banner segment installed at +load (hook=%d)", gBannerHookInstalled);
+    } @catch (NSException *e) {
+        NSLog(@"[zhplugin] load: banner segment at +load FAILED (will retry at +1s): %@", e);
     }
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(zp_didFinishLaunching:)
