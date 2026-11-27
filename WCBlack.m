@@ -1,4 +1,9 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.30 (2026-11-27)：输入框四角描边
+// WCBlack.m — 微信深色模式纯黑背景 v8.31 (2026-11-27)：发送图片预览页
+// （MsgImgPickerPreviewViewController）底部面板发白——该页强制深色、
+// 顶栏与照片区都正常，唯独底部 footerBkg 的毛玻璃层落到浅色外观
+// （实测整块 #C6C6C6）。在该页 viewDidLayoutSubviews 后把 footerBkg
+// 里的 UIVisualEffectView 强制换深色毛玻璃、contentView 盖 bg 模块色。
+// v8.30：输入框四角描边
 // 比直边粗——描边轮廓比色板大一圈，四角弧线错位露出。两张 field 色板
 // （文字框 + 语音胶囊）各外扩 1pt、圆角同步加大，弧线移到描边之外吞掉。
 // v8.29：语音模式「按住
@@ -63,7 +68,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.30"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.31"); });
     return l;
 }
 
@@ -2030,7 +2035,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.30 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.31 registered in plugin list");
             break;
         }
     }
@@ -2075,6 +2080,43 @@ static void WCInstallVCTraitHook(void) {
     if (c && !gO_VC_trait) gO_VC_trait = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_VC_trait);
 }
 
+// v8.31：发送图片预览页底部面板发白。该页控制器写死深色外观
+// (overrideUserInterfaceStyle 返回 2)，顶栏 #212121、照片区纯黑都正常，
+// 只有底部 footerBkg 里的毛玻璃层（addBlurEffectWithColor: 建的
+// UIVisualEffectView）落到浅色，整块渲染成 #C6C6C6。插件的色板引擎
+// 够不着这层（它不从 WCColorMgr 取色），故在该页布局后定点处理：
+// 把 footerBkg 子树里的毛玻璃换成深色效果、contentView 盖 bg 模块色。
+// 用关联对象记住自己装的 effect 实例，微信若换回则下次布局再装。
+static char kWCForcedEffectKey;
+static IMP gO_PreviewLayout = NULL;
+static void WCDeepDarkenEffectViews(UIView *v, UIColor *cover, int depth) {
+    if (!v || depth > 6) return;
+    if ([v isKindOfClass:[UIVisualEffectView class]]) {
+        UIVisualEffectView *ev = (UIVisualEffectView *)v;
+        UIBlurEffect *mine = objc_getAssociatedObject(ev, &kWCForcedEffectKey);
+        if (ev.effect != mine) {
+            UIBlurEffect *dark = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
+            ev.effect = dark;
+            objc_setAssociatedObject(ev, &kWCForcedEffectKey, dark, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (ev.contentView.backgroundColor != cover) ev.contentView.backgroundColor = cover;
+    }
+    for (UIView *sub in v.subviews) WCDeepDarkenEffectViews(sub, cover, depth + 1);
+}
+static void WC_Preview_layout(UIViewController *s, SEL c) {
+    ((void (*)(id, SEL))gO_PreviewLayout)(s, c);
+    if (!gWCWeChatDark) return;
+    UIColor *bg = WCConfigColor(@"bg");
+    if (!bg) return;
+    UIView *footer = nil;
+    if ([s respondsToSelector:@selector(footerBkg)]) footer = [s performSelector:@selector(footerBkg)];
+    if (footer) WCDeepDarkenEffectViews(footer, bg, 0);
+}
+static void WCInstallPreviewHook(void) {
+    Class c = NSClassFromString(@"MsgImgPickerPreviewViewController");
+    if (c && !gO_PreviewLayout) gO_PreviewLayout = WCSwapOwn(c, @selector(viewDidLayoutSubviews), (IMP)WC_Preview_layout);
+}
+
 static void WCInstall(void) {
     if (!gWCNameCache) {
         gWCNameCache = [[NSMutableDictionary alloc] init];
@@ -2116,6 +2158,7 @@ static void WCInstall(void) {
     WCInstallCustomSepHook();
     WCInstallMgrHook();
     WCInstallSepDrawHook();
+    WCInstallPreviewHook();
     static id wcActiveToken = nil;
     if (!wcActiveToken) {
         wcActiveToken = [[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) { WCOnDidBecomeActive(); }] retain];
