@@ -1,36 +1,7 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v38-diag2 (2026-11-27)
-// v32：容器路线（用户点选）——不再借系统盘当选中指示：系统盘整盘隐藏，改在原栏内嵌
-//   UIGlassContainerEffect 容器，底座与选中药丸都是自己的玻璃（药丸 Regular + interactive），
-//   选中态插件自管（点击即定、药丸位置只作程序切换时的跟随校验）。几何与图标管线沿 v31。
-// v33（v32 实测两修）：①底板没了——光一个容器效果不渲染底，剩一层灰膜；容器内加回一层
-//   Clear 玻璃当底板（与药丸同在 contentView 里才能融合）。②点首页/专区时「我的」闪——
-//   排版/跟随读到的系统药丸位置是旧值（隐藏盘内药丸停在上一个槽），把刚点的选中覆盖了
-//   一拍；加点击优先窗：点击后 1.2 秒内药丸读数不得与点击结果相左。
-// v34（v33 实测两修）：底板已回来；但①「我的」还闪——1.2 秒窗过了之后，排版照样采信停在
-//   旧槽的药丸读数、把选中改回去：改「待确认」状态机，点击后药丸读数与点击一致（系统
-//   追上了）才解除待确认、恢复采信，期间读数一律不采。②点击时出现两个焦点、一个还畸形——
-//   系统盘又活了（疑似新实例，旧的藏了、新的没藏）：畸形那个是系统透镜在目标槽的弹簧
-//   中途形变、窜出胶囊上沿（我们的药丸被容器裁剪、物理上出不了胶囊）；改每轮排版全栏
-//   扫一遍、所有 PlatterView 实例一律藏，药丸跟随改读最后一个（最新）盘。
-// v35（v64 实测回滚）：全藏 PlatterView 把 tab 点击弄死了——用户裁图定案：栏里是两层
-//   胶囊叠着，点击焦点在下层（系统盘那层）、不在上层；且多藏的那只盘是 App 切页链路的
-//   承重件，藏了就切不动。盘处理整段回滚 v33 原样（只藏 HPFindPlatter 找到的那一只、
-//   几何也用它），待确认状态机保留（纯显示逻辑、不碰路由）。双焦点问题改走别的路再议。
-// v36（v65 实测三点同源）：①按住滑动时有焦点在栏后面移动；②点首页时「我的」图标闪；
-//   ③有规律——按住或点击首页/专区，焦点必先跳进「我的」。逐帧验她的录屏：点首页后药丸
-//   先正确落首页、约 0.3 秒后自己弹回「我的」，同时真焦点（波纹透镜）一直在首页那层。
-//   定案：栏里两只盘——我们藏的那只里的「药丸」是静态摆设、读数恒为最后一格（「我的」），
-//   我们的跟随一直在读它；App 真正的透镜在另一只活盘里，没被藏、在栏后面跟着手指和
-//   选中移动，就是那个第二焦点。改法：活盘本身一概不动（承重件），只藏它内部的透镜
-//   本体（纯视觉叶子）；跟随源改读这枚活透镜的位置（藏了照样读 frame）。
-// v37-diag（v66 实测更差、路线纠正）：点了没选中态、双焦点还在、一个还藏在后面——v36 的
-//   「活盘透镜」判断错了：藏的那枚不是真透镜（真焦点不在那只盘里），换的跟随源反而把
-//   选中显示弄坏。停止猜结构：本版行为整段回滚 v35，只加一个视图树 HUD——把底栏完整
-//   子树（类名/frame/hidden，Lens/Platter 行加 >>> 标记）打出来，点任意 tab 后 0.8 秒
-//   自动刷新，右上角小按钮「树」开关。拿到真实层级再定下一版方案。
-// v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
-//   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
-//   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
+// HPGlassBar.m — 虎扑悬浮底栏 v12.1 (2026-11-27)
+// 本版以 v12 为基线（用户指定「那个可用的插件」），只加两件、其余逐字不动：
+// ①嫁接 v14 起的场景桥接 HPSceneBridge——现行改包带 UIScene 清单，缺桥接会黑屏；
+// ②首页信息流上滑隐藏底栏（下滑或回到顶部恢复；只在首页根页面生效，切 tab/进帖子页强制显示）。
 // 沿革：v1 挂错类零反应；v2 挂对 Swift 真底栏但玻璃自拼、槽位自算差 34pt；v3 修位置；v4 照 XHSNative
 //   plateOn 配方重做玻璃盘并过滤隐藏 button；v5 按用户定的做法重构按钮层（同 XHSNative 的 rebuildTabs 路线）：
 //   自建按钮复制原按钮的图标/标题/颜色/内部布局，原按钮隐藏；点击不走原按钮的触摸，直接调底栏自己的
@@ -51,30 +22,6 @@ static char kSelBtnKey;
 static char kRowKey;
 static char kRowSigKey;
 static char kMyHiddenKey;
-static char kPlateTreatedKey;
-static char kTapSelKey;
-static char kPillKey;
-static char kPillObsKey;
-static char kGridXKey;
-static char kGridWKey;
-static char kContainerKey;
-static char kMyPillKey;
-static char kCurSelKey;
-static char kCapRectKey;
-static char kPillAnimKey;
-static char kTapTimeKey;
-static char kTapPendingKey;
-static char kTreeViewKey;
-static char kTreeBtnKey;
-static char kTreeTextKey;
-static void HPRefreshSelectionFromPill(UIView *bar, BOOL animated);
-static void HPRefreshTree(UIView *bar);
-static void HPSetSelection(UIView *bar, NSUInteger sel, BOOL animated);
-static void HPSchedulePillSync(UIView *bar);
-static UIView *HPFindPlatter(UIView *root, int *depthOut, NSString **supOut);
-static int gHUDLayoutCalls = 0;
-static int gHUDUpdateCalls = 0;
-
 
 #pragma mark - 工具
 
@@ -229,8 +176,8 @@ static void HPSetPlateFrame(UIView *plate, CGRect f) {
 static void HPApplyCapsuleShadow(UIView *plate) {
     CALayer *l = plate.layer;
     l.shadowColor = [UIColor blackColor].CGColor;
-    l.shadowOpacity = 0.10;
-    l.shadowRadius = 10;
+    l.shadowOpacity = 0.22;
+    l.shadowRadius = 14;
     l.shadowOffset = CGSizeMake(0, 5);
     l.shadowPath = [UIBezierPath bezierPathWithRoundedRect:plate.bounds
                                               cornerRadius:plate.bounds.size.height / 2].CGPath;
@@ -284,7 +231,6 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
 @property (nonatomic, retain) UIColor *selectedColor;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, assign) BOOL hpSelected;
-@property (nonatomic, assign) NSInteger hpIndex;
 - (void)refreshAppearance;
 @end
 
@@ -331,100 +277,24 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
 }
 - (void)hpDown {
     self.iconView.alpha = 0.55;
+    if (self.bar) HPFlashLens(self.bar, CGRectInset(self.frame, 4, 5)); // 焦点只在点击时展示
 }
 - (void)hpUp { self.iconView.alpha = 1.0; }
 - (void)hpTapped {
     self.iconView.alpha = 1.0;
     UIView *bar = self.bar;
     UIView *orig = self.origButton;
-    // v28：点击即选中——把槽位记在栏上。updateButton 钩子切换时根本不响（HUD 实测 ub 只在
-    // 启动时响 3 次），图标选中态以后以这份点击记录为准，比任何推断都直接。
-    if (bar) {
-        // v32：选中态自管——点击当场定选中并驱动自有药丸滑动，不再等任何外部信号。
-        // v33：同时记点击时刻——点击优先窗内，系统药丸的读数不许推翻点击结果。
-        objc_setAssociatedObject(bar, &kTapSelKey, @(self.hpIndex), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(bar, &kTapTimeKey, @([[NSDate date] timeIntervalSince1970]), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(bar, &kTapPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        HPSetSelection(bar, (NSUInteger)self.hpIndex, YES);
-    }
     if (bar && orig && [bar respondsToSelector:@selector(didClickedWithButton:)])
         ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(didClickedWithButton:), orig);
-    // v30/v31：路由回来后等药丸弹簧落定，再按它的位置复核一次
-    if (bar) HPSchedulePillSync(bar);
-    // v37-diag：点击后 0.8 秒刷新视图树（抓切换落定后的层级）
-    if (bar) {
-        UIView *b = bar;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ HPRefreshTree(b); });
-    }
 }
 @end
 
 // 从原按钮只取数据（标题/两态图标/两态颜色/字体），内部布局用自有固定规格，不再量原按钮的几何：
 // 图标框 27pt 居中在上、文字在下成组居中；红点只借原按钮判「有没有」，位置自定于图标右上角。
 // （v9 起与原按钮脱钩——v5–v8 的槽位/摆位都量自原按钮，长度与焦点问题反复，系此耦合。）
-// v29 去白底：原按钮给的图标若画在不透明白底上（四角不透明且近白），把亮度转成透明度——
-// 白底变透明、黑字形保持不透明、灰边按比例半透明（正好是抗锯齿该有的样子）。
-// 四角只要有一角是透明的，就认定是正常透明图标、原样返回，绝不误伤。结果按源图指针缓存。
-static UIImage *HPDeWhiteImage(UIImage *img) {
-    if (!img) return nil;
-    static NSMutableDictionary *cache = nil;
-    if (!cache) cache = [[NSMutableDictionary alloc] init];
-    NSValue *key = [NSValue valueWithPointer:(const void *)img];
-    UIImage *hit = [cache objectForKey:key];
-    if (hit) return hit;
-    UIImage *result = img;
-    CGImageRef cg = img.CGImage;
-    if (cg) {
-        size_t w = CGImageGetWidth(cg), h = CGImageGetHeight(cg);
-        if (w >= 8 && h >= 8 && w <= 240 && h <= 240) {
-            NSMutableData *px = [NSMutableData dataWithLength:w * h * 4];
-            CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-            CGContextRef ctx = CGBitmapContextCreate([px mutableBytes], w, h, 8, w * 4, cs,
-                                                     kCGImageAlphaPremultipliedLast);
-            CGColorSpaceRelease(cs);
-            if (ctx) {
-                CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)w, (CGFloat)h), cg);
-                unsigned char *p = (unsigned char *)[px mutableBytes];
-                BOOL whiteBacked = YES;
-                const size_t cxs[4] = {0, w - 3, 0, w - 3};
-                const size_t cys[4] = {0, 0, h - 3, h - 3};
-                for (int c = 0; c < 4 && whiteBacked; c++) {
-                    int sr = 0, sg = 0, sb = 0, sa = 0;
-                    for (size_t yy = 0; yy < 3; yy++) for (size_t xx = 0; xx < 3; xx++) {
-                        size_t o = ((cys[c] + yy) * w + (cxs[c] + xx)) * 4;
-                        sr += p[o]; sg += p[o + 1]; sb += p[o + 2]; sa += p[o + 3];
-                    }
-                    if (sa / 9 < 250 || sr / 9 < 235 || sg / 9 < 235 || sb / 9 < 235) whiteBacked = NO;
-                }
-                if (whiteBacked) {
-                    for (size_t i = 0; i < w * h; i++) {
-                        size_t o = i * 4;
-                        int lum = (p[o] * 299 + p[o + 1] * 587 + p[o + 2] * 114) / 1000;
-                        int a = 255 - lum; if (a < 0) a = 0;
-                        p[o]     = (unsigned char)(p[o]     * a / 255);
-                        p[o + 1] = (unsigned char)(p[o + 1] * a / 255);
-                        p[o + 2] = (unsigned char)(p[o + 2] * a / 255);
-                        p[o + 3] = (unsigned char)a;
-                    }
-                    CGImageRef outCG = CGBitmapContextCreateImage(ctx);
-                    if (outCG) {
-                        result = [UIImage imageWithCGImage:outCG scale:img.scale
-                                               orientation:img.imageOrientation];
-                        CGImageRelease(outCG);
-                    }
-                }
-                CGContextRelease(ctx);
-            }
-        }
-    }
-    [cache setObject:result forKey:key];
-    return result;
-}
-
 static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
-    gb.normalImage = HPDeWhiteImage(HPGetObj(orig, @"normalImage"));
-    gb.selectedImage = HPDeWhiteImage(HPGetObj(orig, @"hightlightImage"));
+    gb.normalImage = HPGetObj(orig, @"normalImage");
+    gb.selectedImage = HPGetObj(orig, @"hightlightImage");
     gb.normalColor = HPGetObj(orig, @"normalTitleColor");
     gb.selectedColor = HPGetObj(orig, @"highlightTitleColor");
     gb.title = HPGetObj(orig, @"title");
@@ -445,7 +315,7 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
     if (oBorder && [oBorder isDescendantOfView:bar]) {
         gb.borderView.frame = iconF;
         gb.borderView.image = [(UIImageView *)oBorder image];
-        gb.borderView.hidden = YES;  // v29：边框图不再显示——也是图标白底的嫌疑来源之一
+        gb.borderView.hidden = oBorder.hidden || gb.borderView.image == nil;
     } else {
         gb.borderView.hidden = YES;
     }
@@ -465,339 +335,118 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
     [gb refreshAppearance];
 }
 
-#pragma mark - v30 药丸跟随（选中态换源：不再靠点击/钩子推断，直接跟系统药丸本体）
 
-static NSInteger gHPLayCount = 0;
-static NSInteger gHPKvoCount = 0;
+#pragma mark - 首页滑动隐藏底栏（v12.1 新增）
 
-static void HPApplySel(UIView *bar, NSUInteger sel) {
-    NSArray *row = objc_getAssociatedObject(bar, &kRowKey);
-    for (NSUInteger i = 0; i < row.count; i++) {
-        HPGlassButton *gb = row[i];
-        BOOL s = (i == sel);
-        if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
-    }
-}
+static char kBarHiddenKey;
+static char kFeedObsKey;
+static char kFeedSVsKey;
+static char kFeedVCKey;
+static char kSVLastOffKey;
 
-// 在盘的子树里找药丸本体：槽位大小的视图（排除铺满盘的玻璃背景），取最深、最小的一只
-static UIView *HPFindPill(UIView *plate) {
-    UIView *best = nil; CGFloat bestArea = CGFLOAT_MAX; NSInteger bestDepth = -1;
-    NSMutableArray *stack = [NSMutableArray arrayWithObject:plate];
-    NSMutableArray *depths = [NSMutableArray arrayWithObject:@0];
-    while (stack.count) {
-        UIView *v = stack.lastObject; [stack removeLastObject];
-        NSNumber *dn = depths.lastObject; [depths removeLastObject];
-        NSInteger dep = dn.integerValue;
-        for (UIView *s in v.subviews) { [stack addObject:s]; [depths addObject:@(dep + 1)]; }
-        if (v == plate) continue;
-        CGRect f = v.frame;
-        BOOL full = f.size.width >= plate.bounds.size.width * 0.9 && f.size.height >= plate.bounds.size.height * 0.9;
-        if (full) continue;
-        if (f.size.width >= 50 && f.size.width <= 135 && f.size.height >= 26 && f.size.height <= 62) {
-            CGFloat area = f.size.width * f.size.height;
-            if (dep > bestDepth || (dep == bestDepth && area < bestArea)) { best = v; bestDepth = dep; bestArea = area; }
-        }
-    }
-    return best;
-}
-
-static void HPShowHUD(UIView *bar) {
-    UIWindow *win = bar.window; if (!win) return;
-    UILabel *lab = (UILabel *)[win viewWithTag:9901];
-    if (!lab) {
-        lab = [[UILabel alloc] initWithFrame:CGRectMake(6, 54, 428, 46)];
-        lab.tag = 9901; lab.numberOfLines = 2; lab.font = [UIFont systemFontOfSize:10];
-        lab.textColor = [UIColor greenColor];
-        lab.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.55];
-        lab.userInteractionEnabled = NO;
-        [win addSubview:lab]; [lab release];
-    }
-    [win bringSubviewToFront:lab];
-    UIView *pill = objc_getAssociatedObject(bar, &kPillKey);
-    NSString *pillDesc = pill ? [NSString stringWithFormat:@"%@ (%.0f,%.0f,%.0f,%.0f)",
-        NSStringFromClass(pill.class), pill.frame.origin.x, pill.frame.origin.y,
-        pill.frame.size.width, pill.frame.size.height] : @"none";
-    int pd = 0; NSString *ps = nil;
-    UIView *plate = HPFindPlatter(bar, &pd, &ps);
-    NSMutableString *subs = [NSMutableString string];
-    if (plate) for (UIView *s in plate.subviews) {
-        [subs appendFormat:@"%@(%.0f,%.0f,%.0f,%.0f) ", NSStringFromClass(s.class),
-         s.frame.origin.x, s.frame.origin.y, s.frame.size.width, s.frame.size.height];
-        if (subs.length > 140) break;
-    }
-    NSNumber *tapSel = objc_getAssociatedObject(bar, &kTapSelKey);
-    lab.text = [NSString stringWithFormat:@"HP v30 lay#%ld kvo#%ld tap=%@ pill=%@\nsubs: %@",
-        (long)gHPLayCount, (long)gHPKvoCount, tapSel ?: @"-", pillDesc, subs];
-}
-
-// 系统药丸中心落在哪个槽（纯计算、无副作用）；定位不到返回 -1
-static NSInteger HPSelectionFromPill(UIView *bar) {
-    UIView *pill = objc_getAssociatedObject(bar, &kPillKey);
-    if (!pill || !pill.superview) return -1;
-    NSNumber *gx = objc_getAssociatedObject(bar, &kGridXKey);
-    NSNumber *gw = objc_getAssociatedObject(bar, &kGridWKey);
-    NSArray *row = objc_getAssociatedObject(bar, &kRowKey);
-    if (!gx || !gw || !row.count) return -1;
-    CGRect pf = [pill.superview convertRect:pill.frame toView:bar];
-    CGFloat cx = CGRectGetMidX(pf);
-    NSInteger sel = 0; CGFloat bestD = CGFLOAT_MAX;
-    for (NSUInteger i = 0; i < row.count; i++) {
-        CGFloat c = gx.doubleValue + gw.doubleValue * ((CGFloat)i + 0.5);
-        CGFloat dd = fabs(cx - c); if (dd < bestD) { bestD = dd; sel = (NSInteger)i; }
-    }
-    return sel;
-}
-
-// 点击优先窗：刚点击过（1.2 秒内）时返回 YES 并带出点击的槽位。这段时间里系统药丸的
-// 位置是旧值（盘被藏后它停在上一个槽，v32 实测点首页/专区时「我的」被它刷亮一拍），
-// 任何与点击结果相左的药丸读数都作废；程序切页没有点击、不受此窗影响。
-static BOOL HPRecentTap(UIView *bar, NSInteger *tapSelOut) {
-    NSNumber *tt = objc_getAssociatedObject(bar, &kTapTimeKey);
-    NSNumber *ts = objc_getAssociatedObject(bar, &kTapSelKey);
-    if (!tt || !ts) return NO;
-    if ([[NSDate date] timeIntervalSince1970] - tt.doubleValue > 1.2) return NO;
-    if (tapSelOut) *tapSelOut = ts.integerValue;
-    return YES;
-}
-
-static void HPRefreshSelectionFromPill(UIView *bar, BOOL animated) {
-    NSInteger sel = HPSelectionFromPill(bar);
-    if (sel < 0) return;
-    // v34 待确认状态机：点击后系统药丸的读数先一律不采，直到它与点击的槽位一致
-    // （说明系统追上了）才解除待确认并恢复采信——v33 的 1.2 秒时间窗不够，
-    // 窗一过排版就又被停在旧槽的读数把选中改回去（「我的」闪的根源）。
-    NSNumber *pend = objc_getAssociatedObject(bar, &kTapPendingKey);
-    if (pend.boolValue) {
-        NSNumber *ts = objc_getAssociatedObject(bar, &kTapSelKey);
-        if (ts && sel == ts.integerValue) {
-            objc_setAssociatedObject(bar, &kTapPendingKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            HPSetSelection(bar, (NSUInteger)sel, animated);
-        }
-        return;
-    }
-    HPSetSelection(bar, (NSUInteger)sel, animated);
-}
-
-// 药丸的弹簧是逐帧驱动的，位置变化会连珠炮一样报过来——等它静下来 0.28 秒再对一次，
-// 不然图标跟着药丸的过冲来回翻（v30 的「点这个、其他图标在闪」就是这么来的）。
-static NSInteger gHPSettleGen = 0;
-static void HPSchedulePillSync(UIView *bar) {
-    NSInteger gen = ++gHPSettleGen;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (gen == gHPSettleGen) HPRefreshSelectionFromPill(bar, YES);
-    });
-}
-
-// v37-diag：底栏视图树 HUD——把子树类名/frame/hidden 打到浮动文本框里，
-// Lens/Platter/Glass 行加 >>> 标记。点 tab 后 0.8 秒自动刷新；小按钮「树」开关。
-// v38-diag2：v37 的按钮放在栏的父视图上点不动——父视图是全屏穿透容器、只认栏本体
-//   区域的触摸。改：按钮挪进底栏本体（右上角、胶囊右侧空区）；文本框只作显示（不
-//   依赖触摸），内容改分页——每点一次「树」翻一页（26 行/页），翻完自动关。
-@interface HPTreeHandler : NSObject
-@property (nonatomic, assign) UIView *bar;
-@property (nonatomic, assign) NSInteger page;
-- (void)toggle:(id)sender;
-@end
-static HPTreeHandler *gTreeHandler = nil;
-static void HPRenderTreePage(UIView *bar) {
-    UITextView *tv = objc_getAssociatedObject(bar, &kTreeViewKey);
-    NSString *full = objc_getAssociatedObject(bar, &kTreeTextKey);
-    if (!tv || !full) return;
-    NSArray *lines = [full componentsSeparatedByString:@"\n"];
-    NSInteger per = 26;
-    NSInteger pg = gTreeHandler.page;
-    NSInteger start = pg * per;
-    if (start >= (NSInteger)lines.count) start = 0;
-    NSInteger n = MIN(per, (NSInteger)lines.count - start);
-    tv.text = [[lines subarrayWithRange:NSMakeRange(start, n)] componentsJoinedByString:@"\n"];
-}
-@implementation HPTreeHandler
-- (void)toggle:(id)sender {
-    UITextView *tv = objc_getAssociatedObject(self.bar, &kTreeViewKey);
-    NSString *full = objc_getAssociatedObject(self.bar, &kTreeTextKey);
-    if (!tv || !full) return;
-    NSArray *lines = [full componentsSeparatedByString:@"\n"];
-    NSInteger pages = (lines.count + 25) / 26;
-    if (tv.hidden) { self.page = 0; tv.hidden = NO; }
-    else {
-        self.page++;
-        if (self.page >= pages) { tv.hidden = YES; self.page = 0; return; }
-    }
-    HPRenderTreePage(self.bar);
-}
-@end
-static void HPDumpView(UIView *v, UIView *bar, int depth, NSMutableString *out, int *lines) {
-    if (*lines > 220 || depth > 9) return;
-    (*lines)++;
-    NSMutableString *ind = [NSMutableString string];
-    for (int i = 0; i < depth; i++) [ind appendString:@"  "];
-    NSString *cls = NSStringFromClass([v class]);
-    NSString *mark = ([cls containsString:@"Lens"] || [cls containsString:@"Platter"] ||
-                       [cls containsString:@"Glass"] || [cls containsString:@"Liquid"]) ? @">>> " : @"";
-    CGRect f = (v == bar) ? v.bounds : [v convertRect:v.bounds toView:bar];
-    [out appendFormat:@"%@%@%@ f=(%.0f,%.0f,%.0f,%.0f)%@ a=%.2f\n", ind, mark, cls,
-        f.origin.x, f.origin.y, f.size.width, f.size.height,
-        v.hidden ? @" HIDDEN" : @"", v.alpha];
-    for (UIView *s in v.subviews) HPDumpView(s, bar, depth + 1, out, lines);
-}
-static void HPRefreshTree(UIView *bar) {
-    if (!objc_getAssociatedObject(bar, &kTreeViewKey)) return;
-    NSMutableString *out = [NSMutableString stringWithFormat:@"BAR %@ bounds=(%.0f,%.0f)\n",
-        NSStringFromClass([bar class]), bar.bounds.size.width, bar.bounds.size.height];
-    int lines = 0;
-    HPDumpView(bar, bar, 0, out, &lines);
-    objc_setAssociatedObject(bar, &kTreeTextKey, out, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UITextView *tv = objc_getAssociatedObject(bar, &kTreeViewKey);
-    if (tv && !tv.hidden) HPRenderTreePage(bar);
-}
-static void HPEnsureTreeHUD(UIView *bar) {
-    if (objc_getAssociatedObject(bar, &kTreeViewKey)) {
-        UIView *tb = objc_getAssociatedObject(bar, &kTreeBtnKey);
-        if (tb) [bar bringSubviewToFront:tb];
-        return;
-    }
-    UIView *host = bar.superview;
-    if (!host) return;
-    if (!gTreeHandler) gTreeHandler = [[HPTreeHandler alloc] init];
-    gTreeHandler.bar = bar;
-    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, host.bounds.size.width, 300)];
-    tv.backgroundColor = [UIColor colorWithWhite:0 alpha:0.78];
-    tv.textColor = [UIColor whiteColor];
-    tv.font = [UIFont systemFontOfSize:9];
-    tv.editable = NO;
-    tv.scrollEnabled = NO;
-    tv.hidden = YES;
-    tv.layer.zPosition = 9998;
-    tv.userInteractionEnabled = NO;
-    [host addSubview:tv];
-    objc_setAssociatedObject(bar, &kTreeViewKey, tv, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    btn.frame = CGRectMake(bar.bounds.size.width - 38, 2, 34, 26);
-    [btn setTitle:@"树" forState:UIControlStateNormal];
-    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btn.titleLabel.font = [UIFont systemFontOfSize:12];
-    btn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
-    btn.layer.cornerRadius = 6;
-    [btn addTarget:gTreeHandler action:@selector(toggle:) forControlEvents:UIControlEventTouchUpInside];
-    [bar addSubview:btn];
-    [bar bringSubviewToFront:btn];
-    objc_setAssociatedObject(bar, &kTreeBtnKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    HPRefreshTree(bar);
-}
-
-@interface HPSelectionObserver : NSObject
+@interface HPFeedObserver : NSObject
 @property (nonatomic, assign) UIView *bar;
 @end
-@implementation HPSelectionObserver
-- (void)observeValueForKeyPath:(NSString *)kp ofObject:(id)obj change:(NSDictionary *)chg context:(void *)ctx {
-    (void)kp; (void)obj; (void)chg; (void)ctx;
-    UIView *bar = self.bar; if (!bar) return;
-    HPSchedulePillSync(bar);
+
+static void HPSetBarHidden(UIView *bar, BOOL hidden, BOOL animated) {
+    NSNumber *cur = objc_getAssociatedObject(bar, &kBarHiddenKey);
+    if (cur && cur.boolValue == hidden) return;
+    objc_setAssociatedObject(bar, &kBarHiddenKey, @(hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    CGFloat ty = hidden ? (bar.bounds.size.height + 40.0) : 0.0;
+    [UIView animateWithDuration:animated ? 0.28 : 0.0 delay:0
+                        options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{ bar.transform = CGAffineTransformMakeTranslation(0, ty); }
+                     completion:nil];
+}
+
+static UITabBarController *HPFindTBC(UIView *bar) {
+    id c = HPGetObj(bar, @"controller");
+    if (c && [c isKindOfClass:[UITabBarController class]]) return (UITabBarController *)c;
+    id r = bar;
+    while (r) {
+        if ([r isKindOfClass:[UITabBarController class]]) return (UITabBarController *)r;
+        r = [r respondsToSelector:@selector(nextResponder)] ? [r nextResponder] : nil;
+    }
+    return nil;
+}
+
+@implementation HPFeedObserver
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
+                        change:(NSDictionary *)change context:(void *)context {
+    if (![object isKindOfClass:[UIScrollView class]] || !self.bar) return;
+    UIScrollView *sv = (UIScrollView *)object;
+    UITabBarController *tbc = HPFindTBC(self.bar);
+    if (!tbc || [tbc selectedIndex] != 0) return;
+    if (!sv.window) return;
+    CGFloat y = sv.contentOffset.y;
+    NSNumber *last = objc_getAssociatedObject(sv, &kSVLastOffKey);
+    CGFloat dy = last ? y - last.doubleValue : 0;
+    objc_setAssociatedObject(sv, &kSVLastOffKey, @(y), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (y <= 50) HPSetBarHidden(self.bar, NO, YES);
+    else if (dy > 4 && y > 140) HPSetBarHidden(self.bar, YES, YES);
+    else if (dy < -4) HPSetBarHidden(self.bar, NO, YES);
 }
 @end
 
-#pragma mark - v32 容器路线（UIGlassContainerEffect 内嵌原栏 + 自有药丸）
-
-// 玻璃效果视图（动态解析 UIGlassEffect；style 0=Regular 1=Clear）。返回 +1，调用方持有。
-static UIVisualEffectView *HPGlassView(NSInteger style, BOOL interactive) {
-    UIVisualEffect *fx = nil;
-    Class glassCls = NSClassFromString(@"UIGlassEffect");
-    if (glassCls && [glassCls respondsToSelector:@selector(effectWithStyle:)])
-        fx = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassCls, @selector(effectWithStyle:), style);
-    if (fx && interactive && [fx respondsToSelector:@selector(setInteractive:)])
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(fx, @selector(setInteractive:), YES);
-    if (!fx) fx = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
-    UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:fx];
-    v.userInteractionEnabled = NO;
-    v.layer.masksToBounds = YES;
-    return v;
+static void HPCollectFeedSVs(UIView *v, NSMutableArray *out) {
+    if (out.count >= 4) return;
+    if ([v isKindOfClass:[UIScrollView class]]) {
+        UIScrollView *sv = (UIScrollView *)v;
+        CGRect f = sv.frame;
+        if (f.size.width >= 200 && f.size.height >= 300 &&
+            sv.contentSize.height > f.size.height * 1.15)
+            [out addObject:sv];
+    }
+    for (UIView *s in v.subviews) HPCollectFeedSVs(s, out);
 }
 
-// 容器只建一次：外壳（挂投影）→ UIGlassContainerEffect 视图 → contentView 里放自有药丸。
-// 底座就是容器效果本身（照公开示例的做法，不再叠一层独立玻璃免得双份发灰）；
-// 自建按钮行由排版函数随后加进 contentView。
-static void HPEnsureContainer(UIView *bar) {
-    if (objc_getAssociatedObject(bar, &kContainerKey)) return;
-    UIView *shell = [[UIView alloc] initWithFrame:CGRectZero];
-    shell.backgroundColor = [UIColor clearColor];
-    shell.tag = 1002;
-    UIVisualEffectView *cont = nil;
-    Class contCls = NSClassFromString(@"UIGlassContainerEffect");
-    if (contCls) {
-        id cfx = [[contCls alloc] init];
-        cont = [[UIVisualEffectView alloc] initWithEffect:cfx];
-        [cfx release];
+static void HPBindFeedScrollViews(UIView *bar) {
+    UITabBarController *tbc = HPFindTBC(bar);
+    HPFeedObserver *obs = objc_getAssociatedObject(bar, &kFeedObsKey);
+    if (!obs) {
+        obs = [[HPFeedObserver alloc] init];
+        obs.bar = bar;
+        objc_setAssociatedObject(bar, &kFeedObsKey, obs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [obs release];
     }
-    if (!cont) cont = [[UIVisualEffectView alloc] initWithEffect:
-        [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]];
-    cont.layer.masksToBounds = YES;
-    [shell addSubview:cont];
-    [cont release];
-    // v33：底板——v32 只有容器效果本身、不渲染底，只剩一层灰膜（用户实测）。补一层 Clear
-    // 玻璃铺满容器当底板，与药丸同住 contentView，容器的融合才有对象。
-    UIVisualEffectView *base = HPGlassView(1, NO); // Clear
-    base.layer.cornerRadius = 31;
-    [cont.contentView addSubview:base];
-    [base release];
-    UIVisualEffectView *pill = HPGlassView(0, YES); // Regular + interactive（用户定的样本口径）
-    pill.layer.cornerRadius = 26;
-    [cont.contentView addSubview:pill];
-    objc_setAssociatedObject(bar, &kMyPillKey, pill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [pill release];
-    [bar insertSubview:shell atIndex:0];
-    objc_setAssociatedObject(bar, &kContainerKey, shell, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [shell release];
-}
-
-static void HPSetContainerFrame(UIView *shell, CGRect f) {
-    if (!shell) return;
-    shell.frame = f;
-    UIVisualEffectView *cont = (UIVisualEffectView *)shell.subviews.firstObject;
-    if (!cont) return;
-    cont.frame = shell.bounds;
-    cont.layer.cornerRadius = f.size.height / 2;
-    // 底板是 contentView 的第一个子视图（HPEnsureContainer 里先于药丸加入）
-    UIVisualEffectView *base = (UIVisualEffectView *)cont.contentView.subviews.firstObject;
-    if (base) {
-        base.frame = cont.bounds;
-        base.layer.cornerRadius = f.size.height / 2;
+    NSMutableArray *bound = objc_getAssociatedObject(bar, &kFeedSVsKey);
+    UIViewController *selVC = tbc ? [tbc selectedViewController] : nil;
+    UIViewController *rootVC = selVC;
+    if ([selVC isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *nav = (UINavigationController *)selVC;
+        rootVC = (nav.viewControllers.count > 1) ? nil : nav.viewControllers.firstObject;
     }
-    // 夜间亮边沿 v12 口径：深色给容器 0.5pt 淡白边定轮廓，白天不加
-    BOOL dark = shell.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
-    cont.layer.borderWidth = dark ? 0.5 : 0.0;
-    cont.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
-}
-
-// 选中态唯一入口：记当前槽、刷按钮两态、把自有药丸放到目标槽（可带弹簧动画）。
-// 药丸几何走排版存下的格（栏坐标）减容器原点；动画进行中排版不抢它的 frame。
-static void HPSetSelection(UIView *bar, NSUInteger sel, BOOL animated) {
-    NSArray *row = objc_getAssociatedObject(bar, &kRowKey);
-    if (row.count && sel >= row.count) sel = row.count - 1;
-    objc_setAssociatedObject(bar, &kCurSelKey, @(sel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    HPApplySel(bar, sel);
-    UIView *pill = objc_getAssociatedObject(bar, &kMyPillKey);
-    NSNumber *gx = objc_getAssociatedObject(bar, &kGridXKey);
-    NSNumber *gw = objc_getAssociatedObject(bar, &kGridWKey);
-    NSValue *capV = objc_getAssociatedObject(bar, &kCapRectKey);
-    if (!pill || !gx || !gw || !capV) return;
-    CGRect cap = [capV CGRectValue];
-    CGRect tf = CGRectMake(gx.doubleValue + gw.doubleValue * (CGFloat)sel + 4 - cap.origin.x,
-                           5, gw.doubleValue - 8, cap.size.height - 10);
-    pill.layer.cornerRadius = tf.size.height / 2;
-    if (animated) {
-        objc_setAssociatedObject(bar, &kPillAnimKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [UIView animateWithDuration:0.45 delay:0
-             usingSpringWithDamping:0.72 initialSpringVelocity:0.5
-             options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
-             animations:^{ pill.frame = tf; }
-             completion:^(BOOL finished) {
-                 (void)finished;
-                 objc_setAssociatedObject(bar, &kPillAnimKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-             }];
-    } else {
-        pill.frame = tf;
+    BOOL onHome = tbc && [tbc selectedIndex] == 0 && rootVC != nil;
+    UIViewController *boundVC = objc_getAssociatedObject(bar, &kFeedVCKey);
+    if (!onHome) {
+        if (bound.count) {
+            for (UIScrollView *sv in bound) {
+                @try { [sv removeObserver:obs forKeyPath:@"contentOffset"]; } @catch (NSException *e) {}
+            }
+            [bound removeAllObjects];
+            objc_setAssociatedObject(bar, &kFeedVCKey, nil, OBJC_ASSOCIATION_ASSIGN);
+        }
+        HPSetBarHidden(bar, NO, YES);
+        return;
     }
+    if (boundVC == rootVC && bound.count > 0) return;
+    if (bound) for (UIScrollView *sv in bound) {
+        @try { [sv removeObserver:obs forKeyPath:@"contentOffset"]; } @catch (NSException *e) {}
+    }
+    NSMutableArray *found = [NSMutableArray array];
+    if (rootVC.view) HPCollectFeedSVs(rootVC.view, found);
+    if (!bound) {
+        bound = [NSMutableArray array];
+        objc_setAssociatedObject(bar, &kFeedSVsKey, bound, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [bound removeAllObjects];
+    for (UIScrollView *sv in found) {
+        [sv addObserver:obs forKeyPath:@"contentOffset"
+                options:NSKeyValueObservingOptionNew context:NULL];
+        objc_setAssociatedObject(sv, &kSVLastOffKey, @(sv.contentOffset.y), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [bound addObject:sv];
+    }
+    objc_setAssociatedObject(bar, &kFeedVCKey, rootVC, OBJC_ASSOCIATION_ASSIGN);
 }
 
 #pragma mark - 布局（Swift 真底栏：重构按钮层）
@@ -815,22 +464,14 @@ static void HPEnsurePlates(UIView *bar) {
 static void HPHideBarBackground(UIView *bar, NSArray *btns) {
     UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
     UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
-    UIView *contShell = objc_getAssociatedObject(bar, &kContainerKey);
     NSArray *mine = objc_getAssociatedObject(bar, &kRowKey);
     if ([bar respondsToSelector:@selector(backgroundView)]) {
         UIView *bg = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(backgroundView));
         if (bg && !HPIsAncestorOfAny(bg, btns)) bg.hidden = YES;
     }
-    // mixView：虎扑自己的混合层，跟虎扑主题走（浅色白、深色黑）、不跟系统外观——系统深色+
-    // 虎扑浅色时它就是栏底下那块白板（用户实测：开虎扑深色后它变黑）。藏掉，少一层轮廓、
-    // 也少一层蒙在玻璃上的灰（v15 同处理）。
-    if ([bar respondsToSelector:@selector(mixView)]) {
-        UIView *mv = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(mixView));
-        if (mv && !HPIsAncestorOfAny(mv, btns)) mv.hidden = YES;
-    }
     CGRect bounds = bar.bounds;
     for (UIView *v in bar.subviews) {
-        if (v == capsule || v == lens || v == contShell) continue;
+        if (v == capsule || v == lens) continue;
         if ([mine containsObject:v]) continue;
         if (HPIsAncestorOfAny(v, btns)) continue;
         CGRect f = v.frame;
@@ -841,42 +482,13 @@ static void HPHideBarBackground(UIView *bar, NSArray *btns) {
     bar.backgroundColor = [UIColor clearColor];
 }
 
-// 递归找系统选择盘（HUD 实测它就是底栏的直接子视图，递归只是保险）。
-static UIView *HPFindPlatter(UIView *root, int *depthOut, NSString **supOut) {
-    NSMutableArray *level = [NSMutableArray arrayWithObject:root];
-    for (int d = 0; d < 6; d++) {
-        NSMutableArray *next = [NSMutableArray array];
-        for (UIView *v in level) {
-            if (v != root && [NSStringFromClass([v class]) containsString:@"PlatterView"] &&
-                v.frame.size.width > 30 && v.frame.size.height > 20) {
-                if (depthOut) *depthOut = d;
-                if (supOut) *supOut = NSStringFromClass([v.superview class]);
-                return v;
-            }
-            [next addObjectsFromArray:v.subviews];
-        }
-        level = next;
-    }
-    return nil;
-}
 static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     CGRect bounds = bar.bounds;
     if (bounds.size.width < 50 || bounds.size.height < 30) return;
     NSArray *btns = HPBarButtons(bar, btnCls);
     if (btns.count == 0) return;
-    HPEnsureContainer(bar);
+    HPEnsurePlates(bar);
     HPHideBarBackground(bar, btns);
-
-    // 系统选择盘（v32）：整盘隐藏——选中指示改由容器里的自有药丸承担。盘只剩两个用处：
-    // 它的框仍是胶囊几何的定案来源（v28)；它内部的药丸在程序切页时仍会移动，
-    // KVO 跟随它做程序切换的选中校验。藏视图不影响它内部排版与动画。
-    // v35 回滚：v64 把所有 PlatterView 全藏之后 tab 点击失效——多藏的那只盘是 App
-    // 切页链路的承重件。此段恢复 v33 原样：只藏找到的那一只、几何也用它。
-    int hpPlateDepth = 0;
-    NSString *hpPlateSup = @"-";
-    UIView *hpPlate = HPFindPlatter(bar, &hpPlateDepth, &hpPlateSup);
-    if (hpPlate) hpPlate.hidden = YES;
-    CGRect plateInBar = hpPlate ? [bar convertRect:hpPlate.bounds fromView:hpPlate] : CGRectZero;
 
     // 按钮集合签名（指针序列）变了才重建自建行
     NSMutableString *sig = [NSMutableString string];
@@ -886,13 +498,11 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     if (!row || ![sig isEqualToString:oldSig]) {
         if (row) for (HPGlassButton *gb in row) [gb removeFromSuperview];
         row = [NSMutableArray array];
-        UIView *contShell = objc_getAssociatedObject(bar, &kContainerKey);
-        UIVisualEffectView *cont = (UIVisualEffectView *)contShell.subviews.firstObject;
         for (UIView *orig in btns) {
             HPGlassButton *gb = [[HPGlassButton alloc] initWithFrame:CGRectZero];
             gb.origButton = orig;
             gb.bar = bar;
-            [cont.contentView addSubview:gb];
+            [bar addSubview:gb];
             [row addObject:gb];
             [gb release];
             objc_setAssociatedObject(orig, &kMyHiddenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -901,110 +511,61 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
         objc_setAssociatedObject(bar, &kRowSigKey, [sig copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    // 槽位几何（v26 改）：按原按钮行实测。系统选择盘照原按钮框生成，v25 的固定 86/58 与它
-    // 差着几 pt、两条轮廓错开就是「双层」；同源之后盘、透镜、自建按钮共用一套槽位。
-    // 实测不可信（槽宽过窄/总宽超界）时整段回落 v25 固定规格。
+    // 槽位几何：固定规格（槽宽 86、高 58、端部留白 12），只借原按钮行定纵向位置；宽度只随按钮数变
     CGRect rowRect = CGRectNull;
     for (UIView *orig in btns) {
         CGRect f = HPRectInBar(bar, orig);
         rowRect = CGRectIsNull(rowRect) ? f : CGRectUnion(rowRect, f);
     }
-    CGFloat slotW = rowRect.size.width / (CGFloat)btns.count;
-    CGFloat capH = rowRect.size.height + 10;
-    CGFloat capW = rowRect.size.width + 24;
-    BOOL measured = (slotW >= 40 && capW <= bounds.size.width - 20 && rowRect.size.height >= 30);
-    if (!measured) {
-        slotW = 86.0; capH = 58.0; capW = slotW * (CGFloat)btns.count + 24;
-        if (capW > bounds.size.width - 20) {
-            capW = bounds.size.width - 20;
-            slotW = (capW - 24) / (CGFloat)btns.count;
-        }
+    CGFloat slotW = 86.0;
+    CGFloat capH = 58.0;
+    CGFloat capW = slotW * (CGFloat)btns.count + 24;
+    if (capW > bounds.size.width - 20) {
+        capW = bounds.size.width - 20;
+        slotW = (capW - 24) / (CGFloat)btns.count;
     }
-    CGFloat capX = measured ? (CGRectGetMinX(rowRect) - 12) : ((bounds.size.width - capW) / 2);
-    CGFloat slotX0 = measured ? CGRectGetMinX(rowRect) : (capX + 12);
+    CGFloat capX = (bounds.size.width - capW) / 2;
     CGFloat capY = CGRectGetMidY(rowRect) - capH / 2;
     if (capY < 2) capY = 2;
     if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
     CGRect capRect = CGRectMake(capX, capY, capW, capH);
-    // v28 治双层：HUD 实测系统盘是 (83,0,274,62)、我的胶囊是 (79,2,282,58)——两只近乎同大的
-    // 圆角框错开 (4,-2) 叠在一起，两条轮廓全程贴着跑，就是「双层」。盘的框是常量（两次 HUD
-    // 读数一致），胶囊直接取盘的框，两条轮廓并成一条；盘的 frame/动画一概不碰。
-    if (hpPlate && plateInBar.size.width >= 200 && plateInBar.size.width <= 400 &&
-        plateInBar.size.height >= 40 && plateInBar.size.height <= 80) {
-        capRect = plateInBar;
-        capX = capRect.origin.x; capY = capRect.origin.y; capW = capRect.size.width; capH = capRect.size.height;
-    }
-    // v30：存槽位格（药丸跟随换算用）+ 药丸定位/观察 + 盘背景玻璃换 Clear（去灰，只做一次）
-    objc_setAssociatedObject(bar, &kGridXKey, @(slotX0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(bar, &kGridWKey, @(slotW), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (hpPlate) {
-        UIView *pill = HPFindPill(hpPlate);
-        UIView *oldPill = objc_getAssociatedObject(bar, &kPillKey);
-        if (pill != oldPill) {
-            HPSelectionObserver *obs = objc_getAssociatedObject(bar, &kPillObsKey);
-            if (!obs) {
-                obs = [[HPSelectionObserver alloc] init];
-                obs.bar = bar;
-                objc_setAssociatedObject(bar, &kPillObsKey, obs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                [obs release];
-            }
-            if (oldPill) {
-                [oldPill removeObserver:obs forKeyPath:@"frame"];
-                [oldPill removeObserver:obs forKeyPath:@"center"];
-                [oldPill removeObserver:obs forKeyPath:@"bounds"];
-            }
-            if (pill) {
-                [pill addObserver:obs forKeyPath:@"frame" options:0 context:NULL];
-                [pill addObserver:obs forKeyPath:@"center" options:0 context:NULL];
-                [pill addObserver:obs forKeyPath:@"bounds" options:0 context:NULL];
-            }
-            objc_setAssociatedObject(bar, &kPillKey, pill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        if (pill) HPRefreshSelectionFromPill(bar, NO);
-    }
-    // v30 对中：按钮格回 v14 的实测格（slotX0/slotW，盘覆盖不许动它）——v28 挪成 138、
-    // v29 挪成盘三分格 128.7，她两次都判不居中；v45/v56 用的就是这套格、当时没这条意见。
 
-    // 同步数据 + 隐藏原按钮（按钮住在容器 contentView 里，frame 用容器坐标 = 栏坐标 - 胶囊原点）
+    // 同步数据 + 隐藏原按钮
     for (NSUInteger i = 0; i < btns.count; i++) {
         UIView *orig = btns[i];
         HPGlassButton *gb = row[i];
-        gb.frame = measured ? CGRectMake(slotX0 + (CGFloat)i * slotW - capX, rowRect.origin.y - capY, slotW, rowRect.size.height)
-                            : CGRectMake(slotX0 + (CGFloat)i * slotW - capX, 2, slotW, capH - 4);
-        gb.hpIndex = (NSInteger)i;
+        gb.frame = CGRectMake(capX + 12 + (CGFloat)i * slotW, capY, slotW, capH);
         HPSyncGlassButton(gb, bar, orig);
         orig.hidden = YES;
     }
 
-    // 选中态（v32）：自管。排版时的优先级：系统药丸位置（程序切页的权威值）> 点击记录 >
-    // 上次状态 > 0；定下后按钮两态与自有药丸位置都由 HPSetSelection 一并落位。
-    objc_setAssociatedObject(bar, &kCapRectKey, [NSValue valueWithCGRect:capRect], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    NSNumber *tapSel = objc_getAssociatedObject(bar, &kTapSelKey);
-    NSInteger selNow = -1;
-    // v34 待确认：点击后、系统还没追上之前，排版一律以点击的槽位为准
-    NSNumber *pend = objc_getAssociatedObject(bar, &kTapPendingKey);
-    if (pend.boolValue && tapSel && tapSel.unsignedIntegerValue < row.count) {
-        selNow = tapSel.integerValue;
-        if (HPSelectionFromPill(bar) == selNow)
-            objc_setAssociatedObject(bar, &kTapPendingKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // 选中态：以 updateButton 钩子记录的原按钮为准
+    UIView *selBtn = objc_getAssociatedObject(bar, &kSelBtnKey);
+    NSUInteger sel = selBtn ? [btns indexOfObject:selBtn] : NSNotFound;
+    if (sel == NSNotFound) sel = 0;
+    for (NSUInteger i = 0; i < row.count; i++) {
+        HPGlassButton *gb = row[i];
+        BOOL s = (i == sel);
+        if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
     }
-    if (selNow < 0) selNow = HPSelectionFromPill(bar);
-    if (selNow < 0 && tapSel && tapSel.unsignedIntegerValue < row.count) selNow = tapSel.integerValue;
-    if (selNow < 0) {
-        NSNumber *cur = objc_getAssociatedObject(bar, &kCurSelKey);
-        if (cur && cur.unsignedIntegerValue < row.count) selNow = cur.integerValue;
-    }
-    if (selNow < 0) selNow = 0;
 
-    // 容器落位 + 投影；自有药丸在没有动画进行时由 HPSetSelection 瞬时归位（动画中不抢 frame）
-    UIView *contShell = objc_getAssociatedObject(bar, &kContainerKey);
-    HPSetContainerFrame(contShell, capRect);
-    HPApplyCapsuleShadow(contShell);
-    NSNumber *anim = objc_getAssociatedObject(bar, &kPillAnimKey);
-    if (!anim.boolValue) HPSetSelection(bar, (NSUInteger)selNow, NO);
-    else HPApplySel(bar, (NSUInteger)selNow);
-    [bar bringSubviewToFront:contShell];
-    HPEnsureTreeHUD(bar); // v37-diag
+    // 胶囊 + 透镜：透镜贴合整个槽位（横向内缩 4、纵向内缩 5），不再比按钮小一圈
+    UIView *capsule = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    HPSetPlateFrame(capsule, capRect);
+    HPApplyCapsuleShadow(capsule);
+    CGFloat lensH = capH - 10;
+    HPSetPlateFrame(lens, CGRectMake(capX + 12 + (CGFloat)sel * slotW + 4,
+                                     capY + (capH - lensH) / 2, slotW - 8, lensH));
+    // 透镜不常驻：布局只管把它放到选中槽位，显隐由点击闪现控制（闪现中则不干预）
+    NSNumber *flashing = objc_getAssociatedObject(bar, &kLensFlashActiveKey);
+    if (!flashing.boolValue) { lens.hidden = YES; lens.alpha = 0.0; }
+
+    // 层级：胶囊 < 透镜 < 自建按钮
+    [bar bringSubviewToFront:lens];
+    for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
+
+    HPBindFeedScrollViews(bar); // v12.1：首页滑动隐藏底栏的滚动源绑定
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -1068,7 +629,6 @@ static void HP_SwiftBar_layoutSubviews(UIView *self, SEL _cmd) {
     HPLayoutSwiftBar(self, gSwiftBtnCls);
 }
 static void HP_SwiftBar_updateButton(UIView *self, SEL _cmd, UIView *btn, BOOL selected) {
-    gHUDUpdateCalls++;
     ((void (*)(id, SEL, id, BOOL))gOrigSwiftUpdateBtn)(self, _cmd, btn, selected);
     if (selected && btn) {
         objc_setAssociatedObject(self, &kSelBtnKey, btn, OBJC_ASSOCIATION_ASSIGN);
@@ -1103,28 +663,8 @@ static IMP HPSwap(Class cls, SEL sel, IMP newImp) {
     return method_setImplementation(m, newImp);
 }
 
-static CGRect (*gOrigStatusBarFrame)(id, SEL) = NULL;
-static CGRect HP_UIApp_statusBarFrame(id self, SEL _cmd) {
-    UIApplication *app = (UIApplication *)self;
-    for (UIScene *s in app.connectedScenes) {
-        if ([s isKindOfClass:[UIWindowScene class]] &&
-            s.activationState == UISceneActivationStateForegroundActive) {
-            return ((UIWindowScene *)s).statusBarManager.statusBarFrame;
-        }
-    }
-    CGRect orig = gOrigStatusBarFrame ? gOrigStatusBarFrame(self, _cmd) : CGRectZero;
-    if (orig.size.height > 0) return orig;
-    // 场景还没连上时系统给 0；App 启动时读到 0 就会把顶部排到灵动岛下面，先按机型给真值兜底
-    CGFloat h = (UIScreen.mainScreen.bounds.size.height >= 852) ? 59 : 44;
-    return CGRectMake(0, 0, UIScreen.mainScreen.bounds.size.width, h);
-}
-
 static BOOL gInstalled = NO;
 static void HPInstall(void) {
-    if (!gOrigStatusBarFrame) {
-        gOrigStatusBarFrame = (CGRect (*)(id, SEL))HPSwap([UIApplication class],
-            @selector(statusBarFrame), (IMP)HP_UIApp_statusBarFrame);
-    }
     if (gInstalled) return;
     gSwiftBarCls = HPFindClass(@"_TtC4HPUI10HPUITabBar", @"HPUITabBar", @[@"Button", @"Config"]);
     gSwiftBtnCls = HPFindClass(@"_TtC4HPUI16HPUITabBarButton", @"HPUITabBarButton", @[]);
@@ -1143,10 +683,9 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v38-diag2 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v12.1 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
-
 
 // ===== 场景桥接（v14 新增）：改戳包带 UIScene 清单启动时，App 仍按老式在 AppDelegate 里建 window，
 // 没挂到场景上会黑屏（v44 实测）。本类在清单里被指名为场景委托，场景连接时把 AppDelegate 的
