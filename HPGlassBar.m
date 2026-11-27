@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v28 (2026-11-27)
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v29 (2026-11-27)
 // v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
 //   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
 //   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
@@ -294,8 +294,15 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
     if (bar) {
         NSArray *row = objc_getAssociatedObject(bar, &kRowKey);
         NSUInteger idx = [row indexOfObject:self];
-        if (idx != NSNotFound)
+        if (idx != NSNotFound) {
             objc_setAssociatedObject(bar, &kTapSelKey, @(idx), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            // v29：不等排版——切换后这个 App 不再触发底栏排版（v28 的记录没人消费、图标照旧冻住）。
+            // 点击当场把整行选中态刷掉，排版里的判定只作程序化切页的兜底。
+            for (HPGlassButton *gb in row) {
+                BOOL s = (gb == self);
+                if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
+            }
+        }
     }
     if (bar && orig && [bar respondsToSelector:@selector(didClickedWithButton:)])
         ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(didClickedWithButton:), orig);
@@ -305,9 +312,68 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
 // 从原按钮只取数据（标题/两态图标/两态颜色/字体），内部布局用自有固定规格，不再量原按钮的几何：
 // 图标框 27pt 居中在上、文字在下成组居中；红点只借原按钮判「有没有」，位置自定于图标右上角。
 // （v9 起与原按钮脱钩——v5–v8 的槽位/摆位都量自原按钮，长度与焦点问题反复，系此耦合。）
+// v29 去白底：原按钮给的图标若画在不透明白底上（四角不透明且近白），把亮度转成透明度——
+// 白底变透明、黑字形保持不透明、灰边按比例半透明（正好是抗锯齿该有的样子）。
+// 四角只要有一角是透明的，就认定是正常透明图标、原样返回，绝不误伤。结果按源图指针缓存。
+static UIImage *HPDeWhiteImage(UIImage *img) {
+    if (!img) return nil;
+    static NSMutableDictionary *cache = nil;
+    if (!cache) cache = [[NSMutableDictionary alloc] init];
+    NSValue *key = [NSValue valueWithPointer:(const void *)img];
+    UIImage *hit = [cache objectForKey:key];
+    if (hit) return hit;
+    UIImage *result = img;
+    CGImageRef cg = img.CGImage;
+    if (cg) {
+        size_t w = CGImageGetWidth(cg), h = CGImageGetHeight(cg);
+        if (w >= 8 && h >= 8 && w <= 240 && h <= 240) {
+            NSMutableData *px = [NSMutableData dataWithLength:w * h * 4];
+            CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+            CGContextRef ctx = CGBitmapContextCreate([px mutableBytes], w, h, 8, w * 4, cs,
+                                                     kCGImageAlphaPremultipliedLast);
+            CGColorSpaceRelease(cs);
+            if (ctx) {
+                CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)w, (CGFloat)h), cg);
+                unsigned char *p = (unsigned char *)[px mutableBytes];
+                BOOL whiteBacked = YES;
+                const size_t cxs[4] = {0, w - 3, 0, w - 3};
+                const size_t cys[4] = {0, 0, h - 3, h - 3};
+                for (int c = 0; c < 4 && whiteBacked; c++) {
+                    int sr = 0, sg = 0, sb = 0, sa = 0;
+                    for (size_t yy = 0; yy < 3; yy++) for (size_t xx = 0; xx < 3; xx++) {
+                        size_t o = ((cys[c] + yy) * w + (cxs[c] + xx)) * 4;
+                        sr += p[o]; sg += p[o + 1]; sb += p[o + 2]; sa += p[o + 3];
+                    }
+                    if (sa / 9 < 250 || sr / 9 < 235 || sg / 9 < 235 || sb / 9 < 235) whiteBacked = NO;
+                }
+                if (whiteBacked) {
+                    for (size_t i = 0; i < w * h; i++) {
+                        size_t o = i * 4;
+                        int lum = (p[o] * 299 + p[o + 1] * 587 + p[o + 2] * 114) / 1000;
+                        int a = 255 - lum; if (a < 0) a = 0;
+                        p[o]     = (unsigned char)(p[o]     * a / 255);
+                        p[o + 1] = (unsigned char)(p[o + 1] * a / 255);
+                        p[o + 2] = (unsigned char)(p[o + 2] * a / 255);
+                        p[o + 3] = (unsigned char)a;
+                    }
+                    CGImageRef outCG = CGBitmapContextCreateImage(ctx);
+                    if (outCG) {
+                        result = [UIImage imageWithCGImage:outCG scale:img.scale
+                                               orientation:img.imageOrientation];
+                        CGImageRelease(outCG);
+                    }
+                }
+                CGContextRelease(ctx);
+            }
+        }
+    }
+    [cache setObject:result forKey:key];
+    return result;
+}
+
 static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
-    gb.normalImage = HPGetObj(orig, @"normalImage");
-    gb.selectedImage = HPGetObj(orig, @"hightlightImage");
+    gb.normalImage = HPDeWhiteImage(HPGetObj(orig, @"normalImage"));
+    gb.selectedImage = HPDeWhiteImage(HPGetObj(orig, @"hightlightImage"));
     gb.normalColor = HPGetObj(orig, @"normalTitleColor");
     gb.selectedColor = HPGetObj(orig, @"highlightTitleColor");
     gb.title = HPGetObj(orig, @"title");
@@ -328,7 +394,7 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
     if (oBorder && [oBorder isDescendantOfView:bar]) {
         gb.borderView.frame = iconF;
         gb.borderView.image = [(UIImageView *)oBorder image];
-        gb.borderView.hidden = oBorder.hidden || gb.borderView.image == nil;
+        gb.borderView.hidden = YES;  // v29：边框图不再显示——也是图标白底的嫌疑来源之一
     } else {
         gb.borderView.hidden = YES;
     }
@@ -420,16 +486,6 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     NSString *hpPlateSup = @"-";
     UIView *hpPlate = HPFindPlatter(bar, &hpPlateDepth, &hpPlateSup);
     CGRect plateInBar = hpPlate ? [bar convertRect:hpPlate.bounds fromView:hpPlate] : CGRectZero;
-    if (hpPlate && !objc_getAssociatedObject(hpPlate, &kPlateTreatedKey)) {
-        objc_setAssociatedObject(hpPlate, &kPlateTreatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        // v28 去灰：盘和其实心子视图的纯色填充直接清掉（v26 的 alpha 减半没看出来变化），
-        // 玻璃效果视图不动——盘的玻璃采样和弹簧都不走填充这条路。
-        if (hpPlate.backgroundColor) hpPlate.backgroundColor = [UIColor clearColor];
-        for (UIView *sub in hpPlate.subviews) {
-            if ([sub isKindOfClass:[UIVisualEffectView class]]) continue;
-            if (sub.backgroundColor) sub.backgroundColor = [UIColor clearColor];
-        }
-    }
 
     // 按钮集合签名（指针序列）变了才重建自建行
     NSMutableString *sig = [NSMutableString string];
@@ -485,13 +541,18 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
         capRect = plateInBar;
         capX = capRect.origin.x; capY = capRect.origin.y; capW = capRect.size.width; capH = capRect.size.height;
     }
+    // v29 对中：焦点药丸住在盘里、按盘的格子居中；按钮网格改用盘的等分格。
+    // v28 只把胶囊挪到盘的框、按钮还按旧格（起 95、步 86）摆，图标整体偏右约 8pt，
+    // 焦点和图标对不上就是这么来的。
+    CGFloat gridX = capX + 12, gridSlotW = slotW;
+    if (!measured && hpPlate) { gridX = plateInBar.origin.x; gridSlotW = plateInBar.size.width / (CGFloat)btns.count; }
 
     // 同步数据 + 隐藏原按钮
     for (NSUInteger i = 0; i < btns.count; i++) {
         UIView *orig = btns[i];
         HPGlassButton *gb = row[i];
         gb.frame = measured ? CGRectMake(slotX0 + (CGFloat)i * slotW, rowRect.origin.y, slotW, rowRect.size.height)
-                            : CGRectMake(capX + 12 + (CGFloat)i * slotW, capY, slotW, capH);
+                            : CGRectMake(gridX + (CGFloat)i * gridSlotW, capY, gridSlotW, capH);
         HPSyncGlassButton(gb, bar, orig);
         orig.hidden = YES;
     }
@@ -528,11 +589,14 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
     HPSetPlateFrame(capsule, capRect);
     HPApplyCapsuleShadow(capsule);
+    // v29 去灰：胶囊（清玻璃+浅色填充）压到盘的上层，把盘的灰洗淡一层——只动我方视图层级，
+    // 盘自己的东西一概不碰（v28 清它填充的路已撤：对灰无效、还疑似带出图标白底）。
+    if (hpPlate) [bar bringSubviewToFront:capsule];
     CGFloat lensH = capH - 10;
     HPSetPlateFrame(lens, measured ? CGRectMake(slotX0 + (CGFloat)sel * slotW - 4, rowRect.origin.y - 3,
                                                 slotW + 8, rowRect.size.height + 6)
-                                   : CGRectMake(capX + 12 + (CGFloat)sel * slotW + 4,
-                                                capY + (capH - lensH) / 2, slotW - 8, lensH));
+                                   : CGRectMake(gridX + (CGFloat)sel * gridSlotW + 4,
+                                                capY + (capH - lensH) / 2, gridSlotW - 8, lensH));
     // 透镜不常驻：布局只管把它放到选中槽位，显隐由点击闪现控制（闪现中则不干预）
     NSNumber *flashing = objc_getAssociatedObject(bar, &kLensFlashActiveKey);
     if (!flashing.boolValue) { lens.hidden = YES; lens.alpha = 0.0; }
@@ -678,7 +742,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v28 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v29 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
