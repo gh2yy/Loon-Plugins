@@ -1,4 +1,12 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.27 (2026-11-27)：朋友圈豁免——
+// WCBlack.m — 微信深色模式纯黑背景 v8.28 (2026-11-27)：发现页横线真源头——
+// 发现页 FindFriendEntryViewController 不用 WCTableViewManager，自己给每行
+// MMTableViewCell 下发 setCustomSeparatorLineEdges:topInset:bottomInset:，
+// 该方法由挂在 UITableViewCell 上的 FinderVideoCell 分类实现（宿主类与
+// MMTableViewCell 父类是同一个 chained-fixup 绑定，逐字节核对一致），
+// 实现按 edges 位往 cell 上加分隔线子视图。在 MMTableViewCell 上加覆盖，
+// 「隐藏分割线」开时把 edges 清零再转发，线在源头不生成；朋友圈双闸豁免
+// （WCInMomentsFeed + cell 内含 WCTimeLineCellView 的结构闸）。
+// v8.27：朋友圈豁免——
 // 全局藏线误伤朋友圈帖子间横线（闪一下消失），所有藏线收口点加
 // WCInMomentsFeed 闸，朋友圈内一律保持原样。v8.26：按用户要求移除
 // 全部诊断代码（计数/抓取/设置页诊断区），藏线逻辑与诊断版完全一致、
@@ -48,7 +56,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.27"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.28"); });
     return l;
 }
 
@@ -588,6 +596,30 @@ static void WC_MMCell_layout(UITableViewCell *s, SEL c) {
 static void WCInstallMMCellHook(void) {
     Class c = NSClassFromString(@"MMTableViewCell");
     if (c && !gO_MMCellLayout) gO_MMCellLayout = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_MMCell_layout);
+}
+// v8.28：发现页自定义分隔线的源头钩（定案见文件头）。方法签名按包内类型
+// 编码 v88@0:8Q16{UIEdgeInsets}24{UIEdgeInsets}56 复原：
+// -(void)setCustomSeparatorLineEdges:(NSUInteger)edges topInset:(UIEdgeInsets)top bottomInset:(UIEdgeInsets)bottom
+// 发现页控制器已查实不直调 addCustomBottomSeparatorLineWithInset:，
+// 线全走这一处下发，钩这一处即够。
+static IMP gO_CustomSep;
+static Class gWCTimeLineCellViewCls;
+static BOOL WCViewTreeHasClass(UIView *v, Class cls, int depth) {
+    if (!v || !cls) return NO;
+    for (UIView *s in v.subviews) {
+        if ([s isKindOfClass:cls]) return YES;
+        if (depth > 0 && WCViewTreeHasClass(s, cls, depth - 1)) return YES;
+    }
+    return NO;
+}
+static void WC_Cell_setCustomSep(UITableViewCell *s, SEL c, NSUInteger edges, UIEdgeInsets top, UIEdgeInsets bottom) {
+    if (WCHideSep() && !WCInMomentsFeed(s) && !WCViewTreeHasClass(s, gWCTimeLineCellViewCls, 4)) edges = 0;
+    ((void (*)(id, SEL, NSUInteger, UIEdgeInsets, UIEdgeInsets))gO_CustomSep)(s, c, edges, top, bottom);
+}
+static void WCInstallCustomSepHook(void) {
+    Class c = NSClassFromString(@"MMTableViewCell");
+    if (!gWCTimeLineCellViewCls) gWCTimeLineCellViewCls = NSClassFromString(@"WCTimeLineCellView");
+    if (c && !gO_CustomSep) gO_CustomSep = WCSwapOwn(c, @selector(setCustomSeparatorLineEdges:topInset:bottomInset:), (IMP)WC_Cell_setCustomSep);
 }
 static IMP gO_MgrDrawCell;
 static void WC_Mgr_drawCell(id s, SEL c, id arg) {
@@ -1943,7 +1975,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.27 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.28 registered in plugin list");
             break;
         }
     }
@@ -2026,6 +2058,7 @@ static void WCInstall(void) {
     WCInstallTabHooks();
     WCInstallVCTraitHook();
     WCInstallMMCellHook();
+    WCInstallCustomSepHook();
     WCInstallMgrHook();
     WCInstallSepDrawHook();
     static id wcActiveToken = nil;
