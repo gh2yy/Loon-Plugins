@@ -1,4 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.18 (2026-11-27)：补两处无
+// WCBlack.m — 微信深色模式纯黑背景 v8.19 (2026-11-27)：朋友圈行上下线定案
+// 是 WCTableViewCellManager 在 drawCell: 里给 cell 图层设的边框，钩该方法清零；
+// 输入栏线把指纹藏线扩成递归子树+图层子层。v8.18：补两处无
 // ivar 的横线（用户 13:23 截图）：发现页朋友圈行上下两条（MMTable-
 // ViewCell，WCTableView 框架按 section 上下线 inset 摆进 cell）、
 // 聊天输入框上方一条（MMInputToolView 的 _toolView 顶边）。两处静态
@@ -33,7 +35,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.18"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.19"); });
     return l;
 }
 
@@ -495,17 +497,69 @@ static void WCHideEdgeLines(UIView *host) {
         if (f.origin.y <= 1.0 || (f.origin.y + f.size.height) >= H - 1.0) v.hidden = YES;
     }
 }
+// v8.19：v8.18 实测零变化——反汇编 WCTableViewCellManager 的 drawCell:
+// 定案：朋友圈行的上下线根本不是子视图，是框架在 drawCell: 里给 cell 的
+// layer 设的 borderWidth+borderColor（配 mask+圆角画出整段卡片边框）。
+// 藏视图永远够不着图层边框。改法：钩 drawCell: 本体（框架自己的上色点），
+// orig 跑完立刻把边框宽清零；cell 的 layout 再兜一遍防重设。
+// 输入栏那条同理扩围：线可能在 _toolView 子树深层或其图层子层上，
+// 指纹藏线改为递归整棵子树 + 扫图层子层。
+static void WCHideEdgeLinesDeep(UIView *host, int depth) {
+    if (!host) return;
+    WCHideEdgeLines(host);
+    CGFloat W = host.bounds.size.width, H = host.bounds.size.height;
+    if (W >= 50 && H >= 8) {
+        for (CALayer *l in host.layer.sublayers) {
+            if (l.hidden) continue;
+            CGRect f = l.frame;
+            if (!WCIsHairlineFrame(f, W)) continue;
+            if (f.origin.y <= 1.0 || (f.origin.y + f.size.height) >= H - 1.0) l.hidden = YES;
+        }
+    }
+    if (depth <= 0) return;
+    for (UIView *v in host.subviews) WCHideEdgeLinesDeep(v, depth - 1);
+}
+static void WCZeroBordersInCell(UITableViewCell *c) {
+    if (!c) return;
+    c.layer.borderWidth = 0;
+    if (c.backgroundView) c.backgroundView.layer.borderWidth = 0;
+    if (c.contentView) c.contentView.layer.borderWidth = 0;
+    Ivar iv = class_getInstanceVariable([c class], "m_subContentView");
+    if (iv) {
+        const char *enc = ivar_getTypeEncoding(iv);
+        if (enc && enc[0] == '@') {
+            id sub = object_getIvar(c, iv);
+            if ([sub isKindOfClass:[UIView class]]) ((UIView *)sub).layer.borderWidth = 0;
+        }
+    }
+}
 static IMP gO_MMCellLayout;
 static void WC_MMCell_layout(UITableViewCell *s, SEL c) {
     ((void (*)(id, SEL))gO_MMCellLayout)(s, c);
     if (!WCHideSep()) return;
-    WCHideEdgeLines(s);
-    WCHideEdgeLines(s.contentView);
-    for (UIView *sub in s.contentView.subviews) WCHideEdgeLines(sub);
+    WCZeroBordersInCell(s);
+    WCHideEdgeLinesDeep(s, 4);
 }
 static void WCInstallMMCellHook(void) {
     Class c = NSClassFromString(@"MMTableViewCell");
     if (c && !gO_MMCellLayout) gO_MMCellLayout = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_MMCell_layout);
+}
+static IMP gO_MgrDrawCell;
+static void WC_Mgr_drawCell(id s, SEL c, id arg) {
+    ((void (*)(id, SEL, id))gO_MgrDrawCell)(s, c, arg);
+    if (!WCHideSep()) return;
+    Ivar iv = class_getInstanceVariable([s class], "_cell");
+    if (!iv) return;
+    const char *enc = ivar_getTypeEncoding(iv);
+    if (!enc || enc[0] != '@') return;
+    id cell = object_getIvar(s, iv);
+    if (![cell isKindOfClass:[UITableViewCell class]]) return;
+    WCZeroBordersInCell((UITableViewCell *)cell);
+    WCHideEdgeLinesDeep((UITableViewCell *)cell, 4);
+}
+static void WCInstallMgrHook(void) {
+    Class c = NSClassFromString(@"WCTableViewCellManager");
+    if (c && !gO_MgrDrawCell) gO_MgrDrawCell = WCSwapOwn(c, @selector(drawCell:), (IMP)WC_Mgr_drawCell);
 }
 
 static void WCSepTryMarkViaResponder(UITableView *tv);
@@ -1245,7 +1299,7 @@ static void WC_In_layout(UIView *s, SEL c) {
         UIView *tool = nil;
         if (iv) { id v = object_getIvar(s, iv); if ([v isKindOfClass:[UIView class]]) tool = v; }
         if (tool) {
-            WCHideEdgeLines(tool);
+            WCHideEdgeLinesDeep(tool, 6);
             CGFloat ty = tool.frame.origin.y, W = s.bounds.size.width;
             for (UIView *v in s.subviews) {
                 if (v.hidden || v == tool) continue;
@@ -1751,7 +1805,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.18 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.19 registered in plugin list");
             break;
         }
     }
@@ -1834,6 +1888,7 @@ static void WCInstall(void) {
     WCInstallTabHooks();
     WCInstallVCTraitHook();
     WCInstallMMCellHook();
+    WCInstallMgrHook();
     static id wcActiveToken = nil;
     if (!wcActiveToken) {
         wcActiveToken = [[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) { WCOnDidBecomeActive(); }] retain];
