@@ -1,4 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.32 (2026-11-27)：v8.31 钩错预览
+// WCBlack.m — 微信深色模式纯黑背景 v8.33 (2026-11-27)：预览页底部操作
+// 行已黑、已选缩略图条（MMAssetSelectedCollectionView）还亮着，一并置深。
+// v8.32：v8.31 钩错预览
 // 页（聊天相册点开的实际是 MMImagePreviewBrowserController），改钩其
 // _blurView/_bottomBar。v8.31：发送图片预览页
 // （MsgImgPickerPreviewViewController）底部面板发白——该页强制深色、
@@ -70,7 +72,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.32"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.33"); });
     return l;
 }
 
@@ -2037,7 +2039,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.32 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.33 registered in plugin list");
             break;
         }
     }
@@ -2128,6 +2130,20 @@ static void WCFixPreviewBottom(UIViewController *s) {
         @try {
             UIView *bar = [s valueForKey:@"bottomBar"];
             if (bar && bar != blur) WCDeepDarkenEffectViews(bar, bg, 0);
+        } @catch (id e) {}
+        // v8.33：已选缩略图条是独立的 MMAssetSelectedCollectionView
+        // （ivar m_selectedCollectionView，无 getter，KVC 直取 ivar），
+        // 不在 _blurView/_bottomBar 里，v8.32 只压黑了操作行、它还亮着
+        // （实测操作行 (9,9,9)、缩略图条 (197,197,197)）。
+        @try {
+            UIView *strip = [s valueForKey:@"m_selectedCollectionView"];
+            if (strip) {
+                if (strip.backgroundColor != bg) strip.backgroundColor = bg;
+                WCDeepDarkenEffectViews(strip, bg, 0);
+                for (UIView *sub in strip.subviews)
+                    if ([sub isKindOfClass:[UICollectionView class]] && sub.backgroundColor != bg)
+                        sub.backgroundColor = bg;
+            }
         } @catch (id e) {}
     }
 }
