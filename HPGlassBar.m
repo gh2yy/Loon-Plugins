@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑悬浮底栏 v13.2 (2026-11-27)
+// HPGlassBar.m — 虎扑悬浮底栏 v13.3 (2026-11-27)
 // 本版以 v12 为基线（用户指定「那个可用的插件」），只加两件、其余逐字不动：
 // ①嫁接 v14 起的场景桥接 HPSceneBridge——现行改包带 UIScene 清单，缺桥接会黑屏；
 // ②首页信息流上滑隐藏底栏（下滑或回到顶部恢复；渐隐渐显 + 下沉/回位，0.15 秒快动效；只在首页根页面生效，切 tab/进帖子页强制显示）。
@@ -336,10 +336,10 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
 }
 
 
-#pragma mark - 首页滑动隐藏底栏（v13.2 新增）
+#pragma mark - 首页滑动隐藏底栏（v13.3 新增）
 // v13 首版按系统 UITabBarController 找首页，真机无反应：虎扑的标签控制器是 App 自写的，
 // 既不是 UITabBarController 子类、bar 的 controller 属性也拿不到它，滚动源根本没绑上。
-// v13.2 不再依赖标签控制器类型：沿响应链找托管底栏的 VC、按子 VC 可见性定当前标签页，
+// v13.3 不再依赖标签控制器类型：沿响应链找托管底栏的 VC、按子 VC 可见性定当前标签页，
 // 再叠加插件自己记录的选中序号（选中态钩子所得）把关；VC 路线找不到时整窗兜底扫描。
 
 static char kBarHiddenKey;
@@ -354,33 +354,17 @@ static char kBindRetryKey;
 @property (nonatomic, assign) UIView *bar;
 @end
 
-// 淡变必须逐件给：整栏一起淡，玻璃盘（UIVisualEffectView）不跟整栏的淡变、会先一步消失，
-// 只剩图标自己慢慢淡掉，就是录屏里那道残影。直接给效果视图本体设 alpha、阴影同拍淡变、
-// 图标同拍，隐藏与出现共用同一条动画、互为逆向。
-static void HPApplyBarFade(UIView *bar, CGFloat target) {
-    UIView *shell = objc_getAssociatedObject(bar, &kCapsuleKey);
-    if (shell) {
-        UIView *fx = shell.subviews.firstObject;
-        fx.alpha = target;
-        shell.layer.shadowOpacity = 0.22 * target;
-    }
-    NSArray *row = objc_getAssociatedObject(bar, &kRowKey);
-    for (UIView *gb in row) gb.alpha = target;
-}
-
+// 只滑动进出（用户定）：整栏一个刚体平移，胶囊与图标绑死在一起、不可能脱节、无残影；
+// 隐藏与出现共用同一条动画、互为逆向。此前两版淡变（整栏淡、逐件淡）都因玻璃胶囊
+// 采样背景的画法与实心图标不同步而残影，用户录屏逐帧定案后取消淡变。
 static void HPSetBarHidden(UIView *bar, BOOL hidden, BOOL animated) {
     NSNumber *cur = objc_getAssociatedObject(bar, &kBarHiddenKey);
     if (cur && cur.boolValue == hidden) return;
     objc_setAssociatedObject(bar, &kBarHiddenKey, @(hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    // 渐隐渐显 + 下沉/回位，快动效 0.15 秒（用户定）；隐藏与出现同一动画互为逆向
     CGFloat ty = hidden ? (bar.bounds.size.height + 40.0) : 0.0;
-    CGFloat targetAlpha = hidden ? 0.0 : 1.0;
     [UIView animateWithDuration:animated ? 0.15 : 0.0 delay:0
                         options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
-                     animations:^{
-                         bar.transform = CGAffineTransformMakeTranslation(0, ty);
-                         HPApplyBarFade(bar, targetAlpha);
-                     }
+                     animations:^{ bar.transform = CGAffineTransformMakeTranslation(0, ty); }
                      completion:nil];
 }
 
@@ -625,8 +609,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
 
-    HPBindFeedScrollViews(bar); // v13.2：首页滑动隐藏底栏的滚动源绑定
-    if ([objc_getAssociatedObject(bar, &kBarHiddenKey) boolValue]) HPApplyBarFade(bar, 0.0); // 隐藏态下重建的件保持淡出
+    HPBindFeedScrollViews(bar); // v13.3：首页滑动隐藏底栏的滚动源绑定
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -744,7 +727,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v13.2 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v13.3 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
