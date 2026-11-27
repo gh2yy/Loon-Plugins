@@ -1,7 +1,7 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.12 (2026-11-27)：v8.11 的全局分割线
-// 上线即崩（07:28 .ips 定案：按名跨类取 ivar 取到同名 BOOL 槽，读出 0x1 后
-// isKindOfClass 崩在 WC_Sep_layout）。本版收 ivar 改为本类自有清单 + 类型
-// 编码验明视图/层/数组才收，读取再加指针合理性闸；余同 v8.11。
+// WCBlack.m — 微信深色模式纯黑背景 v8.13 (2026-11-27)：修系统外观翻转时
+// 底栏滞后——内容已变浅、底栏黑着卡到 5 秒家务 tick 才跟上（11:07 录屏，
+// 约 4 秒）。栏 trait 翻转时排 0.1/0.35/0.8s 探针刷新梯队，微信内部类型
+// 一变立即重涂全栏。v8.12 的 ivar 类型验明修复与余部不变。
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -29,7 +29,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.12"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.13"); });
     return l;
 }
 
@@ -173,6 +173,8 @@ static NSHashTable<UIView *> *gBarsInput, *gBarsTab;
 static BOOL gWCWeChatDark = NO;
 static void WCRefreshDarkState(BOOL fresh);
 static void WCApplyBarsState(void);
+static void WCRefreshDarkState(BOOL fresh);
+static void WCScheduleDarkRefresh(void);
 
 static void WCStoreOrigBG(UIView *v) {
     if (v.backgroundColor && !objc_getAssociatedObject(v, &kWCOrigBGKey))
@@ -506,7 +508,7 @@ static IMP gOrigSetSepStyle, gOrigSetDelegate, gOrigSetDataSource;
 static NSMutableSet<NSString *> *gWDInstalled;
 static NSMutableDictionary<NSString *, NSValue *> *gWDOrigs;
 static void WC_TV_setSepStyle(UITableView *s, SEL c, UITableViewCellSeparatorStyle style) {
-    // v8.12：全局拦截，不再只限首页表
+    // v8.13：全局拦截，不再只限首页表
     if (style != UITableViewCellSeparatorStyleNone && WCHideSep()) {
         if (!objc_getAssociatedObject(s, &kWCSepOrigStyleKey))
             objc_setAssociatedObject(s, &kWCSepOrigStyleKey, @(style), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -572,7 +574,7 @@ static void WC_TV_setDataSource(UITableView *s, SEL c, id d) {
     WCSepOnDelegate(s, d);
 }
 
-// v8.12 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
+// v8.13 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
 // 静态普查完整二进制 46,673 个类，带 separator 视图 ivar 的类 255 个、301 条
 // ivar（名单内嵌于下）。给这些类逐个钩 layoutSubviews（控制器类钩
 // viewDidLayoutSubviews），原实现跑完就在同一次排版里按 ivar 把线藏掉——线
@@ -1175,9 +1177,9 @@ static void WCForceBar(UIView *bar, NSString *module, int depth) {
 #pragma mark - 聊天底栏钩子（仅 MMInputToolView / InputToolContainerView）
 
 static IMP gO_InT, gO_InW, gO_ContT, gO_ContW;
-static void WC_In_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_InT)(s, c, p); if (s.window) WCForceBar(s, @"chatbar", 4); }
+static void WC_In_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_InT)(s, c, p); if (s.window) WCForceBar(s, @"chatbar", 4); WCScheduleDarkRefresh(); }
 static void WC_In_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_InW)(s, c); if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain]; if (s.window) { WCRegisterBar(gBarsInput, s); WCForceBar(s, @"chatbar", 4); } }
-static void WC_Cont_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_ContT)(s, c, p); if (s.window) WCForceBar(s, @"chatbar", 4); }
+static void WC_Cont_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_ContT)(s, c, p); if (s.window) WCForceBar(s, @"chatbar", 4); WCScheduleDarkRefresh(); }
 static void WC_Cont_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContW)(s, c); if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain]; if (s.window) { WCRegisterBar(gBarsInput, s); WCForceBar(s, @"chatbar", 4); } }
 
 static void WCInstallChatbarHooks(void) {
@@ -1217,11 +1219,11 @@ static void WC_Dic_didMoveToWindow(UIView *self, SEL _cmd) {
 
 static IMP gO_TabT, gO_TabW, gO_TabViewT, gO_TabViewW, gO_MMTabT, gO_MMTabW;
 static void WC_Tab_reg(UIView *s) { if (!gBarsTab) gBarsTab = [[NSHashTable weakObjectsHashTable] retain]; WCRegisterBar(gBarsTab, s); }
-static void WC_Tab_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_TabT)(s, c, p); if (s.window) WCForceBar(s, @"tab", 4); }
+static void WC_Tab_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_TabT)(s, c, p); if (s.window) WCForceBar(s, @"tab", 4); WCScheduleDarkRefresh(); }
 static void WC_Tab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_TabW)(s, c); if (s.window) { WC_Tab_reg(s); WCForceBar(s, @"tab", 4); } }
-static void WC_TabView_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_TabViewT)(s, c, p); if (s.window) WCForceBar(s, @"tab", 4); }
+static void WC_TabView_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_TabViewT)(s, c, p); if (s.window) WCForceBar(s, @"tab", 4); WCScheduleDarkRefresh(); }
 static void WC_TabView_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_TabViewW)(s, c); if (s.window) { WC_Tab_reg(s); WCForceBar(s, @"tab", 4); } }
-static void WC_MMTab_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_MMTabT)(s, c, p); if (s.window) WCForceBar(s, @"tab", 4); }
+static void WC_MMTab_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_MMTabT)(s, c, p); if (s.window) WCForceBar(s, @"tab", 4); WCScheduleDarkRefresh(); }
 static void WC_MMTab_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_MMTabW)(s, c); if (s.window) { WC_Tab_reg(s); WCForceBar(s, @"tab", 4); } }
 
 // v8.10：侧滑切应用时底栏露浅灰（用户录屏逐帧定案：内容全程深色、只有底栏在
@@ -1466,6 +1468,17 @@ static void WCOnDidBecomeActive(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCGlassResumeRefresh(); });
 }
 
+// v8.13：系统外观翻转时微信内部类型更新时机不固定，setCurrentType: 不一定
+// 被调，探针没人刷新——栏的 trait 钩子拿着旧的 gWCWeChatDark 重涂，底栏能
+// 黑着卡到下一个 5 秒家务 tick（用户 11:07 录屏：内容已变浅、底栏黑约 4 秒）。
+// 修法：栏 trait 一翻就排一小梯队探针刷新（事件驱动、无常驻轮询），微信
+// 类型一变，WCRefreshDarkState 的变化检测立即重涂全栏。
+static void WCScheduleDarkRefresh(void) {
+    static const double delays[3] = {0.1, 0.35, 0.8};
+    for (int i = 0; i < 3; i++)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[i] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCRefreshDarkState(YES); });
+}
+
 static void WCRefreshDarkState(BOOL fresh) {
     BOOL d = fresh ? WCProbeWeChatDarkNow() : WCProbeWeChatDark();
     if (d == gWCWeChatDark) return;
@@ -1654,7 +1667,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.12 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.13 registered in plugin list");
             break;
         }
     }
@@ -1702,7 +1715,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.12 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.13 source hooks in");
             }
         }
     }
