@@ -1,4 +1,7 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.29 (2026-11-27)：语音模式「按住
+// WCBlack.m — 微信深色模式纯黑背景 v8.30 (2026-11-27)：输入框四角描边
+// 比直边粗——描边轮廓比色板大一圈，四角弧线错位露出。两张 field 色板
+// （文字框 + 语音胶囊）各外扩 1pt、圆角同步加大，弧线移到描边之外吞掉。
+// v8.29：语音模式「按住
 // 说话」胶囊并入 field 模块——按钮 MMRecordButton 本体不涂色，灰是其底下
 // 的背景图/图层渲染，在按钮内部标题之下放 field 色板盖住（范围按按钮
 // 自己的 backgroundRectForBounds:），关模块时随 field 色板统一隐藏。
@@ -60,7 +63,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.29"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.30"); });
     return l;
 }
 
@@ -282,7 +285,15 @@ static void WCEnsureFieldPlate(UIView *grow) {
         [grow insertSubview:plate atIndex:(ti >= 0 ? ti : (NSInteger)grow.subviews.count)];
     }
     if (plate.backgroundColor != cfg) plate.backgroundColor = cfg;
-    if (!CGRectEqualToRect(plate.frame, grow.bounds)) plate.frame = grow.bounds;
+    // v8.30：色板外扩 1pt、圆角同步 +1——微信的描边画在比输入框大一圈的
+    // 轮廓上：直边处与色板齐平、只露 1px（实测灰度 28）；四角两条弧线
+    // 错位，露出的弧段显得更粗（语音模式角上实测达 44）。色板外扩后
+    // 弧线移到描边之外，整圈吞掉。grow 不裁子视图（v5.3 话筒光晕能
+    // 探出右界），外扩部分不会被裁掉。
+    CGRect pf = CGRectInset(grow.bounds, -1, -1);
+    if (!CGRectEqualToRect(plate.frame, pf)) plate.frame = pf;
+    CGFloat pr = (grow.layer.cornerRadius > 0 ? grow.layer.cornerRadius : 8) + 1;
+    if (plate.layer.cornerRadius != pr) plate.layer.cornerRadius = pr;
     plate.hidden = NO;
 }
 // v8.29：语音模式的「按住 说话」胶囊并入 field 模块（用户 19:39 点名）。
@@ -316,8 +327,10 @@ static void WCEnsureRecordPlate(UIView *btn) {
         NSInteger at = (li >= 0) ? li : (NSInteger)btn.subviews.count;
         [btn insertSubview:plate atIndex:at];
     }
-    if (!CGRectEqualToRect(plate.frame, br)) plate.frame = br;
-    CGFloat radius = br.size.height / 2;
+    // v8.30：同文字模式——色板外扩 1pt，弧线移到按钮描边之外吞掉四角。
+    CGRect pf = CGRectInset(br, -1, -1);
+    if (!CGRectEqualToRect(plate.frame, pf)) plate.frame = pf;
+    CGFloat radius = pf.size.height / 2;
     if (plate.layer.cornerRadius != radius) plate.layer.cornerRadius = radius;
     if (plate.backgroundColor != cfg) plate.backgroundColor = cfg;
     plate.hidden = NO;
@@ -2017,7 +2030,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.29 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.30 registered in plugin list");
             break;
         }
     }
