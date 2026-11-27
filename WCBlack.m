@@ -1,4 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.26 (2026-11-27)：按用户要求移除
+// WCBlack.m — 微信深色模式纯黑背景 v8.27 (2026-11-27)：朋友圈豁免——
+// 全局藏线误伤朋友圈帖子间横线（闪一下消失），所有藏线收口点加
+// WCInMomentsFeed 闸，朋友圈内一律保持原样。v8.26：按用户要求移除
 // 全部诊断代码（计数/抓取/设置页诊断区），藏线逻辑与诊断版完全一致、
 // 已由诊断实测确认生效。v8.25：诊断行点击复制全文到剪贴板。v8.24：诊断触发
 // 页修正为发现页 FindFriendEntryViewController（v8.23 误认 MoreViewController
@@ -46,7 +48,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.26"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.27"); });
     return l;
 }
 
@@ -515,8 +517,36 @@ static void WCHideEdgeLines(UIView *host) {
 // orig 跑完立刻把边框宽清零；cell 的 layout 再兜一遍防重设。
 // 输入栏那条同理扩围：线可能在 _toolView 子树深层或其图层子层上，
 // 指纹藏线改为递归整棵子树 + 扫图层子层。
+// v8.27：朋友圈豁免（用户 18:28 定界）。发现页行框线去掉，但朋友圈里面
+// 的分隔要保持原样——v8.26 及之前被全局藏线误伤：WC_TV_layout 对每张表
+// 都压 separatorStyle=None、WCApplySeparators 与普查钩子也不分页面，
+// 朋友圈帖子间的横线被连带藏掉（滚动时先闪一下再消失）。判定：视图在
+// WCTimeLineCellView 之内，或所属表格归 WCBaseTimelineViewController 管。
+// 藏线的所有收口点都先过这道闸。
+static BOOL WCInMomentsFeed(UIView *v) {
+    static Class tlCellCls = Nil, tlVcCls = Nil;
+    if (!tlCellCls) {
+        tlCellCls = NSClassFromString(@"WCTimeLineCellView");
+        tlVcCls = NSClassFromString(@"WCBaseTimelineViewController");
+    }
+    UIView *cur = v;
+    UITableView *tv = nil;
+    while (cur) {
+        if (tlCellCls && [cur isKindOfClass:tlCellCls]) return YES;
+        if (!tv && [cur isKindOfClass:[UITableView class]]) tv = (UITableView *)cur;
+        cur = cur.superview;
+    }
+    if (tv && tlVcCls) {
+        UIResponder *r = tv;
+        while (r) {
+            if ([r isKindOfClass:tlVcCls]) return YES;
+            r = [r nextResponder];
+        }
+    }
+    return NO;
+}
 static void WCHideEdgeLinesDeep(UIView *host, int depth) {
-    if (!host) return;
+    if (!host || WCInMomentsFeed(host)) return;
     WCHideEdgeLines(host);
     CGFloat W = host.bounds.size.width, H = host.bounds.size.height;
     if (W >= 50 && H >= 8) {
@@ -531,7 +561,7 @@ static void WCHideEdgeLinesDeep(UIView *host, int depth) {
     for (UIView *v in host.subviews) WCHideEdgeLinesDeep(v, depth - 1);
 }
 static void WCZeroBordersInCell(UITableViewCell *c) {
-    if (!c) return;
+    if (!c || WCInMomentsFeed(c)) return;
     c.layer.borderWidth = 0;
     if (c.backgroundView) c.backgroundView.layer.borderWidth = 0;
     if (c.contentView) c.contentView.layer.borderWidth = 0;
@@ -602,7 +632,7 @@ static void WCInstallMgrHook(void) {
 // 参数里带真 cell），orig 回来后对真 cell 藏线，并扫一遍表格本体的
 // 装饰线（线也可能被加在表格而不是 cell 上）。
 static void WC_HideTableDecorations(UITableView *tv) {
-    if (!tv) return;
+    if (!tv || WCInMomentsFeed(tv)) return;
     CGFloat W = tv.bounds.size.width;
     if (W < 50) return;
     for (UIView *v in tv.subviews) {
@@ -662,6 +692,7 @@ static void WCSepTryMarkViaResponder(UITableView *tv);
 static void WCApplySeparators(UITableView *tv) {
     WCSepTryMarkViaResponder(tv);
     BOOL hide = WCHideSep();
+    if (hide && WCInMomentsFeed(tv)) hide = NO; // 朋友圈豁免：走恢复分支
     NSNumber *stored = objc_getAssociatedObject(tv, &kWCSepOrigStyleKey);
     if (hide) {
         if (!stored) {
@@ -849,6 +880,11 @@ static void WC_Sep_layout(id s, SEL c) {
     if (!plan || plan.gen != gSepGen) plan = WCBuildSepPlan(s, c);
     if (plan.orig) ((void (*)(id, SEL))plan.orig)(s, c);
     BOOL hide = WCHideSep();
+    if (hide) { // 朋友圈豁免：相关类名一律不藏，实例在朋友圈内也不藏
+        NSString *cn = NSStringFromClass([s class]);
+        if ([cn hasPrefix:@"WCMoments"] || [cn hasPrefix:@"WCTimeLine"] || [cn hasPrefix:@"WCBaseTimeline"]) hide = NO;
+        else if ([s isKindOfClass:[UIView class]] && WCInMomentsFeed((UIView *)s)) hide = NO;
+    }
     for (NSValue *v in plan.ivars) {
         id val = object_getIvar(s, (Ivar)[v pointerValue]);
         if (!val || (uintptr_t)val < 0x10000 || ((uintptr_t)val & 0x7) != 0) continue;
@@ -860,7 +896,7 @@ static void WC_Sep_layout(id s, SEL c) {
 }
 static IMP gOrigTVLayout;
 static void WC_TV_layout(UITableView *s, SEL c) {
-    if (WCHideSep() && s.separatorStyle != UITableViewCellSeparatorStyleNone)
+    if (WCHideSep() && !WCInMomentsFeed(s) && s.separatorStyle != UITableViewCellSeparatorStyleNone)
         s.separatorStyle = UITableViewCellSeparatorStyleNone;
     ((void (*)(id, SEL))gOrigTVLayout)(s, c);
 }
@@ -1907,7 +1943,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.26 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.27 registered in plugin list");
             break;
         }
     }
