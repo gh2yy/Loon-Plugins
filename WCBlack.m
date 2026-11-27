@@ -1,4 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.19 (2026-11-27)：朋友圈行上下线定案
+// WCBlack.m — 微信深色模式纯黑背景 v8.20 (2026-11-27)：反汇编定案 drawCell:
+// 的参数才是被描边的 cell（v8.19 读管理器 _cell 字段清了个空）；输入栏线
+// 扩扫整栏子树与外层容器。v8.19：朋友圈行上下线定案
 // 是 WCTableViewCellManager 在 drawCell: 里给 cell 图层设的边框，钩该方法清零；
 // 输入栏线把指纹藏线扩成递归子树+图层子层。v8.18：补两处无
 // ivar 的横线（用户 13:23 截图）：发现页朋友圈行上下两条（MMTable-
@@ -35,7 +37,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.19"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.20"); });
     return l;
 }
 
@@ -548,14 +550,25 @@ static IMP gO_MgrDrawCell;
 static void WC_Mgr_drawCell(id s, SEL c, id arg) {
     ((void (*)(id, SEL, id))gO_MgrDrawCell)(s, c, arg);
     if (!WCHideSep()) return;
-    Ivar iv = class_getInstanceVariable([s class], "_cell");
-    if (!iv) return;
-    const char *enc = ivar_getTypeEncoding(iv);
-    if (!enc || enc[0] != '@') return;
-    id cell = object_getIvar(s, iv);
-    if (![cell isKindOfClass:[UITableViewCell class]]) return;
-    WCZeroBordersInCell((UITableViewCell *)cell);
-    WCHideEdgeLinesDeep((UITableViewCell *)cell, 4);
+    // v8.20：反汇编 drawCell: 定案——参数就是被上色的 cell 本人，边框设在
+    // arg.contentView.layer（宽 1/屏幕缩放、色取管理器 borderColor）。
+    // v8.19 读管理器的 _cell ivar，那个字段在 drawCell: 时不指向这只 cell，
+    // 清了个空，所以实测零变化。改以参数为准，_cell 只作兜底。
+    UITableViewCell *cell = nil;
+    if ([arg isKindOfClass:[UITableViewCell class]]) cell = (UITableViewCell *)arg;
+    if (!cell) {
+        Ivar iv = class_getInstanceVariable([s class], "_cell");
+        if (iv) {
+            const char *enc = ivar_getTypeEncoding(iv);
+            if (enc && enc[0] == '@') {
+                id v = object_getIvar(s, iv);
+                if ([v isKindOfClass:[UITableViewCell class]]) cell = (UITableViewCell *)v;
+            }
+        }
+    }
+    if (!cell) return;
+    WCZeroBordersInCell(cell);
+    WCHideEdgeLinesDeep(cell, 4);
 }
 static void WCInstallMgrHook(void) {
     Class c = NSClassFromString(@"WCTableViewCellManager");
@@ -1307,9 +1320,12 @@ static void WC_In_layout(UIView *s, SEL c) {
                 if (WCIsHairlineFrame(v.frame, W) && fabs(v.frame.origin.y - ty) <= 1.5) v.hidden = YES;
             }
         }
+        // v8.20：整栏子树也扫一遍——输入条若是 _toolView 的兄弟子树，
+        // v8.19 只扫 _toolView 内部就够不着它顶边那条线。
+        WCHideEdgeLinesDeep(s, 5);
     }
 }
-static void WC_Cont_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContLayout)(s, c); if (gWCWeChatDark && WCConfigColor(@"field")) WCFieldSweep(s); }
+static void WC_Cont_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContLayout)(s, c); if (gWCWeChatDark && WCConfigColor(@"field")) WCFieldSweep(s); if (WCHideSep()) WCHideEdgeLinesDeep(s, 3); }
 
 static void WCInstallChatbarHooks(void) {
     Class c;
@@ -1805,7 +1821,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.19 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.20 registered in plugin list");
             break;
         }
     }
