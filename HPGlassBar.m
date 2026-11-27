@@ -357,17 +357,35 @@ static void HPHideBarBackground(UIView *bar, NSArray *btns) {
         UIView *mv = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(mixView));
         if (mv && !HPIsAncestorOfAny(mv, btns)) mv.hidden = YES;
     }
-    CGRect bounds = bar.bounds;
-    for (UIView *v in bar.subviews) {
+    // 白名单（v17）：底栏里只许有原按钮、自建行和玻璃。App 在 Loon 砍掉 tab 后会重建底栏、
+    // 把自带的灰底胶囊（宽度约栏宽 78%、躲过旧的尺寸过滤）铺回来垫在玻璃下面成双层——
+    // 不再按尺寸猜，非按钮非我方的一律藏。
+    for (UIView *v in [bar.subviews copy]) {
         if (v == capsule || v == lens) continue;
         if ([mine containsObject:v]) continue;
+        if ([btns containsObject:v]) continue;
         if (HPIsAncestorOfAny(v, btns)) continue;
-        CGRect f = v.frame;
-        BOOL fullBg = f.size.width >= bounds.size.width * 0.9 && f.size.height >= bounds.size.height * 0.55;
-        BOOL topLine = f.size.height <= 1.0 && f.size.width >= bounds.size.width * 0.9;
-        if (fullBg || topLine) v.hidden = YES;
+        v.hidden = YES;
     }
     bar.backgroundColor = [UIColor clearColor];
+    // 栏外同级底板：App 也可能把底板铺在栏的父视图里、垫在栏身后（尺寸与栏相仿、居于栏内）
+    UIView *sup = bar.superview;
+    if (sup) {
+        CGRect bf = bar.frame;
+        NSArray *sibs = sup.subviews;
+        NSUInteger bi = [sibs indexOfObject:bar];
+        if (bi != NSNotFound) {
+            for (NSUInteger i = 0; i < bi; i++) {
+                UIView *v = sibs[i];
+                if (HPIsAncestorOfAny(v, btns)) continue;
+                CGRect f = v.frame;
+                BOOL sized = f.size.width >= bf.size.width * 0.4 && f.size.width <= bf.size.width * 1.05 &&
+                             f.size.height >= bf.size.height * 0.4 && f.size.height <= bf.size.height * 1.3;
+                BOOL centered = CGRectContainsPoint(bf, CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f)));
+                if (sized && centered) v.hidden = YES;
+            }
+        }
+    }
 }
 
 static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
@@ -510,6 +528,13 @@ static IMP gOrigSwiftLayout, gOrigSwiftUpdateBtn;
 static IMP gOrigObjcLayout, gOrigObjcSetSel, gOrigObjcSetupSel, gOrigObjcReload;
 static Class gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gObjcBtnCls;
 
+static void (*gOrigSwiftAddSubview)(id, SEL, UIView *) = NULL;
+static void HP_SwiftBar_didAddSubview(UIView *self, SEL _cmd, UIView *subview) {
+    if (gOrigSwiftAddSubview) gOrigSwiftAddSubview(self, _cmd, subview);
+    // App 重建底栏时若在布局之后才铺底板，催一次布局让白名单把它藏掉（setNeedsLayout 会合并，无递归）
+    [self setNeedsLayout];
+}
+
 static void HP_SwiftBar_layoutSubviews(UIView *self, SEL _cmd) {
     ((void (*)(id, SEL))gOrigSwiftLayout)(self, _cmd);
     HPLayoutSwiftBar(self, gSwiftBtnCls);
@@ -579,6 +604,8 @@ static void HPInstall(void) {
     BOOL any = NO;
     if (gSwiftBarCls) {
         gOrigSwiftLayout = HPSwap(gSwiftBarCls, @selector(layoutSubviews), (IMP)HP_SwiftBar_layoutSubviews);
+        if (!gOrigSwiftAddSubview)
+            gOrigSwiftAddSubview = (void (*)(id, SEL, UIView *))HPSwap(gSwiftBarCls, @selector(didAddSubview:), (IMP)HP_SwiftBar_didAddSubview);
         gOrigSwiftUpdateBtn = HPSwap(gSwiftBarCls, @selector(updateButtonWithButton:selected:), (IMP)HP_SwiftBar_updateButton);
         any = (gOrigSwiftLayout != NULL);
     }
@@ -589,7 +616,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v16 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v17 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
