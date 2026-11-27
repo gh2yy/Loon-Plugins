@@ -201,6 +201,42 @@
 //     者是自家 show，防外部直调）。诊断「横幅拦截」块新增
 //     v3.11 子块（安装时机 +load/+1s + 新增点计数），与
 //     v3.10 的 13 点分开列。v3.10 的 13 点保留不撤。
+//   v3.12（真身纠正：蓝条是直答 tab 的冷启气泡，不是
+//     FloatNotice）：v3.11 装上且用户卸载重装后蓝条仍在。用
+//     户判断「不是页面气泡，而是底部 AI tab 的气泡」——静态
+//     复核证实其判断成立（详见 PATCH_NOTES v3.12 段）：
+//     ①FloatNotice 卡片形态对不上：ZHFloatNoticeView 的
+//     _container 在 setupBackground 里被钉 left=窗+8 /
+//     right=窗-8（近全宽）、背景色 = 主题色 GBK99C（日间为
+//     浅色），卡内是 标题+正文+查看标签+关闭钮 的多元素卡；
+//     截图蓝条是饱和知乎蓝、单行文案、无关闭钮，实测占屏宽
+//     约 44%→91%（x≈192→402pt）、高约 40pt 的定宽圆角条——
+//     不可能是它（Swift 两窗同为 container+标题+正文+查看+
+//     关闭钮的同构卡面，同理排除）。②真身 = ZHZhidaTab
+//     （直答/AI tab 模块）的冷启气泡：该类自带
+//     coldStartBubbleView/Timer/WorkItem 与整套状态位，入口
+//     homeFeedDidFinishLoading: → tryShowColdStartBubble →
+//     （状态门：feed API 的 zhidaColdStartABValue +
+//     requestZhidaColdStartTabBubbleState: 服务端状态、栏显
+//     示中、启动与 feed 均完成、非隐私模式）→ 以 itemView
+//     bounds 换算锚点调 ZHEasyTipView 的
+//     showAnimated:forPoint:inSuperView: 贴在直答 item 上方
+//     出屏，再挂定时器自动收。文案走 feed API
+//     zhidaColdStartTabBubbleText（配置下发——主二进制全文
+//     grep「见面礼/我想给」零命中，与此吻合）。ZHEasyTipView
+//     按文案自适应宽、高约 40pt、锚点定左右——与截图形态逐
+//     项对上。③v3.10/v3.11 为何全落空：两版拦的都是
+//     FloatNotice 一家，与本气泡零交集；v3.11 的时序结论对
+//     FloatNotice 本身仍成立，但用户看到的这条从来不是它
+//     （11:33 诊断计数为 0 的真正原因是拦错了家，不是漏了
+//     展示路）。本版改动：在段4 内新增一点——
+//     -[ZHZhidaTab tryShowColdStartBubble] 换空转（该类自
+//     有实现，IMP 0x104d62298，静态已核），整条冷启气泡链
+//     在唯一入口断掉；handleColdStartBubbleTimerFired 不
+//     动（入口已断、定时器无从挂起；万一有未知旁路挂上，
+//     它只负责收起+打点，留着反而有利）。诊断「横幅拦截」
+//     块再加 v3.12 子块单独计数。FloatNotice 的 13+4 点保
+//     留不撤（那一家仍是压栏横幅、用户已拍板要去）。
 //
 //// 纯黑背景口径（本轮静态定案，详见 PATCH_NOTES v3 段）：
 //   知乎颜色总发色点是 ZHThemeManage（ZHCoreTheme）：
@@ -1961,6 +1997,27 @@ static void ZP_Banner_winShow311(id self, SEL _cmd) {
     ((void (*)(id, SEL, BOOL))objc_msgSend)(self, @selector(setHidden:), YES);
 }
 
+// ---- v3.12 新增点（真身：直答 tab 冷启气泡，与 FloatNotice 分开计数）----
+// 背景见文件头 v3.12 段：截图蓝条的真身是 ZHZhidaTab（直答/AI
+// tab）的冷启气泡——入口 homeFeedDidFinishLoading: →
+// tryShowColdStartBubble 是整条链的唯一入口（状态请求、定时
+// 器、ZHEasyTipView 出屏都在其下游）。把该方法换空转即整链
+// 断掉：不调原实现即不发状态请求、不挂定时器、不建气泡。
+// 该方法是 ZHZhidaTab 自有实现（IMP 0x104d62298，静态已核在
+// 类自身方法表内），ZHSwap 只改自有实现、不污染父类。
+static NSMutableDictionary *gBannerBlockCounts312 = nil;
+static BOOL gBanner312Installed = NO;
+static void ZPCountBannerBlock312(id self, SEL _cmd) {
+    if (!gBannerBlockCounts312) gBannerBlockCounts312 = [[NSMutableDictionary alloc] init];
+    NSString *key = [NSString stringWithFormat:@"%@ %@",
+                     NSStringFromClass(object_getClass(self)), NSStringFromSelector(_cmd)];
+    NSNumber *n = gBannerBlockCounts312[key];
+    gBannerBlockCounts312[key] = @(n ? n.unsignedLongValue + 1 : 1);
+}
+static void ZP_Banner_zhidaTryShow(id self, SEL _cmd) {
+    ZPCountBannerBlock312(self, _cmd);
+}
+
 static void ZPAppendBannerDiag(NSMutableString *s) {
     [s appendFormat:@"横幅拦截（v3.10）: 已装=%@\n", gBannerHookInstalled ? @"YES" : @"NO"];
     if (!gBannerBlockCounts || gBannerBlockCounts.count == 0) {
@@ -1981,16 +2038,31 @@ static void ZPAppendBannerDiag(NSMutableString *s) {
      gBannerInstallAtLoad ? @"+load" : @"+1s", gBanner311Ok, gBanner311Total];
     if (!gBannerBlockCounts311 || gBannerBlockCounts311.count == 0) {
         [s appendString:@"  本进程尚无 v3.11 拦截记录\n"];
+    } else {
+        NSUInteger total311 = 0;
+        for (NSString *k in [[gBannerBlockCounts311 allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+            NSNumber *num = gBannerBlockCounts311[k];
+            NSUInteger c = num ? num.unsignedLongValue : 0;
+            total311 += c;
+            [s appendFormat:@"  %@ = %lu\n", k, (unsigned long)c];
+        }
+        [s appendFormat:@"  合计 = %lu\n", (unsigned long)total311];
+    }
+    // v3.12 子块：直答冷启气泡入口（ZHZhidaTab
+    // tryShowColdStartBubble）单独计数，与 FloatNotice 两表分开。
+    [s appendFormat:@"横幅拦截（v3.12 直答冷启气泡）: 已装=%@\n", gBanner312Installed ? @"YES" : @"NO"];
+    if (!gBannerBlockCounts312 || gBannerBlockCounts312.count == 0) {
+        [s appendString:@"  本进程尚无 v3.12 拦截记录\n"];
         return;
     }
-    NSUInteger total311 = 0;
-    for (NSString *k in [[gBannerBlockCounts311 allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
-        NSNumber *num = gBannerBlockCounts311[k];
+    NSUInteger total312 = 0;
+    for (NSString *k in [[gBannerBlockCounts312 allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+        NSNumber *num = gBannerBlockCounts312[k];
         NSUInteger c = num ? num.unsignedLongValue : 0;
-        total311 += c;
+        total312 += c;
         [s appendFormat:@"  %@ = %lu\n", k, (unsigned long)c];
     }
-    [s appendFormat:@"  合计 = %lu\n", (unsigned long)total311];
+    [s appendFormat:@"  合计 = %lu\n", (unsigned long)total312];
 }
 
 // 段4：横幅拦截（FloatNotice 一家；与玻璃开关无关、常开）。
@@ -2054,9 +2126,23 @@ static void ZPInstallBannerHooks(void) {
             if (ZHSwap(nvCls, @selector(showUpAnimation), (IMP)ZP_Banner_winShow311)) gBanner311Ok++;
         }
     }
+    // ---- v3.12 新增点：直答 tab 冷启气泡唯一入口 ----
+    // -[ZHZhidaTab tryShowColdStartBubble] 换空转（自有实现，
+    // 静态已核）：整条冷启气泡链（状态请求→定时器→EasyTip
+    // 出屏）在入口断掉。与玻璃开关无关、常开；随段4 在
+    // +load 安装，赶在 homeFeedDidFinishLoading: 之前。
+    {
+        Class zdCls = NSClassFromString(@"ZHZhidaTab");
+        if (zdCls) {
+            gBanner312Installed = (ZHSwap(zdCls, @selector(tryShowColdStartBubble),
+                                          (IMP)ZP_Banner_zhidaTryShow) != NULL);
+            if (!gBanner312Installed)
+                NSLog(@"[zhplugin] install segment banner(v3.12): tryShowColdStartBubble swap failed");
+        } else NSLog(@"[zhplugin] install segment banner(v3.12): ZHZhidaTab missing, skip");
+    }
     gBannerHookInstalled = (ok > 0);
-    NSLog(@"[zhplugin] install segment banner: swapped %d/%d installed=%d v311 %d/%d",
-          ok, total, gBannerHookInstalled, gBanner311Ok, gBanner311Total);
+    NSLog(@"[zhplugin] install segment banner: swapped %d/%d installed=%d v311 %d/%d v312=%d",
+          ok, total, gBannerHookInstalled, gBanner311Ok, gBanner311Total, gBanner312Installed);
 }
 
 // 段1：纯黑——主题发色点 hook（与底栏/设置两段解耦，互不拖累）
