@@ -5,7 +5,7 @@
 // - 2026-10-30 Muse：脚本按 URL 分发处理各接口。getBottomNav：底部清单 5 项删 post 与 score，navVersion 顺延标记防按版本跳过；第 3 位动作键逻辑写死在 App 代码内，插件层试过 type/order/顺序均无效，已由改包修复，须配合改包版使用。init：clientLevelOneNavV2 删 en 为 hotRank 的热榜项。帖子详情页是随包下发的离线 H5（frontendofflinepkg 的 bbs-detailapp-opg 包），脚本改写该接口的升级清单，把详情包的下载地址与 md5 换成本仓库的改色包（深色变量改 OLED 黑）；另有一段 bbs-m-web 主题 CSS 改写，作用于 m.hupu.com 网页版（详情页不走它）。basketballapi/news/v3/tab（tagCode=nba）：入口清单删「战术百科」与「2K手游」，保留赛程、数据、主队。
 // - 2026-11-21 Muse：新增 getRecommendList 游戏推广卡过滤（服务器文案特征法，原独立插件 hupu-gamecard 合并进来，命中弹通知报标题）。
 // - 2026-11-25 Muse：v1 真机漏检（鬼杀队卡再现、无通知）。二进制 Swift 元数据定案游戏卡模型 HCHomeRecommendGameItemModel 独有键 actionButtonTitle/actionButtonScheme/actionLabelName，v2 改以结构键为主判据（命中任一即删）、文案组为备判据。
-// - 2026-11-27 Muse：适配商店最新版 8.2.70（用户抓包定案）：广告全走 goblin interfaceAd/getOther（开屏 pid=999、信息流、评论、资讯、专区），脚本在请求阶段直接本地回无填充（ad_code=-41、ads=[]，与真实空响应同构），不走网络、开屏无广告可播直接进首页；插件另 reject 穿山甲 get_ads 砍掉开屏竞价瀑布的等待。底部栏试删 post+deeptalk 的三项版，真机实测与 8.1.9 同样错位（第 3 位按位置写死为发布键、「我的」顶上误弹发布），用户拍板恢复五项、底部栏不再动，getBottomNav 处理已撤除。同日加去「问深聊」：帖子详情 threads/refactor 响应的 data.deepTalk 一并驱动顶栏问AI按钮、帖下问深聊卡与评论区 @深聊 引导，脚本把 needShow/replyAiShow 关掉并清空文案。
+// - 2026-11-27 Muse：适配商店最新版 8.2.70（用户抓包定案）：广告全走 goblin interfaceAd/getOther（开屏 pid=999、信息流、评论、资讯、专区），脚本在请求阶段直接本地回无填充（ad_code=-41、ads=[]，与真实空响应同构），不走网络、开屏无广告可播直接进首页；插件另 reject 穿山甲 get_ads 砍掉开屏竞价瀑布的等待。底部栏试删 post+deeptalk 的三项版，真机实测与 8.1.9 同样错位（第 3 位按位置写死为发布键、「我的」顶上误弹发布），用户拍板恢复五项、底部栏不再动，getBottomNav 处理已撤除。同日加去「问深聊」：帖子详情 threads/refactor 响应的 data.deepTalk 一并驱动顶栏问AI按钮、帖下问深聊卡与评论区 @深聊 引导，脚本把 needShow/replyAiShow 关掉并清空文案。插件文件另融合树先生（ishowshu）的重写规则一组（我的页游戏栏目/VIP推广、横幅、榜单等，详见插件修改日志）。
 // - 2026-11-27 Muse：v2 真机再漏检（《凡人问道》卡，三组文案齐全仍漏、无通知）。静态核对：接口路径与二进制一致（bbsallapi/recommend/v2/getRecommendList），疑点收窄到送达（首页容器发请求的域名未必是 bbs 域名）或条目结构再变。v3 双管：插件规则加 games 域名一条、路径前缀放宽；脚本加疑似诊断——条目带 action* 键或只命中 1 组文案时不删但弹通知报该条目的键名清单，拿真实特征定案。
 (function () {
   try {
@@ -59,6 +59,7 @@
       if (obj && Array.isArray(obj.ads)) {
         obj.ads = [];
         obj.ad_code = -41;
+        if ('interval' in obj) obj.interval = 0;
         if (!('show_type' in obj)) obj.show_type = 0;
         $done({ body: JSON.stringify(obj) });
       } else {
