@@ -1,14 +1,11 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.17 (2026-11-27)：v8.16 实测两
-// 个问题都还在（用户 12:59 录屏逐帧复核），换源头解法——
-// ① 输入框延迟：进聊天的首次 sweep 时输入栏子视图还没建好、扫空，
-// 此前靠 5 秒 tick 补（录屏量到约 5 秒才变色）。改挂输入栏的
-// layoutSubviews（内容建好后的排版点）补扫，进场即上色。
-// ② 切深浅时底板滞留（两个方向都滞留，浅→深到录屏结束没跟上）：
-// v8.16 的页面 trait 梯队与微信内部类型更新的时机错开。改在
-// MMDynamicColor toColor 里刷新探针——微信类型一变全 App 动态色
-// 必然重走 toColor，翻转本身就是信号，探针一翻立即重涂/还原全栏；
-// 梯队加长到 2.8s 作兜底。v8.15 的 sweep 改判探针、v8.14 的纯黑哨
-// 兵、v8.12 的 ivar 验明均不变。
+// WCBlack.m — 微信深色模式纯黑背景 v8.18 (2026-11-27)：补两处无
+// ivar 的横线（用户 13:23 截图）：发现页朋友圈行上下两条（MMTable-
+// ViewCell，WCTableView 框架按 section 上下线 inset 摆进 cell）、
+// 聊天输入框上方一条（MMInputToolView 的 _toolView 顶边）。两处静态
+// 查证均无 line ivar 可挂，按几何指纹（高 ≤1pt、宽 ≥85%、贴边）在
+// 点名容器的 layout 里藏，受「隐藏分割线」开关管。聊天页切深浅一
+// 线已由用户把 chatbar 设为原色自行解决（强涂与翻转天生冲突），
+// v8.17 的 toColor 探针刷新与 layout 补扫保留、无害。
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -36,7 +33,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.17"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.18"); });
     return l;
 }
 
@@ -68,7 +65,7 @@ static UIColor *WCColorFromHex(NSString *hex) {
     if (!hex || hex.length < 7 || ![hex hasPrefix:@"#"]) return nil;
     unsigned int rgb = 0;
     [[NSScanner scannerWithString:[hex substringFromIndex:1]] scanHexInt:&rgb];
-    // v8.17：纯黑走 Display P3 的 (0,0,0)。sRGB (0,0,0,1) 会被系统内化成
+    // v8.18：纯黑走 Display P3 的 (0,0,0)。sRGB (0,0,0,1) 会被系统内化成
     // blackColor 单例，管线里多处拿「== blackColor / 值归零」当「没设值」
     // （本文件 WCModuleForColor 首句即是），全设纯黑时顶栏被当成没设颜色、
     // 回落原装浅色材质（用户实测：全 #000000 顶栏浅灰、全 #090909 正常）。
@@ -475,6 +472,41 @@ static void WCHideCellLineIn(UIView *root, UITableViewCell *cell, BOOL hide, int
     }
 }
 
+// v8.18：没有 ivar 的线（用户 13:23 两张截图）。发现页朋友圈行上下两条、
+// 聊天输入框上方一条——静态查证：MMInputToolView 无任何 line ivar/方法；
+// 发现页行是 MMTableViewCell（WCTableView 框架），线由框架按
+// WCTableViewSectionManager 的上下线 inset 摆进 cell 层级、同样无 ivar。
+// 这类线只能按几何指纹认：高 ≤1pt、宽 ≥85%、贴宿主上/下边。只在两个
+// 点名容器上跑（MMTableViewCell 全家 + 输入栏 _toolView），受同一个
+// 「隐藏分割线」开关管。
+static BOOL WCIsHairlineFrame(CGRect f, CGFloat W) {
+    return f.size.height > 0 && f.size.height <= 1.0 && f.size.width >= W * 0.85;
+}
+static void WCHideEdgeLines(UIView *host) {
+    if (!host) return;
+    CGFloat W = host.bounds.size.width, H = host.bounds.size.height;
+    if (W < 50 || H < 8) return;
+    for (UIView *v in host.subviews) {
+        if (v.hidden) continue;
+        if ([v isKindOfClass:[UILabel class]] || [v isKindOfClass:[UIControl class]]) continue;
+        CGRect f = v.frame;
+        if (!WCIsHairlineFrame(f, W)) continue;
+        if (f.origin.y <= 1.0 || (f.origin.y + f.size.height) >= H - 1.0) v.hidden = YES;
+    }
+}
+static IMP gO_MMCellLayout;
+static void WC_MMCell_layout(UITableViewCell *s, SEL c) {
+    ((void (*)(id, SEL))gO_MMCellLayout)(s, c);
+    if (!WCHideSep()) return;
+    WCHideEdgeLines(s);
+    WCHideEdgeLines(s.contentView);
+    for (UIView *sub in s.contentView.subviews) WCHideEdgeLines(sub);
+}
+static void WCInstallMMCellHook(void) {
+    Class c = NSClassFromString(@"MMTableViewCell");
+    if (c && !gO_MMCellLayout) gO_MMCellLayout = WCSwapOwn(c, @selector(layoutSubviews), (IMP)WC_MMCell_layout);
+}
+
 static void WCSepTryMarkViaResponder(UITableView *tv);
 static void WCApplySeparators(UITableView *tv) {
     WCSepTryMarkViaResponder(tv);
@@ -525,7 +557,7 @@ static IMP gOrigSetSepStyle, gOrigSetDelegate, gOrigSetDataSource;
 static NSMutableSet<NSString *> *gWDInstalled;
 static NSMutableDictionary<NSString *, NSValue *> *gWDOrigs;
 static void WC_TV_setSepStyle(UITableView *s, SEL c, UITableViewCellSeparatorStyle style) {
-    // v8.17：全局拦截，不再只限首页表
+    // v8.18：全局拦截，不再只限首页表
     if (style != UITableViewCellSeparatorStyleNone && WCHideSep()) {
         if (!objc_getAssociatedObject(s, &kWCSepOrigStyleKey))
             objc_setAssociatedObject(s, &kWCSepOrigStyleKey, @(style), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -591,7 +623,7 @@ static void WC_TV_setDataSource(UITableView *s, SEL c, id d) {
     WCSepOnDelegate(s, d);
 }
 
-// v8.17 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
+// v8.18 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
 // 静态普查完整二进制 46,673 个类，带 separator 视图 ivar 的类 255 个、301 条
 // ivar（名单内嵌于下）。给这些类逐个钩 layoutSubviews（控制器类钩
 // viewDidLayoutSubviews），原实现跑完就在同一次排版里按 ivar 把线藏掉——线
@@ -1198,12 +1230,30 @@ static void WC_In_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id,
 static void WC_In_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_InW)(s, c); if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain]; if (s.window) { WCRegisterBar(gBarsInput, s); WCForceBar(s, @"chatbar", 4); } }
 static void WC_Cont_trait(UIView *s, SEL c, UITraitCollection *p) { ((void (*)(id, SEL, id))gO_ContT)(s, c, p); if (s.window) WCForceBar(s, @"chatbar", 4); WCScheduleDarkRefresh(); }
 static void WC_Cont_window(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContW)(s, c); if (!gBarsInput) gBarsInput = [[NSHashTable weakObjectsHashTable] retain]; if (s.window) { WCRegisterBar(gBarsInput, s); WCForceBar(s, @"chatbar", 4); } }
-// v8.17：输入框上色的源头时机。进聊天时 didMoveToWindow 触发 WCForceBar
+// v8.18：输入框上色的源头时机。进聊天时 didMoveToWindow 触发 WCForceBar
 // 的那一刻，输入栏的子视图（文本框等）还没建好，sweep 扫了个空；此前
 // 只能等 5 秒家务 tick 补扫——用户实测进聊天后约 5 秒输入框才变成设置
 // 色（12:59 录屏逐帧量到 7.1s 处色值才跳）。layoutSubviews 是栏内容
 // 建好后的第一次排版、就在进场动画里，挂它补扫，进场即上色。
-static void WC_In_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_InLayout)(s, c); if (gWCWeChatDark && WCConfigColor(@"field")) WCFieldSweep(s); }
+static void WC_In_layout(UIView *s, SEL c) {
+    ((void (*)(id, SEL))gO_InLayout)(s, c);
+    if (gWCWeChatDark && WCConfigColor(@"field")) WCFieldSweep(s);
+    if (WCHideSep()) {
+        // 输入框上方那条长线：_toolView 自身上下边 + 栏根层与 strip 顶边对齐处
+        Ivar iv = class_getInstanceVariable([s class], "_toolView");
+        UIView *tool = nil;
+        if (iv) { id v = object_getIvar(s, iv); if ([v isKindOfClass:[UIView class]]) tool = v; }
+        if (tool) {
+            WCHideEdgeLines(tool);
+            CGFloat ty = tool.frame.origin.y, W = s.bounds.size.width;
+            for (UIView *v in s.subviews) {
+                if (v.hidden || v == tool) continue;
+                if ([v isKindOfClass:[UILabel class]] || [v isKindOfClass:[UIControl class]]) continue;
+                if (WCIsHairlineFrame(v.frame, W) && fabs(v.frame.origin.y - ty) <= 1.5) v.hidden = YES;
+            }
+        }
+    }
+}
 static void WC_Cont_layout(UIView *s, SEL c) { ((void (*)(id, SEL))gO_ContLayout)(s, c); if (gWCWeChatDark && WCConfigColor(@"field")) WCFieldSweep(s); }
 
 static void WCInstallChatbarHooks(void) {
@@ -1422,7 +1472,7 @@ static id WC_WCColorMgr_getColorValue(id self, SEL _cmd, NSString *name) {
     NSString *dark = parts[1];
     if (dark.length < 7 || [dark characterAtIndex:0] != '#') return orig;
     NSString *hex = [WCHexOfColor(cfg) substringFromIndex:1]; // RRGGBB
-    // v8.17：色板字符串的消费者（顶栏那条路）把 000000 当未设值，写 010101
+    // v8.18：色板字符串的消费者（顶栏那条路）把 000000 当未设值，写 010101
     // 让它认得下这口黑（肉眼与 0 无区别）；对象路径已由 P3 黑保持真 0。
     if ([hex isEqualToString:@"000000"]) hex = @"010101";
     NSString *newDark = [@"#" stringByAppendingString:(dark.length > 7 ? [hex stringByAppendingString:[dark substringFromIndex:7]] : hex)];
@@ -1433,10 +1483,10 @@ static id WC_WCColorMgr_getColorValue(id self, SEL _cmd, NSString *name) {
 static UIColor *WC_MMDynamicColor_toColor(id self, SEL _cmd) {
     UIColor *orig = ((UIColor *(*)(id, SEL))gOrigToColor)(self, _cmd);
     if (!orig || !WCEnabled()) return orig;
-    // v8.17：翻转的源头信号。微信内部深浅类型一变，全 App 的动态色都会
+    // v8.18：翻转的源头信号。微信内部深浅类型一变，全 App 的动态色都会
     // 重新走一遍 toColor——这就是翻转本身。在这里顺手刷新探针（探针自带
     // 0.5 秒缓存、热路径只是一次时间比较），探针一翻立刻重涂/还原全栏，
-    // 不再依赖栏/页面 trait 钩子的触发时机（v8.17 实测：聊天页切深浅时
+    // 不再依赖栏/页面 trait 钩子的触发时机（v8.18 实测：聊天页切深浅时
     // 梯队档位与微信内部类型更新错开，底板滞留到录屏结束都没跟上）。
     if ([NSThread isMainThread]) WCRefreshDarkState(NO);
     if ([UITraitCollection currentTraitCollection].userInterfaceStyle != UIUserInterfaceStyleDark) return orig;
@@ -1501,7 +1551,7 @@ static void WCOnDidBecomeActive(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCGlassResumeRefresh(); });
 }
 
-// v8.17：系统外观翻转时微信内部类型更新时机不固定，setCurrentType: 不一定
+// v8.18：系统外观翻转时微信内部类型更新时机不固定，setCurrentType: 不一定
 // 被调，探针没人刷新——栏的 trait 钩子拿着旧的 gWCWeChatDark 重涂，底栏能
 // 黑着卡到下一个 5 秒家务 tick（用户 11:07 录屏：内容已变浅、底栏黑约 4 秒）。
 // 修法：栏 trait 一翻就排一小梯队探针刷新（事件驱动、无常驻轮询），微信
@@ -1700,7 +1750,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.17 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.18 registered in plugin list");
             break;
         }
     }
@@ -1764,7 +1814,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.17 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.18 source hooks in");
             }
         }
     }
@@ -1782,6 +1832,7 @@ static void WCInstall(void) {
     WCInstallSepGate();
     WCInstallTabHooks();
     WCInstallVCTraitHook();
+    WCInstallMMCellHook();
     static id wcActiveToken = nil;
     if (!wcActiveToken) {
         wcActiveToken = [[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) { WCOnDidBecomeActive(); }] retain];
