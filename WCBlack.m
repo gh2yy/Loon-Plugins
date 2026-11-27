@@ -1,4 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.31 (2026-11-27)：发送图片预览页
+// WCBlack.m — 微信深色模式纯黑背景 v8.32 (2026-11-27)：v8.31 钩错预览
+// 页（聊天相册点开的实际是 MMImagePreviewBrowserController），改钩其
+// _blurView/_bottomBar。v8.31：发送图片预览页
 // （MsgImgPickerPreviewViewController）底部面板发白——该页强制深色、
 // 顶栏与照片区都正常，唯独底部 footerBkg 的毛玻璃层落到浅色外观
 // （实测整块 #C6C6C6）。在该页 viewDidLayoutSubviews 后把 footerBkg
@@ -68,7 +70,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.31"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.32"); });
     return l;
 }
 
@@ -2035,7 +2037,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.31 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.32 registered in plugin list");
             break;
         }
     }
@@ -2082,13 +2084,19 @@ static void WCInstallVCTraitHook(void) {
 
 // v8.31：发送图片预览页底部面板发白。该页控制器写死深色外观
 // (overrideUserInterfaceStyle 返回 2)，顶栏 #212121、照片区纯黑都正常，
-// 只有底部 footerBkg 里的毛玻璃层（addBlurEffectWithColor: 建的
-// UIVisualEffectView）落到浅色，整块渲染成 #C6C6C6。插件的色板引擎
-// 够不着这层（它不从 WCColorMgr 取色），故在该页布局后定点处理：
-// 把 footerBkg 子树里的毛玻璃换成深色效果、contentView 盖 bg 模块色。
-// 用关联对象记住自己装的 effect 实例，微信若换回则下次布局再装。
+// 只有底部毛玻璃层（addBlurEffectWithColor: 建的 UIVisualEffectView）
+// 落到浅色，整块渲染成 #C6C6C6。插件的色板引擎够不着这层（它不从
+// WCColorMgr 取色），故在该页布局后定点处理：把毛玻璃换成深色
+// 效果、contentView 盖 bg 模块色。用关联对象记住自己装的 effect
+// 实例，微信若换回则下次布局再装。
+// v8.32：v8.31 钩错了页面——聊天里从相册格子点开的预览实际是
+// MMImagePreviewBrowserController（initSelectCheckButton 顶右勾选圈、
+// onOriginImageCheck 原图、OnSend 发送、_blurView/_bottomBar），
+// MsgImgPickerPreviewViewController 是另一入口的旧预览页。改钩前者
+// 的 _blurView（getter）与 _bottomBar（KVC 兜底），旧钩保留无害。
 static char kWCForcedEffectKey;
 static IMP gO_PreviewLayout = NULL;
+static IMP gO_BrowserLayout = NULL;
 static void WCDeepDarkenEffectViews(UIView *v, UIColor *cover, int depth) {
     if (!v || depth > 6) return;
     if ([v isKindOfClass:[UIVisualEffectView class]]) {
@@ -2103,18 +2111,39 @@ static void WCDeepDarkenEffectViews(UIView *v, UIColor *cover, int depth) {
     }
     for (UIView *sub in v.subviews) WCDeepDarkenEffectViews(sub, cover, depth + 1);
 }
-static void WC_Preview_layout(UIViewController *s, SEL c) {
-    ((void (*)(id, SEL))gO_PreviewLayout)(s, c);
+static void WCFixPreviewBottom(UIViewController *s) {
     if (!gWCWeChatDark) return;
     UIColor *bg = WCConfigColor(@"bg");
     if (!bg) return;
-    UIView *footer = nil;
-    if ([s respondsToSelector:@selector(footerBkg)]) footer = [s performSelector:@selector(footerBkg)];
-    if (footer) WCDeepDarkenEffectViews(footer, bg, 0);
+    if ([s respondsToSelector:@selector(footerBkg)]) {
+        UIView *footer = [s performSelector:@selector(footerBkg)];
+        if (footer) WCDeepDarkenEffectViews(footer, bg, 0);
+    }
+    if ([s respondsToSelector:@selector(blurView)]) {
+        UIView *blur = [s performSelector:@selector(blurView)];
+        if (blur) {
+            if (blur.backgroundColor != bg) blur.backgroundColor = bg;
+            WCDeepDarkenEffectViews(blur, bg, 0);
+        }
+        @try {
+            UIView *bar = [s valueForKey:@"bottomBar"];
+            if (bar && bar != blur) WCDeepDarkenEffectViews(bar, bg, 0);
+        } @catch (id e) {}
+    }
+}
+static void WC_Preview_layout(UIViewController *s, SEL c) {
+    ((void (*)(id, SEL))gO_PreviewLayout)(s, c);
+    WCFixPreviewBottom(s);
+}
+static void WC_Browser_layout(UIViewController *s, SEL c) {
+    ((void (*)(id, SEL))gO_BrowserLayout)(s, c);
+    WCFixPreviewBottom(s);
 }
 static void WCInstallPreviewHook(void) {
     Class c = NSClassFromString(@"MsgImgPickerPreviewViewController");
     if (c && !gO_PreviewLayout) gO_PreviewLayout = WCSwapOwn(c, @selector(viewDidLayoutSubviews), (IMP)WC_Preview_layout);
+    Class b = NSClassFromString(@"MMImagePreviewBrowserController");
+    if (b && !gO_BrowserLayout) gO_BrowserLayout = WCSwapOwn(b, @selector(viewDidLayoutSubviews), (IMP)WC_Browser_layout);
 }
 
 static void WCInstall(void) {
