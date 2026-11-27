@@ -1893,7 +1893,8 @@ static void ZPAppendBannerDiag(NSMutableString *s) {
     }
     NSUInteger total = 0;
     for (NSString *k in [[gBannerBlockCounts allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
-        NSUInteger c = gBannerBlockCounts[k].unsignedLongValue;
+        NSNumber *num = gBannerBlockCounts[k];
+        NSUInteger c = num ? num.unsignedLongValue : 0;
         total += c;
         [s appendFormat:@"  %@ = %lu\n", k, (unsigned long)c];
     }
