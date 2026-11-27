@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v33 (2026-11-27)
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v35 (2026-11-27)
 // v32：容器路线（用户点选）——不再借系统盘当选中指示：系统盘整盘隐藏，改在原栏内嵌
 //   UIGlassContainerEffect 容器，底座与选中药丸都是自己的玻璃（药丸 Regular + interactive），
 //   选中态插件自管（点击即定、药丸位置只作程序切换时的跟随校验）。几何与图标管线沿 v31。
@@ -12,6 +12,10 @@
 //   系统盘又活了（疑似新实例，旧的藏了、新的没藏）：畸形那个是系统透镜在目标槽的弹簧
 //   中途形变、窜出胶囊上沿（我们的药丸被容器裁剪、物理上出不了胶囊）；改每轮排版全栏
 //   扫一遍、所有 PlatterView 实例一律藏，药丸跟随改读最后一个（最新）盘。
+// v35（v64 实测回滚）：全藏 PlatterView 把 tab 点击弄死了——用户裁图定案：栏里是两层
+//   胶囊叠着，点击焦点在下层（系统盘那层）、不在上层；且多藏的那只盘是 App 切页链路的
+//   承重件，藏了就切不动。盘处理整段回滚 v33 原样（只藏 HPFindPlatter 找到的那一只、
+//   几何也用它），待确认状态机保留（纯显示逻辑、不碰路由）。双焦点问题改走别的路再议。
 // v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
 //   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
 //   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
@@ -747,29 +751,11 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     // 系统选择盘（v32）：整盘隐藏——选中指示改由容器里的自有药丸承担。盘只剩两个用处：
     // 它的框仍是胶囊几何的定案来源（v28)；它内部的药丸在程序切页时仍会移动，
     // KVO 跟随它做程序切换的选中校验。藏视图不影响它内部排版与动画。
-    // v34：v33 实测点击时冒出两个焦点——系统盘又活了（疑似换了新实例，只藏旧的那只
-    // 没用）。改全栏扫：所有 PlatterView 实例一律藏；几何/药丸跟随用最后一只（最新）。
+    // v35 回滚：v64 把所有 PlatterView 全藏之后 tab 点击失效——多藏的那只盘是 App
+    // 切页链路的承重件。此段恢复 v33 原样：只藏找到的那一只、几何也用它。
     int hpPlateDepth = 0;
     NSString *hpPlateSup = @"-";
-    UIView *hpPlate = nil;
-    {
-        NSMutableArray *level = [NSMutableArray arrayWithObject:bar];
-        UIView *last = nil;
-        for (int d = 0; d < 6 && level.count; d++) {
-            NSMutableArray *next = [NSMutableArray array];
-            for (UIView *v in level) {
-                if (v != bar && [NSStringFromClass([v class]) containsString:@"PlatterView"] &&
-                    v.frame.size.width > 30 && v.frame.size.height > 20) {
-                    v.hidden = YES;
-                    last = v;
-                }
-                [next addObjectsFromArray:v.subviews];
-            }
-            level = next;
-        }
-        hpPlate = last;
-    }
-    if (!hpPlate) hpPlate = HPFindPlatter(bar, &hpPlateDepth, &hpPlateSup);
+    UIView *hpPlate = HPFindPlatter(bar, &hpPlateDepth, &hpPlateSup);
     if (hpPlate) hpPlate.hidden = YES;
     CGRect plateInBar = hpPlate ? [bar convertRect:hpPlate.bounds fromView:hpPlate] : CGRectZero;
 
@@ -1037,7 +1023,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v34 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v35 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
