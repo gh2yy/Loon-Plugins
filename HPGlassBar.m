@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑悬浮底栏 v13.6 (2026-11-27)
+// HPGlassBar.m — 虎扑悬浮底栏 v13.7 (2026-11-27)
 // 本版以 v12 为基线（用户指定「那个可用的插件」），只加两件、其余逐字不动：
 // ①嫁接 v14 起的场景桥接 HPSceneBridge——现行改包带 UIScene 清单，缺桥接会黑屏；
 // ②首页信息流上滑隐藏底栏（下滑或回到顶部恢复；渐隐渐显 + 下沉/回位，0.15 秒快动效；只在首页根页面生效，切 tab/进帖子页强制显示）。
@@ -336,10 +336,10 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
 }
 
 
-#pragma mark - 首页滑动隐藏底栏（v13.6 新增）
+#pragma mark - 首页滑动隐藏底栏（v13.7 新增）
 // v13 首版按系统 UITabBarController 找首页，真机无反应：虎扑的标签控制器是 App 自写的，
 // 既不是 UITabBarController 子类、bar 的 controller 属性也拿不到它，滚动源根本没绑上。
-// v13.6 不再依赖标签控制器类型：沿响应链找托管底栏的 VC、按子 VC 可见性定当前标签页，
+// v13.7 不再依赖标签控制器类型：沿响应链找托管底栏的 VC、按子 VC 可见性定当前标签页，
 // 再叠加插件自己记录的选中序号（选中态钩子所得）把关；VC 路线找不到时整窗兜底扫描。
 
 static char kBarHiddenKey;
@@ -351,13 +351,14 @@ static char kSelIdxKey;
 static char kBindRetryKey;
 static char kSlideCurKey;
 static char kSlideLinkKey;
+static char kAccumKey;
 
 @interface HPFeedObserver : NSObject
 @property (nonatomic, assign) UIView *bar;
 @end
 
 // 只滑动进出（用户定）：上滑整栏下滑消失、下滑整栏上滑回来，隐藏与出现互为逆向。
-// v13.3–v13.6 三种平移全被吃掉（真机定案）：底栏归 Auto Layout 管，排版引擎在插件
+// v13.3–v13.7 三种平移全被吃掉（真机定案）：底栏归 Auto Layout 管，排版引擎在插件
 // 排版钩子之后还会再写一次栏的位置，把平移量吸收掉；钩子里重钉也赶不上。改用
 // CADisplayLink 逐帧驱动：每帧在排版之后把平移重新断言一次，吸收了下一帧就钉回来；
 // 隐藏期间链保持运行（终点状态持续断言），滑回出现并到位后才停链。推进用指数缓动，
@@ -469,9 +470,24 @@ static UIViewController *HPHomeRootVC(UIView *bar) {
     NSNumber *last = objc_getAssociatedObject(sv, &kSVLastOffKey);
     CGFloat dy = last ? y - last.doubleValue : 0;
     objc_setAssociatedObject(sv, &kSVLastOffKey, @(y), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (y <= 50) HPSetBarHidden(self.bar, NO, YES);
-    else if (dy > 4 && y > 140) HPSetBarHidden(self.bar, YES, YES);
-    else if (dy < -4) HPSetBarHidden(self.bar, NO, YES);
+    // 触发改累计判定（v13.7）：绑定的滚动区逐帧 dy 带抖动，逐帧阈值会让隐藏指令
+    // 下一帧就被反向顶掉——前几版栏「钉在原地/往上跳一下」都是这么来的。
+    // 改为同向累计过 30pt 才切换，方向一变清零重计；抖动在累计里互相抵消。
+    NSNumber *accN = objc_getAssociatedObject(self.bar, &kAccumKey);
+    CGFloat acc = accN ? accN.doubleValue : 0;
+    if ((acc > 0 && dy < 0) || (acc < 0 && dy > 0)) acc = dy; else acc += dy;
+    BOOL hidden = [objc_getAssociatedObject(self.bar, &kBarHiddenKey) boolValue];
+    if (y <= 50) {
+        if (hidden) HPSetBarHidden(self.bar, NO, YES);
+        acc = 0;
+    } else if (!hidden && acc > 30 && y > 140) {
+        HPSetBarHidden(self.bar, YES, YES);
+        acc = 0;
+    } else if (hidden && acc < -30) {
+        HPSetBarHidden(self.bar, NO, YES);
+        acc = 0;
+    }
+    objc_setAssociatedObject(self.bar, &kAccumKey, @(acc), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 @end
 
@@ -516,6 +532,18 @@ static void HPBindFeedScrollViews(UIView *bar) {
     if (rootVC && rootVC.view) HPCollectFeedSVs(rootVC.view, nil, found);
     if (found.count == 0 && homeTab && bar.window)
         HPCollectFeedSVs(bar.window, bar, found); // 兜底：整窗找（跳过底栏自身）
+    // 只留真正竖向滚动的最内层：横向分页器（contentSize 宽大于高）剔除；
+    // 同时命中祖先/后代滚动区时只留后代（外层多是头部折叠容器，dy 带抖动）
+    NSMutableArray *filtered = [NSMutableArray array];
+    for (UIScrollView *sv in found) {
+        if (sv.contentSize.width > sv.frame.size.width * 1.5) continue;
+        BOOL hasDescendantSV = NO;
+        for (UIScrollView *other in found) {
+            if (other != sv && [other isDescendantOfView:sv]) { hasDescendantSV = YES; break; }
+        }
+        if (!hasDescendantSV) [filtered addObject:sv];
+    }
+    found = filtered;
     if (found.count == 0) {
         HPUnbindFeedSVs(bar, obs);
         HPSetBarHidden(bar, NO, YES);
@@ -663,7 +691,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
 
-    HPBindFeedScrollViews(bar); // v13.6：首页滑动隐藏底栏的滚动源绑定
+    HPBindFeedScrollViews(bar); // v13.7：首页滑动隐藏底栏的滚动源绑定
     // 排版末尾对齐滑动状态：链在跑时不插手（逐帧驱动中），没链时直接按标记落位
     if (!objc_getAssociatedObject(bar, &kSlideLinkKey)) {
         CGFloat t = HPSlideTarget(bar);
@@ -787,7 +815,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v13.6 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v13.7 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
