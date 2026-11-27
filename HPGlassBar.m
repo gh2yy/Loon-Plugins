@@ -1,4 +1,7 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v5 (2026-11-26)
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v25 (2026-11-27)
+// v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
+//   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
+//   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
 // 沿革：v1 挂错类零反应；v2 挂对 Swift 真底栏但玻璃自拼、槽位自算差 34pt；v3 修位置；v4 照 XHSNative
 //   plateOn 配方重做玻璃盘并过滤隐藏 button；v5 按用户定的做法重构按钮层（同 XHSNative 的 rebuildTabs 路线）：
 //   自建按钮复制原按钮的图标/标题/颜色/内部布局，原按钮隐藏；点击不走原按钮的触摸，直接调底栏自己的
@@ -173,8 +176,8 @@ static void HPSetPlateFrame(UIView *plate, CGRect f) {
 static void HPApplyCapsuleShadow(UIView *plate) {
     CALayer *l = plate.layer;
     l.shadowColor = [UIColor blackColor].CGColor;
-    l.shadowOpacity = 0.14;
-    l.shadowRadius = 10;
+    l.shadowOpacity = 0.22;
+    l.shadowRadius = 14;
     l.shadowOffset = CGSizeMake(0, 5);
     l.shadowPath = [UIBezierPath bezierPathWithRoundedRect:plate.bounds
                                               cornerRadius:plate.bounds.size.height / 2].CGPath;
@@ -352,43 +355,17 @@ static void HPHideBarBackground(UIView *bar, NSArray *btns) {
         UIView *bg = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(backgroundView));
         if (bg && !HPIsAncestorOfAny(bg, btns)) bg.hidden = YES;
     }
-    // mixView：App 自己的混合层（v45 实测它在胶囊下留了一层灰底、还把玻璃蒙灰），一并隐藏
-    if ([bar respondsToSelector:@selector(mixView)]) {
-        UIView *mv = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(mixView));
-        if (mv && !HPIsAncestorOfAny(mv, btns)) mv.hidden = YES;
-    }
-    // 白名单（v17）：底栏里只许有原按钮、自建行和玻璃。App 在 Loon 砍掉 tab 后会重建底栏、
-    // 把自带的灰底胶囊（宽度约栏宽 78%、躲过旧的尺寸过滤）铺回来垫在玻璃下面成双层——
-    // 不再按尺寸猜，非按钮非我方的一律藏。
-    for (UIView *v in [bar.subviews copy]) {
+    CGRect bounds = bar.bounds;
+    for (UIView *v in bar.subviews) {
         if (v == capsule || v == lens) continue;
-        // v24 关键修正：系统自带选择盘 _UITabBarItemPlatterView 必须留着——v45 的 duang 弹簧
-        // 就是它在动，v17 白名单把它藏掉后原生动效就再没回来过（v49–v54 一直在手写凑）。
-        if ([NSStringFromClass([v class]) containsString:@"PlatterView"]) continue;
         if ([mine containsObject:v]) continue;
-        if ([btns containsObject:v]) continue;
         if (HPIsAncestorOfAny(v, btns)) continue;
-        v.hidden = YES;
+        CGRect f = v.frame;
+        BOOL fullBg = f.size.width >= bounds.size.width * 0.9 && f.size.height >= bounds.size.height * 0.9;
+        BOOL topLine = f.size.height <= 1.0 && f.size.width >= bounds.size.width * 0.9;
+        if (fullBg || topLine) v.hidden = YES;
     }
     bar.backgroundColor = [UIColor clearColor];
-    // 栏外同级底板：App 也可能把底板铺在栏的父视图里、垫在栏身后（尺寸与栏相仿、居于栏内）
-    UIView *sup = bar.superview;
-    if (sup) {
-        CGRect bf = bar.frame;
-        NSArray *sibs = sup.subviews;
-        NSUInteger bi = [sibs indexOfObject:bar];
-        if (bi != NSNotFound) {
-            for (NSUInteger i = 0; i < bi; i++) {
-                UIView *v = sibs[i];
-                if (HPIsAncestorOfAny(v, btns)) continue;
-                CGRect f = v.frame;
-                BOOL sized = f.size.width >= bf.size.width * 0.4 && f.size.width <= bf.size.width * 1.05 &&
-                             f.size.height >= bf.size.height * 0.4 && f.size.height <= bf.size.height * 1.3;
-                BOOL centered = CGRectContainsPoint(bf, CGPointMake(CGRectGetMidX(f), CGRectGetMidY(f)));
-                if (sized && centered) v.hidden = YES;
-            }
-        }
-    }
 }
 
 static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
@@ -437,16 +414,6 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     CGFloat capY = CGRectGetMidY(rowRect) - capH / 2;
     if (capY < 2) capY = 2;
     if (capY + capH > bounds.size.height - 4) capY = bounds.size.height - 4 - capH;
-    // 胶囊与系统选择盘同框：v45 两层感就是两者差了 8pt 没对齐；对齐后盘在胶囊里滑、边缘重合
-    for (UIView *v in bar.subviews) {
-        if ([NSStringFromClass([v class]) containsString:@"PlatterView"] &&
-            v.frame.size.width > 50 && v.frame.size.height > 20) {
-            capX = v.frame.origin.x; capY = v.frame.origin.y;
-            capW = v.frame.size.width; capH = v.frame.size.height;
-            slotW = (capW - 24) / (CGFloat)btns.count;
-            break;
-        }
-    }
     CGRect capRect = CGRectMake(capX, capY, capW, capH);
 
     // 同步数据 + 隐藏原按钮
@@ -480,9 +447,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     NSNumber *flashing = objc_getAssociatedObject(bar, &kLensFlashActiveKey);
     if (!flashing.boolValue) { lens.hidden = YES; lens.alpha = 0.0; }
 
-    // 层级：胶囊 < 系统选择盘 < 透镜 < 自建按钮
-    for (UIView *v in bar.subviews)
-        if ([NSStringFromClass([v class]) containsString:@"PlatterView"]) { [bar bringSubviewToFront:v]; break; }
+    // 层级：胶囊 < 透镜 < 自建按钮
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
 }
@@ -622,7 +587,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v24 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v25 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
@@ -719,19 +684,19 @@ static void HPInstall(void) {
 
 - (void)hpAttachWindowToScene:(UIScene *)scene {
     if (![scene isKindOfClass:[UIWindowScene class]]) return;
+    if (self.window && self.window.windowScene == (UIWindowScene *)scene) return;
     id appDelegate = [[UIApplication sharedApplication] delegate];
-    UIWindow *w = self.window;
-    if (!w && appDelegate && [appDelegate respondsToSelector:@selector(window)]) {
+    UIWindow *w = nil;
+    if (appDelegate && [appDelegate respondsToSelector:@selector(window)]) {
         w = [appDelegate performSelector:@selector(window)];
     }
-    if (!w) return;
-    if (w.windowScene != (UIWindowScene *)scene) {
+    if (!w) w = self.window;
+    if (w) {
         w.windowScene = (UIWindowScene *)scene;
         self.window = w;
         [w makeKeyAndVisible];
         NSLog(@"[HPGlass] scene bridge attached window: %@", w);
     }
-    [self hpFixSafeArea:w scene:scene];
 }
 
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
@@ -744,6 +709,7 @@ static void HPInstall(void) {
         [self.hpPendingActs unionSet:connectionOptions.userActivities];
     }
     [self hpAttachWindowToScene:scene];
+    if (self.window) [self hpFixSafeArea:self.window scene:scene];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ [self hpAttachWindowToScene:scene]; });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
@@ -752,6 +718,7 @@ static void HPInstall(void) {
 
 - (void)sceneDidBecomeActive:(UIScene *)scene {
     [self hpAttachWindowToScene:scene];
+    if (self.window) [self hpFixSafeArea:self.window scene:scene];
     [self hpFlushPending];
 }
 
