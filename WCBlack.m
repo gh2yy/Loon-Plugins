@@ -472,6 +472,7 @@ static void WCHideCellLineIn(UIView *root, UITableViewCell *cell, BOOL hide, int
     }
 }
 
+static IMP WCSwapOwn(Class cls, SEL sel, IMP newImp);
 // v8.18：没有 ivar 的线（用户 13:23 两张截图）。发现页朋友圈行上下两条、
 // 聊天输入框上方一条——静态查证：MMInputToolView 无任何 line ivar/方法；
 // 发现页行是 MMTableViewCell（WCTableView 框架），线由框架按
