@@ -1,5 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.35 (2026-11-28)：诊断 M 路改全量
-// 记录（v8.34 的过滤把新页面主题色名滤没了），配冷启动协议抓卡片色名。
+// WCBlack.m — 微信深色模式纯黑背景 v8.36 (2026-11-28)：修 v8.34 诊断
+// 闪退——记录存储无锁、多线程并发写同一字典；全部读写加锁后重发。
+// v8.35（未交付）：诊断 M 路改全量记录，配冷启动协议抓卡片色名。
 // v8.34：新增公众号列表 / 详情两个背景模块（先占位）+ 临时颜色诊断区。
 // v8.33：预览页底部操作
 // 行已黑、已选缩略图条（MMAssetSelectedCollectionView）还亮着，一并置深。
@@ -75,7 +76,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.35"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.36"); });
     return l;
 }
 
@@ -1645,38 +1646,57 @@ static NSDictionary *WCNameModuleMap(void);
 static NSString *const kWCDiagOnKey = @"WCBlack.diagOn";
 static NSString *const kWCDiagStoreKey = @"WCBlack.diagStore";
 static NSMutableDictionary *gWCDiagStore = nil;
+static NSLock *gWCDiagLock = nil;
 static NSTimeInterval gWCDiagLastSave = 0;
 static BOOL WCDiagOn(void) { return [[NSUserDefaults standardUserDefaults] boolForKey:kWCDiagOnKey]; }
-static NSMutableDictionary *WCDiagStore(void) {
-    if (!gWCDiagStore) {
+// v8.36 修闪退：v8.34 的记录存储没有任何同步——取色钩子跑在任意线程
+// （Flutter 引擎线程、CSS 解析线程、主线程都在调），多线程同时写同一个
+// NSMutableDictionary 把堆写坏，表现为开诊断后偶现闪退。改为 dispatch_once
+// 建锁+存储，所有读写全程持锁；落盘在锁外做快照。
+static void WCDiagInitOnce(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gWCDiagLock = [[NSLock alloc] init];
         gWCDiagStore = [[NSMutableDictionary alloc] init];
         NSDictionary *saved = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kWCDiagStoreKey];
         if (saved) [gWCDiagStore addEntriesFromDictionary:saved];
-    }
-    return gWCDiagStore;
+    });
 }
 static void WCDiagRecord(NSString *key, NSString *sample) {
     if (!key || !WCDiagOn()) return;
-    NSMutableDictionary *st = WCDiagStore();
-    NSMutableDictionary *e = st[key];
-    if (!e) { e = [NSMutableDictionary dictionary]; st[key] = e; }
+    WCDiagInitOnce();
+    [gWCDiagLock lock];
+    NSMutableDictionary *e = gWCDiagStore[key];
+    if (!e) { e = [NSMutableDictionary dictionary]; gWCDiagStore[key] = e; }
     e[@"n"] = @([e[@"n"] longValue] + 1);
-    if (sample) e[@"s"] = sample;
+    if (sample && !e[@"s"]) e[@"s"] = sample;
+    NSDictionary *snap = nil;
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (now - gWCDiagLastSave > 2.0) {
         gWCDiagLastSave = now;
-        [[NSUserDefaults standardUserDefaults] setObject:st forKey:kWCDiagStoreKey];
+        snap = [gWCDiagStore copy];
+    }
+    [gWCDiagLock unlock];
+    if (snap) {
+        [[NSUserDefaults standardUserDefaults] setObject:snap forKey:kWCDiagStoreKey];
         [[NSUserDefaults standardUserDefaults] synchronize];
+        [snap release];
     }
 }
 static void WCDiagClear(void) {
-    [WCDiagStore() removeAllObjects];
+    WCDiagInitOnce();
+    [gWCDiagLock lock];
+    [gWCDiagStore removeAllObjects];
+    [gWCDiagLock unlock];
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:kWCDiagStoreKey];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 static NSString *WCDiagText(void) {
-    NSDictionary *st = WCDiagStore();
-    if (!st.count) return @"（暂无记录）";
+    WCDiagInitOnce();
+    [gWCDiagLock lock];
+    NSDictionary *st = [gWCDiagStore copy];
+    [gWCDiagLock unlock];
+    if (!st.count) { [st release]; return @"（暂无记录）"; }
     NSArray *keys = [st keysSortedByValueUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
         long na = [a[@"n"] longValue], nb = [b[@"n"] longValue];
         return na < nb ? NSOrderedDescending : (na > nb ? NSOrderedAscending : NSOrderedSame);
@@ -1687,6 +1707,7 @@ static NSString *WCDiagText(void) {
         [out appendFormat:@"%@ ×%ld%@\n", k, (long)[e[@"n"] longValue],
             e[@"s"] ? [@"  " stringByAppendingString:e[@"s"]] : @""];
     }
+    [st release];
     return out;
 }
 // 未映射的不透明灰阶（toColor 路）：命中返回 @"G:#XX"，否则 nil
@@ -2201,7 +2222,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.35 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.36 registered in plugin list");
             break;
         }
     }
