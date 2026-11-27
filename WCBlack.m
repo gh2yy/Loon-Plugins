@@ -1,4 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.33 (2026-11-27)：预览页底部操作
+// WCBlack.m — 微信深色模式纯黑背景 v8.34 (2026-11-28)：新增公众号列表 /
+// 详情两个背景模块（先占位）+ 临时颜色诊断区，为两页找取色名与灰阶值。
+// v8.33：预览页底部操作
 // 行已黑、已选缩略图条（MMAssetSelectedCollectionView）还亮着，一并置深。
 // v8.32：v8.31 钩错预览
 // 页（聊天相册点开的实际是 MMImagePreviewBrowserController），改钩其
@@ -72,14 +74,14 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.33"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.34"); });
     return l;
 }
 
 #pragma mark - 配置
 
 static NSString *const kWCEnabledKey = @"WCBlack.enabled";
-static NSArray<NSString *> *WCModules(void) { return @[@"bg", @"cell", @"chatbar", @"field", @"tab"]; }
+static NSArray<NSString *> *WCModules(void) { return @[@"bg", @"cell", @"chatbar", @"field", @"tab", @"bizlist", @"bizdetail"]; }
 static NSString *WCModuleTitle(NSString *m) {
     if ([m isEqualToString:@"bg"]) return @"主背景（列表 / 聊天）";
     if ([m isEqualToString:@"nav"]) return @"顶部导航栏";
@@ -87,6 +89,8 @@ static NSString *WCModuleTitle(NSString *m) {
     if ([m isEqualToString:@"chatbar"]) return @"聊天底部栏";
     if ([m isEqualToString:@"cell"]) return @"置顶行 / 卡片";
     if ([m isEqualToString:@"field"]) return @"输入框底色";
+    if ([m isEqualToString:@"bizlist"]) return @"公众号列表背景";
+    if ([m isEqualToString:@"bizdetail"]) return @"公众号详情背景";
     return m;
 }
 static BOOL WCEnabled(void) {
@@ -1629,6 +1633,94 @@ static void WCInstallTabHooks(void) {
     if (ctlCls && !gO_CtlPrepare) gO_CtlPrepare = WCSwapOwn(ctlCls, @selector(prepareTabBarForTransition:), (IMP)WC_Ctl_prepare);
 }
 
+#pragma mark - v8.34 颜色诊断（临时：给公众号列表/详情页找取色名与灰阶值）
+
+// 公众号列表页是 Flutter 页（BrandTLFlutterViewController）、详情页是网页，
+// 两页背景都不走已映射的老色板名，取色名/灰阶值静态查不到。诊断开时记录
+// 四路未命中的取色：W=WCColorMgr 按名、V=WCColorMgr 按值串、M=新引擎
+// MMColor 按名、G=MMDynamicColor 解析出的未映射不透明灰阶。记录存
+// NSUserDefaults，设置页诊断区可看可清；查清后整段撤除。
+static NSDictionary *WCNameModuleMap(void);
+static NSString *const kWCDiagOnKey = @"WCBlack.diagOn";
+static NSString *const kWCDiagStoreKey = @"WCBlack.diagStore";
+static NSMutableDictionary *gWCDiagStore = nil;
+static NSTimeInterval gWCDiagLastSave = 0;
+static BOOL WCDiagOn(void) { return [[NSUserDefaults standardUserDefaults] boolForKey:kWCDiagOnKey]; }
+static NSMutableDictionary *WCDiagStore(void) {
+    if (!gWCDiagStore) {
+        gWCDiagStore = [[NSMutableDictionary alloc] init];
+        NSDictionary *saved = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kWCDiagStoreKey];
+        if (saved) [gWCDiagStore addEntriesFromDictionary:saved];
+    }
+    return gWCDiagStore;
+}
+static void WCDiagRecord(NSString *key, NSString *sample) {
+    if (!key || !WCDiagOn()) return;
+    NSMutableDictionary *st = WCDiagStore();
+    NSMutableDictionary *e = st[key];
+    if (!e) { e = [NSMutableDictionary dictionary]; st[key] = e; }
+    e[@"n"] = @([e[@"n"] longValue] + 1);
+    if (sample) e[@"s"] = sample;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - gWCDiagLastSave > 2.0) {
+        gWCDiagLastSave = now;
+        [[NSUserDefaults standardUserDefaults] setObject:st forKey:kWCDiagStoreKey];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+}
+static void WCDiagClear(void) {
+    [WCDiagStore() removeAllObjects];
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kWCDiagStoreKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+static NSString *WCDiagText(void) {
+    NSDictionary *st = WCDiagStore();
+    if (!st.count) return @"（暂无记录）";
+    NSArray *keys = [st keysSortedByValueUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        long na = [a[@"n"] longValue], nb = [b[@"n"] longValue];
+        return na < nb ? NSOrderedDescending : (na > nb ? NSOrderedAscending : NSOrderedSame);
+    }];
+    NSMutableString *out = [NSMutableString string];
+    for (NSString *k in keys) {
+        NSDictionary *e = st[k];
+        [out appendFormat:@"%@ ×%ld%@\n", k, (long)[e[@"n"] longValue],
+            e[@"s"] ? [@"  " stringByAppendingString:e[@"s"]] : @""];
+    }
+    return out;
+}
+// 未映射的不透明灰阶（toColor 路）：命中返回 @"G:#XX"，否则 nil
+static NSString *WCDiagGrayOf(UIColor *color) {
+    if (!color) return nil;
+    UIColor *d = [color resolvedColorWithTraitCollection:WCDarkTrait()];
+    CGFloat w = 0, a = 0, r = 0, g = 0, b = 0;
+    if ([d getWhite:&w alpha:&a]) {
+        if (a > 0.95) return [NSString stringWithFormat:@"G:#%02X", (int)lrint(w * 255.0)];
+        return nil;
+    }
+    if ([d getRed:&r green:&g blue:&b alpha:&a] && a > 0.95 && fabs(r - g) < 0.004 && fabs(g - b) < 0.004)
+        return [NSString stringWithFormat:@"G:#%02X", (int)lrint(r * 255.0)];
+    return nil;
+}
+static IMP gOrigMMColorByName, gOrigMMColorByNameAlpha;
+static id WC_MMColor_byName(id self, SEL _cmd, NSString *name) {
+    id orig = ((id (*)(id, SEL, id))gOrigMMColorByName)(self, _cmd, name);
+    if (WCDiagOn() && name && ![name hasPrefix:@"#"] && !WCNameModuleMap()[name]) {
+        NSString *hex = nil;
+        if ([orig isKindOfClass:[UIColor class]]) @try { hex = WCHexOfColorIn((UIColor *)orig, WCDarkTrait()); } @catch (id e) {}
+        WCDiagRecord([@"M:" stringByAppendingString:name], hex);
+    }
+    return orig;
+}
+static id WC_MMColor_byNameAlpha(id self, SEL _cmd, NSString *name, double alpha) {
+    id orig = ((id (*)(id, SEL, id, double))gOrigMMColorByNameAlpha)(self, _cmd, name, alpha);
+    if (WCDiagOn() && name && ![name hasPrefix:@"#"] && !WCNameModuleMap()[name]) {
+        NSString *hex = nil;
+        if ([orig isKindOfClass:[UIColor class]]) @try { hex = WCHexOfColorIn((UIColor *)orig, WCDarkTrait()); } @catch (id e) {}
+        WCDiagRecord([@"M:" stringByAppendingString:name], hex);
+    }
+    return orig;
+}
+
 #pragma mark - v6 底层色源（WCColorMgr 按名发色，在发色处换深色值）
 
 // 微信全 App 的深色出自包内 DesignToken 色板（weui_color*.xml，178 个色名），
@@ -1723,6 +1815,11 @@ static id WC_WCColorMgr_getColor(id self, SEL _cmd, NSString *name) {
     WCRefreshDarkState(NO);
     WCNoteSeen(gWCSeenNames, name);
     id orig = ((id (*)(id, SEL, id))gOrigGetColor)(self, _cmd, name);
+    if (WCDiagOn() && name && !WCNameModuleMap()[name]) {
+        NSString *hex = nil;
+        if ([orig isKindOfClass:[UIColor class]]) @try { hex = WCHexOfColorIn((UIColor *)orig, WCDarkTrait()); } @catch (id e) {}
+        WCDiagRecord([@"W:" stringByAppendingString:name], hex);
+    }
     if (!orig || !name || !WCEnabled()) return orig;
     NSString *module = WCNameModuleMap()[name];
     if (!module || !WCConfigColor(module)) return orig;
@@ -1749,6 +1846,10 @@ static id WC_WCColorMgr_getColor(id self, SEL _cmd, NSString *name) {
 static id WC_WCColorMgr_getColorValue(id self, SEL _cmd, NSString *name) {
     WCNoteSeen(gWCSeenValueNames, name);
     id orig = ((id (*)(id, SEL, id))gOrigGetColorValue)(self, _cmd, name);
+    if (WCDiagOn() && name && !WCNameModuleMap()[name] && [orig isKindOfClass:[NSString class]]) {
+        NSArray *dp = [(NSString *)orig componentsSeparatedByString:@","];
+        WCDiagRecord([@"V:" stringByAppendingString:name], dp.count == 2 ? dp[1] : (NSString *)orig);
+    }
     if (!orig || !name || !WCEnabled()) return orig;
     NSString *module = WCNameModuleMap()[name];
     UIColor *cfg = module ? WCConfigColor(module) : nil;
@@ -1778,6 +1879,7 @@ static UIColor *WC_MMDynamicColor_toColor(id self, SEL _cmd) {
     if ([UITraitCollection currentTraitCollection].userInterfaceStyle != UIUserInterfaceStyleDark) return orig;
     NSString *module = WCValueModuleForDark(orig);
     UIColor *cfg = module ? WCConfigColor(module) : nil;
+    if (!module && WCDiagOn()) { NSString *g = WCDiagGrayOf(orig); if (g) WCDiagRecord(g, nil); }
     if (!cfg) return orig;
     gWCToColorHits++;
     return cfg;
@@ -1896,22 +1998,39 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
     [[NSUserDefaults standardUserDefaults] synchronize];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"WCBlackConfigChanged" object:nil];
 }
+- (void)wcDiagToggle:(UISwitch *)sw {
+    [[NSUserDefaults standardUserDefaults] setBool:sw.on forKey:kWCDiagOnKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"WCBlackConfigChanged" object:nil];
+}
+- (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == 3 && ip.row == 1) {
+        CGRect r = [WCDiagText() boundingRectWithSize:CGSizeMake(tv.bounds.size.width - 64, CGFLOAT_MAX)
+                                              options:NSStringDrawingUsesLineFragmentOrigin
+                                           attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:12]} context:nil];
+        return ceil(r.size.height) + 16;
+    }
+    return 44;
+}
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     if (s == 0) return 1;
     if (s == 2) return 1;
+    if (s == 3) return 3;
     return (NSInteger)WCModules().count;
 }
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
     if (s == 0) return @"总开关";
     if (s == 2) return @"其他";
+    if (s == 3) return @"颜色诊断（临时）";
     return @"各模块颜色（仅深色模式生效）";
 }
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
-    if (s == 1) return @"点模块选颜色：纯黑 / 深灰 / 石墨 / 色谱选择 / 输入色值 / 原色（关闭该模块）。改完即时生效，不用重启微信。";
+    if (s == 1) return @"点模块选颜色：纯黑 / 深灰 / 石墨 / 色谱选择 / 输入色值 / 原色（关闭该模块）。改完即时生效，不用重启微信。公众号两项先占位，诊断查清取色来源后生效。";
     if (s == 2) return @"去掉微信各页面的分割线（会话列表、通讯录、设置等），冷启动也不闪。关掉开关即恢复。";
+    if (s == 3) return @"给公众号列表页、详情页找背景色来源：打开开关 → 去这两个页面各逛一遍 → 回到这里截图。查清后这一区会撤掉。";
     return nil;
 }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -1923,6 +2042,8 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
     cell.textLabel.font = [UIFont systemFontOfSize:17];
     cell.textLabel.numberOfLines = 1;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    UILabel *diagLab0 = (UILabel *)[cell.contentView viewWithTag:8801];
+    if (diagLab0) diagLab0.hidden = !(ip.section == 3 && ip.row == 1);
     if (ip.section == 0) {
         cell.textLabel.text = @"启用 WCBlack";
         cell.detailTextLabel.text = WCEnabled() ? @"开" : @"关";
@@ -1937,6 +2058,40 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
         [sw addTarget:self action:@selector(wcToggleSep:) forControlEvents:UIControlEventValueChanged];
         cell.accessoryView = sw;
         [sw release];
+    } else if (ip.section == 3) {
+        cell.accessoryView = nil;
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        if (ip.row == 0) {
+            cell.textLabel.text = @"记录未映射颜色名";
+            cell.detailTextLabel.text = WCDiagOn() ? @"开" : @"关";
+            UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectZero];
+            sw.on = WCDiagOn();
+            [sw addTarget:self action:@selector(wcDiagToggle:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
+            [sw release];
+        } else if (ip.row == 1) {
+            cell.textLabel.text = nil;
+            cell.detailTextLabel.text = nil;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            UILabel *lab = (UILabel *)[cell.contentView viewWithTag:8801];
+            if (!lab) {
+                lab = [[UILabel alloc] initWithFrame:CGRectZero];
+                lab.tag = 8801;
+                lab.numberOfLines = 0;
+                lab.font = [UIFont systemFontOfSize:12];
+                [cell.contentView addSubview:lab];
+                [lab release];
+                lab = (UILabel *)[cell.contentView viewWithTag:8801];
+            }
+            lab.hidden = NO;
+            lab.textColor = [UIColor labelColor];
+            lab.text = WCDiagText();
+            CGFloat h = [self tableView:tv heightForRowAtIndexPath:ip];
+            lab.frame = CGRectMake(16, 8, tv.bounds.size.width - 64, h - 16);
+        } else {
+            cell.textLabel.text = @"清空记录";
+            cell.detailTextLabel.text = nil;
+        }
     } else {
         NSString *m = WCModules()[ip.row];
         cell.textLabel.text = WCModuleTitle(m);
@@ -1954,6 +2109,10 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
 }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section == 3) {
+        if (ip.row == 2) { WCDiagClear(); [tv reloadData]; }
+        return;
+    }
     if (ip.section == 2) {
         BOOL on = !WCHideSep();
         [[NSUserDefaults standardUserDefaults] setBool:on forKey:kWCHideSepKey];
@@ -2039,7 +2198,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.33 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.34 registered in plugin list");
             break;
         }
     }
@@ -2179,6 +2338,11 @@ static void WCInstall(void) {
             if (!gOrigGetColorValue) gOrigGetColorValue = WCSwap(mgr, @selector(getColorValueForName:), (IMP)WC_WCColorMgr_getColorValue);
             if (!gOrigToColor) gOrigToColor = WCSwap(dyn, @selector(toColor), (IMP)WC_MMDynamicColor_toColor);
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
+            Class mmc = NSClassFromString(@"MMColor");
+            if (mmc) {
+                if (!gOrigMMColorByName) gOrigMMColorByName = WCSwap(mmc, @selector(getColorByName:), (IMP)WC_MMColor_byName);
+                if (!gOrigMMColorByNameAlpha) gOrigMMColorByNameAlpha = WCSwap(mmc, @selector(getColorByName:withAlpha:), (IMP)WC_MMColor_byNameAlpha);
+            }
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
                 os_log(WCLog(), "[WCBlack] v8.18 source hooks in");
