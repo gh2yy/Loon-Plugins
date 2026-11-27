@@ -10,7 +10,7 @@
 
 # - 2026-11-21 Muse：合并原独立插件「虎扑去首页游戏推广卡」：getRecommendList 响应按服务器文案特征（读取进度 / JRs 玩过 / 你玩过的 / shaper 链接，命中≥2 组）删 shaper AI 小游戏推广卡，命中弹通知报标题；待真机首次偶现验证。新脚本行带 ?v=2 破缓存，原有五行未动。
 # - 2026-11-25 Muse：v1 真机漏检（新游戏卡再现且无通知）。改 v2：主判据换成游戏卡模型的独有结构键 actionButtonTitle/actionButtonScheme/actionLabelName（命中任一即删），文案组降为备判据；脚本行升 ?v=3。
-# - 2026-11-27 Muse：游戏卡 v2 再漏检（《凡人问道》卡文案齐全仍漏）改 v3：规则加 games 域名一条并放宽路径前缀，脚本加疑似诊断通知（带 action* 键或单组文案的条目不删、弹通知报键名清单），据真实结构定案特征。同日适配商店最新版 8.2.70（用户抓包定案）：广告全走 goblin interfaceAd/getOther，脚本请求阶段本地回无填充（不走网络、开屏直进），另 reject 穿山甲 get_ads 砍开屏竞价等待，响应阶段清空兜底；底部三项版实测错位（发布键按位置写死、与 8.1.9 同症），用户拍板恢复五项、底部栏不再动；加去帖子页「问深聊」（详情接口 deepTalk 关开关）；融合树先生（ishowshu/loon）规则：我的页游戏栏目、VIP推广、搜索提示词、最近浏览、话题榜、评分榜、推荐页与专区横幅、专区推荐推广项、我的页底部菜单、NBA签到活动、广场顶部话题，并补删我的页 advertisement 广告卡与 nav/content 的 adBanner 组件；全部脚本行升 ?v=8。
+# - 2026-11-27 Muse：游戏卡 v2 再漏检（《凡人问道》卡文案齐全仍漏）改 v3：规则加 games 域名一条并放宽路径前缀，脚本加疑似诊断通知（带 action* 键或单组文案的条目不删、弹通知报键名清单），据真实结构定案特征。同日适配商店最新版 8.2.70（用户抓包定案）：广告全走 goblin interfaceAd/getOther，脚本请求阶段本地回无填充（不走网络、开屏直进），另 reject 穿山甲 get_ads 砍开屏竞价等待，响应阶段清空兜底；底部三项版实测错位（发布键按位置写死、与 8.1.9 同症），用户拍板恢复五项、底部栏不再动；加去帖子页「问深聊」（详情接口 deepTalk 关开关）；融合树先生（ishowshu/loon）规则：我的页游戏栏目、VIP推广、搜索提示词、最近浏览、话题榜、评分榜、推荐页与专区横幅、专区推荐推广项、我的页底部菜单、NBA签到活动、广场顶部话题，并补删我的页 advertisement 广告卡与 nav/content 的 adBanner 组件；全部脚本行升 ?v=8。同日补：more 规则加删 redVipInfo（红单会员卡，树先生原规则未覆盖）。
 
 [Script]
 http-request ^https?:\/\/goblin\.hupu\.com\/.*interfaceAd\/getOther\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=8, timeout=10, tag=虎扑-去广告含开屏
@@ -37,8 +37,8 @@ http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/basketbal
 ^https:\\/\\/bbs\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bbsallapi\\/tag\\/v1\\/heatTag reject-dict
 # 评分榜
 ^https:\\/\\/bbs\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bbsrankapi\\/bff\\/v1\\/rating\\/list reject-dict
-# 我的页面vip推广
-^https:\\/\\/games\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bplapi\\/user\\/v1\\/more response-body-json-jq 'del(.result.inviteInfo, .result.vipInfo)'
+# 我的页面vip推广（并补删 redVipInfo 红单会员——树先生原规则未覆盖，抓包里为独立字段）
+^https:\\/\\/games\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bplapi\\/user\\/v1\\/more response-body-json-jq 'del(.result.inviteInfo, .result.vipInfo, .result.redVipInfo)'
 # 推荐页横幅广告
 ^https:\\/\\/games\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/buffer\\/hotList response-body-json-jq '.result.topBanner = []'
 # 专区顶部横幅
