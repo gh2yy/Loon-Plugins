@@ -1,5 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.34 (2026-11-28)：新增公众号列表 /
-// 详情两个背景模块（先占位）+ 临时颜色诊断区，为两页找取色名与灰阶值。
+// WCBlack.m — 微信深色模式纯黑背景 v8.35 (2026-11-28)：诊断 M 路改全量
+// 记录（v8.34 的过滤把新页面主题色名滤没了），配冷启动协议抓卡片色名。
+// v8.34：新增公众号列表 / 详情两个背景模块（先占位）+ 临时颜色诊断区。
 // v8.33：预览页底部操作
 // 行已黑、已选缩略图条（MMAssetSelectedCollectionView）还亮着，一并置深。
 // v8.32：v8.31 钩错预览
@@ -74,7 +75,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.34"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.35"); });
     return l;
 }
 
@@ -1704,7 +1705,9 @@ static NSString *WCDiagGrayOf(UIColor *color) {
 static IMP gOrigMMColorByName, gOrigMMColorByNameAlpha;
 static id WC_MMColor_byName(id self, SEL _cmd, NSString *name) {
     id orig = ((id (*)(id, SEL, id))gOrigMMColorByName)(self, _cmd, name);
-    if (WCDiagOn() && name && ![name hasPrefix:@"#"] && !WCNameModuleMap()[name]) {
+    // v8.35：M 路全量记录（v8.34 过滤掉已映射名，恰好把新页面的主题色名滤没了；
+    // 且主题多在冷启动时加载，须配冷启动协议才抓得到）
+    if (WCDiagOn() && name && ![name hasPrefix:@"#"]) {
         NSString *hex = nil;
         if ([orig isKindOfClass:[UIColor class]]) @try { hex = WCHexOfColorIn((UIColor *)orig, WCDarkTrait()); } @catch (id e) {}
         WCDiagRecord([@"M:" stringByAppendingString:name], hex);
@@ -1713,7 +1716,7 @@ static id WC_MMColor_byName(id self, SEL _cmd, NSString *name) {
 }
 static id WC_MMColor_byNameAlpha(id self, SEL _cmd, NSString *name, double alpha) {
     id orig = ((id (*)(id, SEL, id, double))gOrigMMColorByNameAlpha)(self, _cmd, name, alpha);
-    if (WCDiagOn() && name && ![name hasPrefix:@"#"] && !WCNameModuleMap()[name]) {
+    if (WCDiagOn() && name && ![name hasPrefix:@"#"]) {
         NSString *hex = nil;
         if ([orig isKindOfClass:[UIColor class]]) @try { hex = WCHexOfColorIn((UIColor *)orig, WCDarkTrait()); } @catch (id e) {}
         WCDiagRecord([@"M:" stringByAppendingString:name], hex);
@@ -2030,7 +2033,7 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
     if (s == 1) return @"点模块选颜色：纯黑 / 深灰 / 石墨 / 色谱选择 / 输入色值 / 原色（关闭该模块）。改完即时生效，不用重启微信。公众号两项先占位，诊断查清取色来源后生效。";
     if (s == 2) return @"去掉微信各页面的分割线（会话列表、通讯录、设置等），冷启动也不闪。关掉开关即恢复。";
-    if (s == 3) return @"给公众号列表页、详情页找背景色来源：打开开关 → 去这两个页面各逛一遍 → 回到这里截图。查清后这一区会撤掉。";
+    if (s == 3) return @"给公众号列表页、详情页找卡片色来源：打开开关 → 杀掉微信重开 → 直接进公众号列表、点开一篇文章 → 回到这里截图。查清后这一区会撤掉。";
     return nil;
 }
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -2198,7 +2201,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.34 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.35 registered in plugin list");
             break;
         }
     }
