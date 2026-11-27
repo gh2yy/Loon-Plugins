@@ -1,0 +1,51 @@
+== clang dylib build
+zhplugin/zhplugin.m:400:59: warning: 'windows' is deprecated: first deprecated in iOS 15.0 - Use UIWindowScene.windows on a relevant window scene instead [-Wdeprecated-declarations]
+  400 |     for (UIWindow *w in [UIApplication sharedApplication].windows) {
+      |                                                           ^
+/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.5.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIApplication.h:109:62: note: 'windows' has been explicitly marked deprecated here
+  109 | @property(nonatomic,readonly) NSArray<__kindof UIWindow *>  *windows API_DEPRECATED("Use UIWindowScene.windows on a relevant window scene instead", ios(2.0, 15.0), visionos(1.0, 1.0)) API_UNAVAILABLE(watchos);
+      |                                                              ^
+zhplugin/zhplugin.m:403:55: warning: 'windows' is deprecated: first deprecated in iOS 15.0 - Use UIWindowScene.windows on a relevant window scene instead [-Wdeprecated-declarations]
+  403 |     if (!win) win = [UIApplication sharedApplication].windows.firstObject;
+      |                                                       ^
+/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.5.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIApplication.h:109:62: note: 'windows' has been explicitly marked deprecated here
+  109 | @property(nonatomic,readonly) NSArray<__kindof UIWindow *>  *windows API_DEPRECATED("Use UIWindowScene.windows on a relevant window scene instead", ios(2.0, 15.0), visionos(1.0, 1.0)) API_UNAVAILABLE(watchos);
+      |                                                              ^
+zhplugin/zhplugin.m:928:59: warning: 'windows' is deprecated: first deprecated in iOS 15.0 - Use UIWindowScene.windows on a relevant window scene instead [-Wdeprecated-declarations]
+  928 |     for (UIWindow *w in [UIApplication sharedApplication].windows)
+      |                                                           ^
+/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.5.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIApplication.h:109:62: note: 'windows' has been explicitly marked deprecated here
+  109 | @property(nonatomic,readonly) NSArray<__kindof UIWindow *>  *windows API_DEPRECATED("Use UIWindowScene.windows on a relevant window scene instead", ios(2.0, 15.0), visionos(1.0, 1.0)) API_UNAVAILABLE(watchos);
+      |                                                              ^
+zhplugin/zhplugin.m:930:46: warning: 'windows' is deprecated: first deprecated in iOS 15.0 - Use UIWindowScene.windows on a relevant window scene instead [-Wdeprecated-declarations]
+  930 |     return [UIApplication sharedApplication].windows.firstObject;
+      |                                              ^
+/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.5.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIApplication.h:109:62: note: 'windows' has been explicitly marked deprecated here
+  109 | @property(nonatomic,readonly) NSArray<__kindof UIWindow *>  *windows API_DEPRECATED("Use UIWindowScene.windows on a relevant window scene instead", ios(2.0, 15.0), visionos(1.0, 1.0)) API_UNAVAILABLE(watchos);
+      |                                                              ^
+zhplugin/zhplugin.m:1620:59: warning: 'windows' is deprecated: first deprecated in iOS 15.0 - Use UIWindowScene.windows on a relevant window scene instead [-Wdeprecated-declarations]
+ 1620 |     for (UIWindow *w in [UIApplication sharedApplication].windows) {
+      |                                                           ^
+/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.5.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIApplication.h:109:62: note: 'windows' has been explicitly marked deprecated here
+  109 | @property(nonatomic,readonly) NSArray<__kindof UIWindow *>  *windows API_DEPRECATED("Use UIWindowScene.windows on a relevant window scene instead", ios(2.0, 15.0), visionos(1.0, 1.0)) API_UNAVAILABLE(watchos);
+      |                                                              ^
+zhplugin/zhplugin.m:1623:55: warning: 'windows' is deprecated: first deprecated in iOS 15.0 - Use UIWindowScene.windows on a relevant window scene instead [-Wdeprecated-declarations]
+ 1623 |     if (!win) win = [UIApplication sharedApplication].windows.firstObject;
+      |                                                       ^
+/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.5.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIApplication.h:109:62: note: 'windows' has been explicitly marked deprecated here
+  109 | @property(nonatomic,readonly) NSArray<__kindof UIWindow *>  *windows API_DEPRECATED("Use UIWindowScene.windows on a relevant window scene instead", ios(2.0, 15.0), visionos(1.0, 1.0)) API_UNAVAILABLE(watchos);
+      |                                                              ^
+6 warnings generated.
+clang exit: 0
+zhplugin.dylib: Mach-O 64-bit dynamically linked shared library arm64
+zhplugin.dylib:
+	@executable_path/zhplugin.dylib (compatibility version 0.0.0, current version 0.0.0)
+	/System/Library/Frameworks/UIKit.framework/UIKit (compatibility version 1.0.0, current version 8506.1.101)
+	/System/Library/Frameworks/Foundation.framework/Foundation (compatibility version 300.0.0, current version 3502.0.0)
+	/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics (compatibility version 64.0.0, current version 1889.5.3)
+	/System/Library/Frameworks/QuartzCore.framework/QuartzCore (compatibility version 1.2.0, current version 1.11.0)
+	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)
+	/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation (compatibility version 150.0.0, current version 3502.0.0)
+	/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
+mod_init sections:
+-rwxr-xr-x  1 runner  staff  138216 Nov 27 04:35 zhplugin.dylib
