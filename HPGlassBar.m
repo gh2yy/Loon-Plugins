@@ -282,7 +282,7 @@ static void HPShowLens(UIView *host, NSTimeInterval hold) {
 }
 - (void)hpDown {
     self.iconView.alpha = 0.55;
-    if (self.hostView) HPShowLens(self.hostView, 0.95); // 焦点只在点击时展示
+    (void)self.hostView; // v23 起点击反馈由分段控件的系统选中盘承担，不再自画透镜
 }
 - (void)hpUp { self.iconView.alpha = 1.0; }
 - (void)hpTapped {
@@ -324,16 +324,22 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
     UIView *oIcon = HPGetObj(orig, @"tabImageView");
     if (!oIcon) oIcon = HPGetObj(orig, @"imageView");
     gb.iconView.hidden = oIcon ? oIcon.hidden : NO;
-    // 层快照采集：原按钮当前处于哪个状态就截哪个状态（选中态由栏的 kSelBtnKey 判定）
+    // 层快照采集：按「源图指针身份」归档——已知是选中图的渲染永远归选中槽，防切换瞬间
+    // 旧按钮还没换图时把选中图误存成未选中（v53 实测两态串了）；未知指针才按当前选中态归档。
     BOOL origIsSel = (objc_getAssociatedObject(bar, &kSelBtnKey) == orig);
     if (oIcon && [oIcon isKindOfClass:[UIImageView class]]) {
         UIImage *srcImg = [(UIImageView *)oIcon image];
-        char *srcKey = origIsSel ? &kSnapSelSrcKey : &kSnapNormSrcKey;
-        if (srcImg && objc_getAssociatedObject(gb, srcKey) != (id)srcImg) {
-            UIImage *snap = HPSnapshotView(oIcon);
-            if (snap) {
-                if (origIsSel) gb.snapSelected = snap; else gb.snapNormal = snap;
-                objc_setAssociatedObject(gb, srcKey, srcImg, OBJC_ASSOCIATION_ASSIGN);
+        if (srcImg) {
+            id normSrc = objc_getAssociatedObject(gb, &kSnapNormSrcKey);
+            id selSrc = objc_getAssociatedObject(gb, &kSnapSelSrcKey);
+            BOOL fileSel = (srcImg == selSrc) ? YES : (srcImg == normSrc) ? NO : origIsSel;
+            id filedSrc = fileSel ? selSrc : normSrc;
+            if (srcImg != filedSrc) {
+                UIImage *snap = HPSnapshotView(oIcon);
+                if (snap) {
+                    if (fileSel) { gb.snapSelected = snap; objc_setAssociatedObject(gb, &kSnapSelSrcKey, srcImg, OBJC_ASSOCIATION_ASSIGN); }
+                    else { gb.snapNormal = snap; objc_setAssociatedObject(gb, &kSnapNormSrcKey, srcImg, OBJC_ASSOCIATION_ASSIGN); }
+                }
             }
         }
     }
@@ -454,6 +460,48 @@ static UIView *HPOverlayForBar(UIView *bar) {
     return ov;
 }
 
+// v23：选中透镜借 UISegmentedControl 的系统选中盘（iOS 26 自带玻璃盘+原生弹簧+拉伸，
+// 量产案例 DDTabBar/UnionTabView 同法）——自己不再画透镜。控件只当视觉层：不接收触摸、
+// 段数与槽宽跟随自建行，选中索引由同步驱动；它自带的底图/分隔要藏掉，只留选中盘。
+static char kSegKey;
+static char kSegCountKey;
+static UISegmentedControl *HPEnsureSeg(UIView *host, NSUInteger count) {
+    UISegmentedControl *seg = objc_getAssociatedObject(host, &kSegKey);
+    NSNumber *oldCount = objc_getAssociatedObject(host, &kSegCountKey);
+    if (seg && oldCount.unsignedIntegerValue != count) {
+        [seg removeFromSuperview];
+        objc_setAssociatedObject(host, &kSegKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        seg = nil;
+    }
+    if (!seg) {
+        NSMutableArray *items = [NSMutableArray array];
+        for (NSUInteger i = 0; i < count; i++) [items addObject:@""];
+        seg = [[UISegmentedControl alloc] initWithItems:items];
+        seg.apportionsSegmentWidthsByContent = NO;
+        seg.userInteractionEnabled = NO;
+        seg.momentary = NO;
+        UIImage *empty = [[UIImage alloc] init];
+        [seg setBackgroundImage:empty forState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
+        [seg setBackgroundImage:empty forState:UIControlStateSelected barMetrics:UIBarMetricsDefault];
+        [seg setBackgroundImage:empty forState:UIControlStateHighlighted barMetrics:UIBarMetricsDefault];
+        [seg setDividerImage:empty forLeftSegmentState:UIControlStateNormal rightSegmentState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
+        [empty release];
+        objc_setAssociatedObject(host, &kSegKey, seg, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [seg release];
+        seg = objc_getAssociatedObject(host, &kSegKey);
+        objc_setAssociatedObject(host, &kSegCountKey, @(count), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (seg.superview != host) [host addSubview:seg];
+    return seg;
+}
+static void HPHideSegChrome(UISegmentedControl *seg) {
+    if (seg.bounds.size.width < 10) return;
+    for (UIView *v in seg.subviews) {
+        BOOL wide = v.frame.size.width >= seg.bounds.size.width * 0.9;
+        if ([v isKindOfClass:[UIImageView class]] || wide) v.alpha = 0.0;
+    }
+}
+
 static void HPSyncOverlayBar(UIView *bar, Class btnCls) {
     CGRect bounds = bar.bounds;
     if (bounds.size.width < 50 || bounds.size.height < 30) return;
@@ -462,6 +510,8 @@ static void HPSyncOverlayBar(UIView *bar, Class btnCls) {
     if (btns.count == 0) return;
     UIView *host = HPOverlayForBar(bar);
     HPEnsurePlates(host);
+    UIView *oldLens = objc_getAssociatedObject(host, &kLensKey);
+    if (oldLens) [oldLens removeFromSuperview]; // v23 起悬浮层不用自画透镜（系统选中盘接管）
 
     NSMutableString *sig = [NSMutableString string];
     for (UIView *b in btns) [sig appendFormat:@"%p;", (void *)b];
@@ -519,18 +569,16 @@ static void HPSyncOverlayBar(UIView *bar, Class btnCls) {
     }
 
     UIView *capsule = objc_getAssociatedObject(host, &kCapsuleKey);
-    UIView *lens = objc_getAssociatedObject(host, &kLensKey);
     HPSetPlateFrame(capsule, capRect);
     HPApplyCapsuleShadow(capsule);
-    CGFloat lensH = capH - 10;
-    BOOL flashing = [objc_getAssociatedObject(host, &kLensFlashActiveKey) boolValue];
-    if (!flashing || gInSpringSync) {
-        HPSetPlateFrame(lens, CGRectMake(capX + 12 + (CGFloat)sel * slotW + 4,
-                                         capY + (capH - lensH) / 2, slotW - 8, lensH));
-    }
-    if (!flashing) { lens.hidden = YES; lens.alpha = 0.0; }
 
-    [host bringSubviewToFront:lens];
+    UISegmentedControl *seg = HPEnsureSeg(host, btns.count);
+    for (NSUInteger i = 0; i < btns.count; i++) [seg setWidth:slotW forSegmentAtIndex:i];
+    seg.frame = CGRectMake(capX + 12, capY, slotW * (CGFloat)btns.count, capH);
+    if (seg.selectedSegmentIndex != (NSInteger)sel) seg.selectedSegmentIndex = (NSInteger)sel;
+    HPHideSegChrome(seg);
+
+    [host bringSubviewToFront:seg];
     for (HPGlassButton *gb in row) [host bringSubviewToFront:gb];
 
     bar.hidden = YES; // 原栏整栏隐藏：platter/背景/mixView 随它一起消失
@@ -600,13 +648,11 @@ static void HP_SwiftBar_updateButton(UIView *self, SEL _cmd, UIView *btn, BOOL s
     ((void (*)(id, SEL, id, BOOL))gOrigSwiftUpdateBtn)(self, _cmd, btn, selected);
     if (selected && btn) {
         objc_setAssociatedObject(self, &kSelBtnKey, btn, OBJC_ASSOCIATION_ASSIGN);
-        UIView *host = objc_getAssociatedObject(self, &kOverlayKey);
-        if (host) HPShowLens(host, 1.05); // 透镜先显形，再由下面的弹簧同步把它滑到新槽
-        gInSpringSync = YES;
         [UIView animateWithDuration:0.55 delay:0 usingSpringWithDamping:0.75 initialSpringVelocity:0.6
                             options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
-                         animations:^{ HPSyncOverlayBar(self, gSwiftBtnCls); }
-                         completion:^(BOOL finished) { gInSpringSync = NO; }];
+                         animations:^{ HPSyncOverlayBar(self, gSwiftBtnCls); } completion:nil];
+    } else if (!selected && btn) {
+        HPSyncOverlayBar(self, gSwiftBtnCls); // 取消选中的按钮同步一次，把它落定的未选中态图标截准
     }
 }
 static void HP_ObjcBar_layoutSubviews(UIView *self, SEL _cmd) {
@@ -675,7 +721,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v22 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v23 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
