@@ -1,9 +1,11 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.15 (2026-11-27)：在 v8.14 基础上
-// 修输入框上色延迟：进聊天后输入框过了几秒才变成设置色（用户色值
-// #0F0F0F）。WCFieldSweep 此前按栏自身 trait 判深浅，而 WCForceBar 是
-// 先 sweep 再钉 override——sweep 时栏还是系统浅色 trait、直接走还原
-// 分支，要等 5 秒家务 tick 补扫才上色。改判探针 gWCWeChatDark，进聊
-// 天当场上色。v8.14 的纯黑哨兵与翻转梯队、v8.12 的 ivar 验明均不变。
+// WCBlack.m — 微信深色模式纯黑背景 v8.16 (2026-11-27)：在 v8.15 基础上
+// 修聊天页内切换系统深浅时聊天底板滞后：页面已变浅、输入栏底板还黑着
+// 滞留半秒到数秒（用户 12:47 录屏）。栏被钉 override 后自身 trait 不随
+// 系统变，它的 trait 钩子等不到翻转；改挂页面控制器基类
+// MMUIViewController 的 traitCollectionDidChange（不钉 override、与
+// 页面同一时刻翻转），翻转一到就排探针刷新梯队，全栏立即重涂/还原。
+// v8.15 的输入框上色延迟修复（sweep 改判探针）、v8.14 的纯黑哨兵与
+// 栏梯队、v8.12 的 ivar 验明均不变。
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -31,7 +33,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.15"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.16"); });
     return l;
 }
 
@@ -63,7 +65,7 @@ static UIColor *WCColorFromHex(NSString *hex) {
     if (!hex || hex.length < 7 || ![hex hasPrefix:@"#"]) return nil;
     unsigned int rgb = 0;
     [[NSScanner scannerWithString:[hex substringFromIndex:1]] scanHexInt:&rgb];
-    // v8.15：纯黑走 Display P3 的 (0,0,0)。sRGB (0,0,0,1) 会被系统内化成
+    // v8.16：纯黑走 Display P3 的 (0,0,0)。sRGB (0,0,0,1) 会被系统内化成
     // blackColor 单例，管线里多处拿「== blackColor / 值归零」当「没设值」
     // （本文件 WCModuleForColor 首句即是），全设纯黑时顶栏被当成没设颜色、
     // 回落原装浅色材质（用户实测：全 #000000 顶栏浅灰、全 #090909 正常）。
@@ -520,7 +522,7 @@ static IMP gOrigSetSepStyle, gOrigSetDelegate, gOrigSetDataSource;
 static NSMutableSet<NSString *> *gWDInstalled;
 static NSMutableDictionary<NSString *, NSValue *> *gWDOrigs;
 static void WC_TV_setSepStyle(UITableView *s, SEL c, UITableViewCellSeparatorStyle style) {
-    // v8.15：全局拦截，不再只限首页表
+    // v8.16：全局拦截，不再只限首页表
     if (style != UITableViewCellSeparatorStyleNone && WCHideSep()) {
         if (!objc_getAssociatedObject(s, &kWCSepOrigStyleKey))
             objc_setAssociatedObject(s, &kWCSepOrigStyleKey, @(style), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -586,7 +588,7 @@ static void WC_TV_setDataSource(UITableView *s, SEL c, id d) {
     WCSepOnDelegate(s, d);
 }
 
-// v8.15 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
+// v8.16 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
 // 静态普查完整二进制 46,673 个类，带 separator 视图 ivar 的类 255 个、301 条
 // ivar（名单内嵌于下）。给这些类逐个钩 layoutSubviews（控制器类钩
 // viewDidLayoutSubviews），原实现跑完就在同一次排版里按 ivar 把线藏掉——线
@@ -1410,7 +1412,7 @@ static id WC_WCColorMgr_getColorValue(id self, SEL _cmd, NSString *name) {
     NSString *dark = parts[1];
     if (dark.length < 7 || [dark characterAtIndex:0] != '#') return orig;
     NSString *hex = [WCHexOfColor(cfg) substringFromIndex:1]; // RRGGBB
-    // v8.15：色板字符串的消费者（顶栏那条路）把 000000 当未设值，写 010101
+    // v8.16：色板字符串的消费者（顶栏那条路）把 000000 当未设值，写 010101
     // 让它认得下这口黑（肉眼与 0 无区别）；对象路径已由 P3 黑保持真 0。
     if ([hex isEqualToString:@"000000"]) hex = @"010101";
     NSString *newDark = [@"#" stringByAppendingString:(dark.length > 7 ? [hex stringByAppendingString:[dark substringFromIndex:7]] : hex)];
@@ -1483,7 +1485,7 @@ static void WCOnDidBecomeActive(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCGlassResumeRefresh(); });
 }
 
-// v8.15：系统外观翻转时微信内部类型更新时机不固定，setCurrentType: 不一定
+// v8.16：系统外观翻转时微信内部类型更新时机不固定，setCurrentType: 不一定
 // 被调，探针没人刷新——栏的 trait 钩子拿着旧的 gWCWeChatDark 重涂，底栏能
 // 黑着卡到下一个 5 秒家务 tick（用户 11:07 录屏：内容已变浅、底栏黑约 4 秒）。
 // 修法：栏 trait 一翻就排一小梯队探针刷新（事件驱动、无常驻轮询），微信
@@ -1682,7 +1684,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.15 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.16 registered in plugin list");
             break;
         }
     }
@@ -1711,6 +1713,22 @@ static void WCStartHousekeepingTimer(void) {
 #pragma mark - 安装（只做 swizzle）
 
 static BOOL gSrcHooked = NO;
+// v8.16：页面级外观翻转信号。栏被钉了 overrideUserInterfaceStyle=Dark，
+// 系统翻转时栏自己的 trait 不变、它的 traitCollectionDidChange 不触发；
+// 聊天页里切深浅时，聊天底板（底栏同理）只能等探针被别的路径刷新才跟，
+// 实测黑底板在浅色页上滞留约半秒到数秒（用户 12:47 录屏）。微信所有页面
+// 控制器的基类 MMUIViewController 不钉 override，它的 trait 翻转就是
+// 页面翻转的同一时刻——挂它，翻转一到就排探针刷新梯队。
+static IMP gO_VC_trait;
+static void WC_VC_trait(UIViewController *s, SEL c, UITraitCollection *p) {
+    ((void (*)(id, SEL, id))gO_VC_trait)(s, c, p);
+    WCScheduleDarkRefresh();
+}
+static void WCInstallVCTraitHook(void) {
+    Class c = NSClassFromString(@"MMUIViewController");
+    if (c && !gO_VC_trait) gO_VC_trait = WCSwapOwn(c, @selector(traitCollectionDidChange:), (IMP)WC_VC_trait);
+}
+
 static void WCInstall(void) {
     if (!gWCNameCache) {
         gWCNameCache = [[NSMutableDictionary alloc] init];
@@ -1730,7 +1748,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.15 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.16 source hooks in");
             }
         }
     }
@@ -1747,6 +1765,7 @@ static void WCInstall(void) {
     WCInstallChatbarHooks();
     WCInstallSepGate();
     WCInstallTabHooks();
+    WCInstallVCTraitHook();
     static id wcActiveToken = nil;
     if (!wcActiveToken) {
         wcActiveToken = [[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) { WCOnDidBecomeActive(); }] retain];
