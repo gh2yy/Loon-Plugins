@@ -10,7 +10,7 @@
 
 # - 2026-11-21 Muse：合并原独立插件「虎扑去首页游戏推广卡」：getRecommendList 响应按服务器文案特征（读取进度 / JRs 玩过 / 你玩过的 / shaper 链接，命中≥2 组）删 shaper AI 小游戏推广卡，命中弹通知报标题；待真机首次偶现验证。新脚本行带 ?v=2 破缓存，原有五行未动。
 # - 2026-11-25 Muse：v1 真机漏检（新游戏卡再现且无通知）。改 v2：主判据换成游戏卡模型的独有结构键 actionButtonTitle/actionButtonScheme/actionLabelName（命中任一即删），文案组降为备判据；脚本行升 ?v=3。
-# - 2026-11-27 Muse：游戏卡 v2 再漏检（《凡人问道》卡文案齐全仍漏）改 v3：规则加 games 域名一条并放宽路径前缀，脚本加疑似诊断通知（带 action* 键或单组文案的条目不删、弹通知报键名清单），据真实结构定案特征。同日适配商店最新版 8.2.70（用户抓包定案）：广告全走 goblin interfaceAd/getOther，脚本请求阶段本地回无填充（不走网络、开屏直进），另 reject 穿山甲 get_ads 砍开屏竞价等待，响应阶段清空兜底；底部三项版实测错位（发布键按位置写死、与 8.1.9 同症），用户拍板恢复五项、底部栏不再动；加去帖子页「问深聊」（详情接口 deepTalk 关开关）；融合树先生（ishowshu/loon）规则：我的页游戏栏目、VIP推广、搜索提示词、最近浏览、话题榜、评分榜、推荐页与专区横幅、专区推荐推广项、我的页底部菜单、NBA签到活动、广场顶部话题，并补删我的页 advertisement 广告卡与 nav/content 的 adBanner 组件；全部脚本行升 ?v=8。同日补：more 规则加删 redVipInfo（红单会员卡，树先生原规则未覆盖）。
+# - 2026-11-27 Muse：游戏卡 v2 再漏检（《凡人问道》卡文案齐全仍漏）改 v3：规则加 games 域名一条并放宽路径前缀，脚本加疑似诊断通知（带 action* 键或单组文案的条目不删、弹通知报键名清单），据真实结构定案特征。同日适配商店最新版 8.2.70（用户抓包定案）：广告全走 goblin interfaceAd/getOther，脚本请求阶段本地回无填充（不走网络、开屏直进），另 reject 穿山甲 get_ads 砍开屏竞价等待，响应阶段清空兜底；底部三项版实测错位（发布键按位置写死、与 8.1.9 同症），用户拍板恢复五项、底部栏不再动；加去帖子页「问深聊」（详情接口 deepTalk 关开关）；融合树先生（ishowshu/loon）规则：我的页游戏栏目、VIP推广、搜索提示词、最近浏览、话题榜、评分榜、推荐页与专区横幅、专区推荐推广项、我的页底部菜单、NBA签到活动、广场顶部话题，并补删我的页 advertisement 广告卡与 nav/content 的 adBanner 组件；全部脚本行升 ?v=8。同日补：more 规则加删 redVipInfo（红单会员卡，树先生原规则未覆盖）。同日再补：融合的 [Rewrite] 整段正则转义被写重一倍、该段规则从未命中（我的页三条即因此未生效），已按树先生原文修回单层转义并逐条用抓包 URL 验证命中。
 
 [Script]
 http-request ^https?:\/\/goblin\.hupu\.com\/.*interfaceAd\/getOther\/.* script-path=https://raw.githubusercontent.com/gh2yy/Loon-Plugins/main/hupu.js?v=8, timeout=10, tag=虎扑-去广告含开屏
@@ -28,29 +28,29 @@ http-response ^https?:\/\/games\.mobileapi\.hupu\.com\/[^\/]+\/[^\/]+\/basketbal
 
 # —— 以下融合自树先生（ishowshu/loon）的虎扑插件，接口均已用 8.2.70 抓包核对 ——
 # 我的页面游戏栏目
-^https:\\/\\/fairy\\.mobileapi\\.hupu\\.com\\/gallery\\/getmod2 reject-dict
+^https:\/\/fairy\.mobileapi\.hupu\.com\/gallery\/getmod2 reject-dict
 # 搜索框提示词
-^https:\\/\\/games\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/search\\/v2\\/hintkeylist reject-dict
+^https:\/\/games\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/search\/v2\/hintkeylist reject-dict
 # 专区tab最近浏览
-^https:\\/\\/bbs\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bbsallapi\\/users\\/browse\\/topics reject-dict
+^https:\/\/bbs\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/bbsallapi\/users\/browse\/topics reject-dict
 # 话题榜
-^https:\\/\\/bbs\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bbsallapi\\/tag\\/v1\\/heatTag reject-dict
+^https:\/\/bbs\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/bbsallapi\/tag\/v1\/heatTag reject-dict
 # 评分榜
-^https:\\/\\/bbs\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bbsrankapi\\/bff\\/v1\\/rating\\/list reject-dict
+^https:\/\/bbs\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/bbsrankapi\/bff\/v1\/rating\/list reject-dict
 # 我的页面vip推广（并补删 redVipInfo 红单会员——树先生原规则未覆盖，抓包里为独立字段）
-^https:\\/\\/games\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bplapi\\/user\\/v1\\/more response-body-json-jq 'del(.result.inviteInfo, .result.vipInfo, .result.redVipInfo)'
+^https:\/\/games\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/bplapi\/user\/v1\/more response-body-json-jq 'del(.result.inviteInfo, .result.vipInfo, .result.redVipInfo)'
 # 推荐页横幅广告
-^https:\\/\\/games\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/buffer\\/hotList response-body-json-jq '.result.topBanner = []'
+^https:\/\/games\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/buffer\/hotList response-body-json-jq '.result.topBanner = []'
 # 专区顶部横幅
-^https:\\/\\/bbs\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/topics\\/\\d response-body-json-jq '.data.topicResources = []'
+^https:\/\/bbs\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/topics\/\d response-body-json-jq '.data.topicResources = []'
 # 专区推荐tab
-^https:\\/\\/bbs\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bbsallapi\\/topics\\/topicSquareDetail response-body-json-jq '.data.list |= map(select(.cate_id != -99))'
+^https:\/\/bbs\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/bbsallapi\/topics\/topicSquareDetail response-body-json-jq '.data.list |= map(select(.cate_id != -99))'
 # 我的页面底部菜单（并补删 advertisement 广告卡）
-^https:\\/\\/bbs\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bbsallapi\\/lego\\/data response-body-json-jq '.data.cards |= map(select(.code != "multiIcon" and .code != "advertisement"))'
+^https:\/\/bbs\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/bbsallapi\/lego\/data response-body-json-jq '.data.cards |= map(select(.code != "multiIcon" and .code != "advertisement"))'
 # NBA页签到活动（并补删 adBanner 广告组件）
-^https:\\/\\/games\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bplbffapi\\/device\\/v1\\/nav\\/content response-body-json-jq '.result.components |= map(select(.order != 5 and .code != "adBanner"))'
+^https:\/\/games\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/bplbffapi\/device\/v1\/nav\/content response-body-json-jq '.result.components |= map(select(.order != 5 and .code != "adBanner"))'
 # 虎扑广场顶部话题
-^https:\\/\\/bbs\\.mobileapi\\.hupu\\.com\\/\\d\\/\\d\\.\\d\\.\\d+\\/bbsallapi\\/tab\\/cardModule response-body-json-jq '.data = {}'
+^https:\/\/bbs\.mobileapi\.hupu\.com\/\d\/\d\.\d\.\d+\/bbsallapi\/tab\/cardModule response-body-json-jq '.data = {}'
 
 [Mitm]
 hostname = games.mobileapi.hupu.com, w1.hoopchina.com.cn, bbs.mobileapi.hupu.com, goblin.hupu.com, fairy.mobileapi.hupu.com, bbsrankapi.hupu.com, api-access.pangolin-sdk-toutiao.com, api-access.pangolin-sdk-toutiao1.com
