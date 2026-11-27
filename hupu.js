@@ -6,6 +6,7 @@
 // - 2026-11-21 Muse：新增 getRecommendList 游戏推广卡过滤（服务器文案特征法，原独立插件 hupu-gamecard 合并进来，命中弹通知报标题）。
 // - 2026-11-25 Muse：v1 真机漏检（鬼杀队卡再现、无通知）。二进制 Swift 元数据定案游戏卡模型 HCHomeRecommendGameItemModel 独有键 actionButtonTitle/actionButtonScheme/actionLabelName，v2 改以结构键为主判据（命中任一即删）、文案组为备判据。
 // - 2026-11-27 Muse：适配商店最新版 8.2.70（用户抓包定案）：广告全走 goblin interfaceAd/getOther（开屏 pid=999、信息流、评论、资讯、专区），脚本在请求阶段直接本地回无填充（ad_code=-41、ads=[]，与真实空响应同构），不走网络、开屏无广告可播直接进首页；插件另 reject 穿山甲 get_ads 砍掉开屏竞价瀑布的等待。底部栏试删 post+deeptalk 的三项版，真机实测与 8.1.9 同样错位（第 3 位按位置写死为发布键、「我的」顶上误弹发布），用户拍板恢复五项、底部栏不再动，getBottomNav 处理已撤除。同日用户因商店版热启动白屏难解回旧改包版，应其要求恢复 getBottomNav 删 post+score（脚本 ?v=9）。同日加去「问深聊」：帖子详情 threads/refactor 响应的 data.deepTalk 一并驱动顶栏问AI按钮、帖下问深聊卡与评论区 @深聊 引导，脚本把 needShow/replyAiShow 关掉并清空文案。插件文件另融合树先生（ishowshu）的重写规则一组（我的页游戏栏目/VIP推广、横幅、榜单等，详见插件修改日志）。
+// - 2026-11-27 Muse：v3.2 真机定案新形态（日志原文）：游戏卡伪装成话题标签卡——tagSchema=huputiyu://bbs/topicTag、discussNum/followNum/tnum 全 0、无文案无 action 键；硬特征是 icon/banner 指向 activity-static.hupu.com/shaper/review-covers/ 封面路径，命中即删。
 // - 2026-11-27 Muse：v3.1 诊断信息同步写 console.log 进脚本日志页（通知正文在 Loon 里点开为空、不可靠）；已过滤通知正文为空时改填条目键名。
 // - 2026-11-27 Muse：v2 真机再漏检（《凡人问道》卡，三组文案齐全仍漏、无通知）。静态核对：接口路径与二进制一致（bbsallapi/recommend/v2/getRecommendList），疑点收窄到送达（首页容器发请求的域名未必是 bbs 域名）或条目结构再变。v3 双管：插件规则加 games 域名一条、路径前缀放宽；脚本加疑似诊断——条目带 action* 键或只命中 1 组文案时不删但弹通知报该条目的键名清单，拿真实特征定案。
 (function () {
@@ -79,6 +80,7 @@
       var markerScore = function (item) {
         var s = JSON.stringify(item), score = 0;
         if (STRUCT_KEYS.some(function (k) { return s.indexOf(k) !== -1; })) return 99;
+        if (s.indexOf('shaper/review-covers') !== -1) return 99; // v3.2：标签卡形态的封面图路径
         MARKER_GROUPS.forEach(function (g) {
           if (g.some(function (m) { return s.indexOf(m) !== -1; })) score++;
         });
