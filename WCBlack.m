@@ -1,9 +1,9 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.14 (2026-11-27)：两件事——
-// ① 纯黑哨兵：全模块设 #000000 时顶栏回落原装浅灰（管线拿纯黑当「没设
-// 值」），对象路径改 Display P3 黑（渲染真 0、非 blackColor 单例），
-// 色板字符串路径写 010101 让消费者认下。② 外观翻转时底栏滞后约 4 秒
-// （11:07 录屏）：栏 trait 翻转时排 0.1/0.35/0.8s 探针刷新梯队，微信
-// 内部类型一变立即重涂全栏。v8.12 的 ivar 类型验明修复与余部不变。
+// WCBlack.m — 微信深色模式纯黑背景 v8.15 (2026-11-27)：在 v8.14 基础上
+// 修输入框上色延迟：进聊天后输入框过了几秒才变成设置色（用户色值
+// #0F0F0F）。WCFieldSweep 此前按栏自身 trait 判深浅，而 WCForceBar 是
+// 先 sweep 再钉 override——sweep 时栏还是系统浅色 trait、直接走还原
+// 分支，要等 5 秒家务 tick 补扫才上色。改判探针 gWCWeChatDark，进聊
+// 天当场上色。v8.14 的纯黑哨兵与翻转梯队、v8.12 的 ivar 验明均不变。
 // 用户拍板收线：只保留三件事，其余全部还原微信原样——
 //   1) 背景变色（含置顶行）：钩 WCColorMgr 的 getColor:/getColorValueForName: 与
 //      MMDynamicColor toColor、WCColorProxy 解析，在发色处按色名把深色值
@@ -31,7 +31,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.14"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.15"); });
     return l;
 }
 
@@ -63,7 +63,7 @@ static UIColor *WCColorFromHex(NSString *hex) {
     if (!hex || hex.length < 7 || ![hex hasPrefix:@"#"]) return nil;
     unsigned int rgb = 0;
     [[NSScanner scannerWithString:[hex substringFromIndex:1]] scanHexInt:&rgb];
-    // v8.14：纯黑走 Display P3 的 (0,0,0)。sRGB (0,0,0,1) 会被系统内化成
+    // v8.15：纯黑走 Display P3 的 (0,0,0)。sRGB (0,0,0,1) 会被系统内化成
     // blackColor 单例，管线里多处拿「== blackColor / 值归零」当「没设值」
     // （本文件 WCModuleForColor 首句即是），全设纯黑时顶栏被当成没设颜色、
     // 回落原装浅色材质（用户实测：全 #000000 顶栏浅灰、全 #090909 正常）。
@@ -383,7 +383,11 @@ static void WCFieldScan(UIView *root, int depth) {
 // 深色+模块开：扫描新出现的底板并登记、已登记的逐个重申静态色；
 // 浅色或模块关：把登记过的逐个还原并清表。
 static void WCFieldSweep(UIView *bar) {
-    BOOL dark = (bar.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    // v8.15：深浅认探针，不看栏 trait。此前用 bar.traitCollection 判：进聊天时
+    // WCForceBar 是先 sweep 再钉 override，sweep 那一刻栏还是系统浅色 trait，
+    // 直接走还原分支、输入框不上色；要等 5 秒家务 tick 再 sweep 时 trait 已
+    // 被钉成深色才补上——用户实测：进聊天后输入框过了会才变成设置色 #0F0F0F。
+    BOOL dark = gWCWeChatDark;
     NSMutableSet *views = WCFieldViews();
     if (WCConfigColor(@"field")) WCFieldHideDictation(bar, 8);  // v5.7：话筒不分深浅
     if (dark && WCConfigColor(@"field")) {
@@ -516,7 +520,7 @@ static IMP gOrigSetSepStyle, gOrigSetDelegate, gOrigSetDataSource;
 static NSMutableSet<NSString *> *gWDInstalled;
 static NSMutableDictionary<NSString *, NSValue *> *gWDOrigs;
 static void WC_TV_setSepStyle(UITableView *s, SEL c, UITableViewCellSeparatorStyle style) {
-    // v8.14：全局拦截，不再只限首页表
+    // v8.15：全局拦截，不再只限首页表
     if (style != UITableViewCellSeparatorStyleNone && WCHideSep()) {
         if (!objc_getAssociatedObject(s, &kWCSepOrigStyleKey))
             objc_setAssociatedObject(s, &kWCSepOrigStyleKey, @(style), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -582,7 +586,7 @@ static void WC_TV_setDataSource(UITableView *s, SEL c, id d) {
     WCSepOnDelegate(s, d);
 }
 
-// v8.14 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
+// v8.15 全局分割线（用户要求：遍历微信所有分割线设计、去掉、不能有闪）：
 // 静态普查完整二进制 46,673 个类，带 separator 视图 ivar 的类 255 个、301 条
 // ivar（名单内嵌于下）。给这些类逐个钩 layoutSubviews（控制器类钩
 // viewDidLayoutSubviews），原实现跑完就在同一次排版里按 ivar 把线藏掉——线
@@ -1406,7 +1410,7 @@ static id WC_WCColorMgr_getColorValue(id self, SEL _cmd, NSString *name) {
     NSString *dark = parts[1];
     if (dark.length < 7 || [dark characterAtIndex:0] != '#') return orig;
     NSString *hex = [WCHexOfColor(cfg) substringFromIndex:1]; // RRGGBB
-    // v8.14：色板字符串的消费者（顶栏那条路）把 000000 当未设值，写 010101
+    // v8.15：色板字符串的消费者（顶栏那条路）把 000000 当未设值，写 010101
     // 让它认得下这口黑（肉眼与 0 无区别）；对象路径已由 P3 黑保持真 0。
     if ([hex isEqualToString:@"000000"]) hex = @"010101";
     NSString *newDark = [@"#" stringByAppendingString:(dark.length > 7 ? [hex stringByAppendingString:[dark substringFromIndex:7]] : hex)];
@@ -1479,7 +1483,7 @@ static void WCOnDidBecomeActive(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCGlassResumeRefresh(); });
 }
 
-// v8.14：系统外观翻转时微信内部类型更新时机不固定，setCurrentType: 不一定
+// v8.15：系统外观翻转时微信内部类型更新时机不固定，setCurrentType: 不一定
 // 被调，探针没人刷新——栏的 trait 钩子拿着旧的 gWCWeChatDark 重涂，底栏能
 // 黑着卡到下一个 5 秒家务 tick（用户 11:07 录屏：内容已变浅、底栏黑约 4 秒）。
 // 修法：栏 trait 一翻就排一小梯队探针刷新（事件驱动、无常驻轮询），微信
@@ -1678,7 +1682,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.14 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.15 registered in plugin list");
             break;
         }
     }
@@ -1726,7 +1730,7 @@ static void WCInstall(void) {
             if (!gOrigProxyResolve) gOrigProxyResolve = WCSwap(proxy, @selector(colorInCurrentUserInterfaceStyle:), (IMP)WC_Proxy_colorInStyle);
             if (gOrigGetColor && gOrigGetColorValue && gOrigToColor && gOrigProxyResolve) {
                 gSrcHooked = YES;
-                os_log(WCLog(), "[WCBlack] v8.14 source hooks in");
+                os_log(WCLog(), "[WCBlack] v8.15 source hooks in");
             }
         }
     }
