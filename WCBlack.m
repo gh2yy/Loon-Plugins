@@ -1,5 +1,6 @@
-// WCBlack.m — 微信深色模式纯黑背景 v8.25 诊断版 (2026-11-27)：诊断行点击
-// 复制全文到剪贴板（v8.24 的格子文本难翻，用户指出）。v8.24：诊断触发
+// WCBlack.m — 微信深色模式纯黑背景 v8.26 (2026-11-27)：按用户要求移除
+// 全部诊断代码（计数/抓取/设置页诊断区），藏线逻辑与诊断版完全一致、
+// 已由诊断实测确认生效。v8.25：诊断行点击复制全文到剪贴板。v8.24：诊断触发
 // 页修正为发现页 FindFriendEntryViewController（v8.23 误认 MoreViewController
 // =「我」页）。v8.23：设置页加
 // 诊断区，记录钩子计数与发现页首行的视图/图层树。v8.22：drawSeparatorFor:
@@ -45,7 +46,7 @@
 
 static os_log_t WCLog(void) {
     static os_log_t l; static dispatch_once_t once;
-    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.25"); });
+    dispatch_once(&once, ^{ l = os_log_create("com.nova.wcblack", "v8.26"); });
     return l;
 }
 
@@ -543,19 +544,12 @@ static void WCZeroBordersInCell(UITableViewCell *c) {
         }
     }
 }
-// v8.23 诊断版：四版没找对线，先让插件自己把现场说清楚。各钩子计数 +
-// 发现页（MoreViewController）首行在显示后的整棵视图/图层树，写进设置页
-// 最下面的诊断区，用户一张截图即可回传。诊断只记不改行为。
-static NSInteger gDiagDrawCell = 0, gDiagDrawSep = 0, gDiagWillDisplay = 0, gDiagCellLayout = 0;
-static NSString *gDiagText = nil;
-static void WCDiagSetText(NSString *t) {
-    if (gDiagText == t) return;
-    [gDiagText release];
-    gDiagText = [t retain];
-}
+// 诊断结论（v8.23–v8.25 诊断版实测，v8.26 起移除诊断代码）：朋友圈行上下线
+// 是 cell 本人最后两个子视图 + 本层两个子图层（高 0.3、全宽、贴上下边），
+// 由 drawSeparatorFor: 在 willDisplay 时加进来，现行钩子链能把它们置隐藏。
+// 早先诊断截图里 drawSep/cellLayout 计数为 0 是抓取时机太早，不是钩子没装。
 static IMP gO_MMCellLayout;
 static void WC_MMCell_layout(UITableViewCell *s, SEL c) {
-    gDiagCellLayout++;
     ((void (*)(id, SEL))gO_MMCellLayout)(s, c);
     if (!WCHideSep()) return;
     WCZeroBordersInCell(s);
@@ -567,7 +561,6 @@ static void WCInstallMMCellHook(void) {
 }
 static IMP gO_MgrDrawCell;
 static void WC_Mgr_drawCell(id s, SEL c, id arg) {
-    gDiagDrawCell++;
     ((void (*)(id, SEL, id))gO_MgrDrawCell)(s, c, arg);
     if (!WCHideSep()) return;
     // v8.20：反汇编 drawCell: 定案——参数就是被上色的 cell 本人，边框设在
@@ -625,7 +618,6 @@ static void WC_HideTableDecorations(UITableView *tv) {
 }
 static IMP gO_MgrDrawSep;
 static void WC_Mgr_drawSep(id s, SEL c, id info, id ip, NSInteger mode) {
-    gDiagDrawSep++;
     ((void (*)(id, SEL, id, id, NSInteger))gO_MgrDrawSep)(s, c, info, ip, mode);
     if (!WCHideSep()) return;
     UIView *host = nil;
@@ -652,57 +644,9 @@ static void WC_Mgr_drawSep(id s, SEL c, id info, id ip, NSInteger mode) {
         }
     }
 }
-static void WCDiagAppendView(UIView *v, int depth, NSMutableString *out) {
-    if (depth > 5 || [out length] > 6000) return;
-    NSString *pad = [@"" stringByPaddingToLength:(NSUInteger)(depth * 2) withString:@" " startingAtIndex:0];
-    CALayer *l = v.layer;
-    [out appendFormat:@"%@%@ f={%.0f,%.0f,%.0f,%.1f} hid=%d bw=%.2f subL=%lu\n", pad, NSStringFromClass([v class]),
-        v.frame.origin.x, v.frame.origin.y, v.frame.size.width, v.frame.size.height, (int)v.hidden,
-        l.borderWidth, (unsigned long)l.sublayers.count];
-    for (CALayer *sl in l.sublayers) {
-        [out appendFormat:@"%@ L:%@ f={%.0f,%.0f,%.0f,%.1f} hid=%d bw=%.2f\n", pad, NSStringFromClass([sl class]),
-            sl.frame.origin.x, sl.frame.origin.y, sl.frame.size.width, sl.frame.size.height, (int)sl.hidden, sl.borderWidth];
-    }
-    for (UIView *sub in v.subviews) WCDiagAppendView(sub, depth + 1, out);
-}
-static void WCDiagCapture(UITableView *tv, NSString *vcName) {
-    NSMutableString *out = [NSMutableString string];
-    [out appendFormat:@"vc=%@\n", vcName ?: @"?"];
-    [out appendFormat:@"hooks: drawCell=%ld drawSep=%ld willDisplay=%ld cellLayout=%ld\n",
-        (long)gDiagDrawCell, (long)gDiagDrawSep, (long)gDiagWillDisplay, (long)gDiagCellLayout];
-    [out appendFormat:@"table=%@ sepStyle=%ld visCells=%lu\n", NSStringFromClass([tv class]),
-        (long)tv.separatorStyle, (unsigned long)tv.visibleCells.count];
-    [out appendString:@"-- table subviews --\n"];
-    for (UIView *v in tv.subviews) {
-        [out appendFormat:@"%@ f={%.0f,%.0f,%.0f,%.1f} hid=%d\n", NSStringFromClass([v class]),
-            v.frame.origin.x, v.frame.origin.y, v.frame.size.width, v.frame.size.height, (int)v.hidden];
-    }
-    [out appendString:@"-- visible cells --\n"];
-    for (UITableViewCell *cell in tv.visibleCells) WCDiagAppendView(cell, 0, out);
-    WCDiagSetText([[out copy] autorelease]);
-}
-// v8.23 的诊断抓错了页：MoreViewController 是「我」页，发现页是
-// FindFriendEntryViewController（v8.24 修正）。顺带一个实测结论：
-// 「我」页整页显示里 drawSep=0、cellLayout=0——那两个钩子根本没被调用。
-static NSString *WCDiagFindEntryVC(UITableView *tv) {
-    UIResponder *r = tv;
-    while (r) {
-        if ([r isKindOfClass:[UIViewController class]] &&
-            [NSStringFromClass([r class]) isEqualToString:@"FindFriendEntryViewController"])
-            return @"FindFriendEntryViewController";
-        r = [r nextResponder];
-    }
-    return nil;
-}
 static IMP gO_MgrWillDisplay;
 static void WC_Mgr_willDisplay(id s, SEL c, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
-    gDiagWillDisplay++;
     ((void (*)(id, SEL, id, id, id))gO_MgrWillDisplay)(s, c, tv, cell, ip);
-    NSString *diagVC = WCDiagFindEntryVC(tv);
-    if (diagVC) {
-        WCDiagCapture(tv, diagVC);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ WCDiagCapture(tv, diagVC); });
-    }
     if (!WCHideSep()) return;
     if (cell) WCHideEdgeLinesDeep(cell, 4);
     WC_HideTableDecorations(tv);
@@ -1822,17 +1766,15 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
 }
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 4; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return 3; }
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
     if (s == 0) return 1;
     if (s == 2) return 1;
-    if (s == 3) return 1;
     return (NSInteger)WCModules().count;
 }
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
     if (s == 0) return @"总开关";
     if (s == 2) return @"其他";
-    if (s == 3) return @"诊断（打开一次发现页后，点下面这行复制，粘贴到聊天）";
     return @"各模块颜色（仅深色模式生效）";
 }
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
@@ -1849,15 +1791,7 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
     cell.textLabel.font = [UIFont systemFontOfSize:17];
     cell.textLabel.numberOfLines = 1;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    if (ip.section == 3) {
-        cell.textLabel.font = [UIFont systemFontOfSize:10];
-        cell.textLabel.numberOfLines = 0;
-        cell.textLabel.text = gDiagText ?: @"（还没打开过发现页）";
-        cell.detailTextLabel.text = nil;
-        cell.accessoryType = UITableViewCellAccessoryNone;
-        cell.accessoryView = nil;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    } else if (ip.section == 0) {
+    if (ip.section == 0) {
         cell.textLabel.text = @"启用 WCBlack";
         cell.detailTextLabel.text = WCEnabled() ? @"开" : @"关";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -1888,15 +1822,6 @@ static UIColor *WC_Proxy_colorInStyle(id self, SEL _cmd, long style) {
 }
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section == 3) {
-        if (gDiagText) [UIPasteboard generalPasteboard].string = gDiagText;
-        UIAlertController *ac = [UIAlertController alertControllerWithTitle:(gDiagText ? @"诊断已复制" : @"还没有诊断记录")
-            message:(gDiagText ? @"去聊天里粘贴发给我就行。" : @"先去打开一次发现页，再回来点这一行。")
-            preferredStyle:UIAlertControllerStyleAlert];
-        [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:ac animated:YES completion:nil];
-        return;
-    }
     if (ip.section == 2) {
         BOOL on = !WCHideSep();
         [[NSUserDefaults standardUserDefaults] setBool:on forKey:kWCHideSepKey];
@@ -1982,7 +1907,7 @@ static void WCEnsureRegistered(void) {
         @try { t = [p valueForKey:@"title"]; } @catch (id e) { t = nil; }
         if ([t containsString:@"WCBlack"]) {
             gRegistered = YES;
-            os_log(WCLog(), "[WCBlack] v8.25 registered in plugin list");
+            os_log(WCLog(), "[WCBlack] v8.26 registered in plugin list");
             break;
         }
     }
