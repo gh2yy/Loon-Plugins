@@ -1,0 +1,46 @@
+ProductName:		macOS
+ProductVersion:		15.8.2
+BuildVersion:		24H232
+Xcode 16.4
+Build version 16F6
+-rw-r--r--  1 runner  staff  134431 Nov 27 23:58 WCBlack.m
+0f0c6f0810652f09889a3b9f7c07b1b8
+== clang dylib build
+WCBlack.m:335:73: warning: 'backgroundRectForBounds:' is deprecated: first deprecated in iOS 15.0 - Override layoutSubviews, call super, and position views as you desire. [-Wdeprecated-declarations]
+  335 |     CGRect br = [btn isKindOfClass:[UIButton class]] ? [(UIButton *)btn backgroundRectForBounds:btn.bounds] : btn.bounds;
+      |                                                                         ^
+/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.5.sdk/System/Library/Frameworks/UIKit.framework/Headers/UIButton.h:176:1: note: 'backgroundRectForBounds:' has been explicitly marked deprecated here
+  176 | - (CGRect)backgroundRectForBounds:(CGRect)bounds API_DEPRECATED("Override layoutSubviews, call super, and position views as you desire.", ios(2.0, 15.0), tvos(2.0, 15.0), visionos(1.0, 1.0)) API_UNAVAILABLE(watchos);
+      | ^
+WCBlack.m:993:65: warning: bitmasking for introspection of Objective-C object pointers is strongly discouraged [-Wdeprecated-objc-pointer-introspection]
+  993 |         if (!val || (uintptr_t)val < 0x10000 || ((uintptr_t)val & 0x7) != 0) continue;
+      |                                                  ~~~~~~~~~~~~~~ ^
+WCBlack.m:1871:58: warning: instance method '-darkmodeColor' not found (return type defaults to 'id') [-Wobjc-method-access]
+ 1871 |         UIColor *newDark = WCSourceDynamic(module, [orig darkmodeColor]);
+      |                                                          ^~~~~~~~~~~~~
+WCBlack.m:1872:62: warning: instance method '-normalColor' not found (return type defaults to 'id') [-Wobjc-method-access]
+ 1872 |         remapped = [dynCls DynamicColorWithNormalColor:[orig normalColor] darkmodeColor:newDark];
+      |                                                              ^~~~~~~~~~~
+WCBlack.m:1872:28: warning: class method '+DynamicColorWithNormalColor:darkmodeColor:' not found (return type defaults to 'id') [-Wobjc-method-access]
+ 1872 |         remapped = [dynCls DynamicColorWithNormalColor:[orig normalColor] darkmodeColor:newDark];
+      |                            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+WCBlack.m:1942:85: warning: instance method '-darkmodeColor' not found (return type defaults to 'id') [-Wobjc-method-access]
+ 1942 |             if ([aD isEqualToString:aL]) dark = [aD isEqualToString:WCHexOfColor([c darkmodeColor])];
+      |                                                                                     ^~~~~~~~~~~~~
+WCBlack.m:2053:79: warning: method possibly missing a [super dealloc] call [-Wobjc-missing-super-calls]
+ 2053 | - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
+      |                                                                               ^
+7 warnings generated.
+clang exit: 0
+WCBlack.dylib: Mach-O 64-bit dynamically linked shared library arm64
+WCBlack.dylib:
+	@executable_path/WCBlack.dylib (compatibility version 0.0.0, current version 0.0.0)
+	/System/Library/Frameworks/UIKit.framework/UIKit (compatibility version 1.0.0, current version 8506.1.101)
+	/System/Library/Frameworks/Foundation.framework/Foundation (compatibility version 300.0.0, current version 3502.0.0)
+	/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics (compatibility version 64.0.0, current version 1889.5.3)
+	/System/Library/Frameworks/QuartzCore.framework/QuartzCore (compatibility version 1.2.0, current version 1.11.0)
+	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)
+	/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation (compatibility version 150.0.0, current version 3502.0.0)
+	/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
+mod_init sections:
+-rwxr-xr-x  1 runner  staff  215192 Nov 27 23:58 WCBlack.dylib
