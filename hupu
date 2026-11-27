@@ -2,7 +2,7 @@
 #!desc = 去开屏与信息流等全部接口广告、帖子页问深聊和首页热榜频道，过滤首页推荐流里伪装成帖子的游戏推广卡，帖子详情页深色背景改纯黑（底部栏不动：发布键按位置写死，删项会错位）
 #!author = gh2yy
 # 声明：本插件部分规则来自树先生（ishowshu）的虎扑插件，特此声明并致谢。原作地址：https://raw.githubusercontent.com/ishowshu/loon/refs/heads/main/plugin/hupu.lpx
-#!date = 2026-11-27
+#!date = 2026-11-27同日终局：删 lego subscribe 卡实测生效（播客订阅/评分插眼区块已消失，10:19 截图确认）；vip-stg 整域 REJECT 实测无效（同版 lego 改动已生效、排除未更新因素），会员双卡文案在全部抓包响应中均不存在、系客户端本地渲染（离线包/本地写死文案、无网默认非会员态），定性 Loon 层不可及，此线关闭，REJECT 与 vip-stg MitM 已撤回。
 #!tag = 虎扑,去tab
 
 # 修改日志：
