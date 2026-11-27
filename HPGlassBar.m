@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v35 (2026-11-27)
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v36 (2026-11-27)
 // v32：容器路线（用户点选）——不再借系统盘当选中指示：系统盘整盘隐藏，改在原栏内嵌
 //   UIGlassContainerEffect 容器，底座与选中药丸都是自己的玻璃（药丸 Regular + interactive），
 //   选中态插件自管（点击即定、药丸位置只作程序切换时的跟随校验）。几何与图标管线沿 v31。
@@ -16,6 +16,13 @@
 //   胶囊叠着，点击焦点在下层（系统盘那层）、不在上层；且多藏的那只盘是 App 切页链路的
 //   承重件，藏了就切不动。盘处理整段回滚 v33 原样（只藏 HPFindPlatter 找到的那一只、
 //   几何也用它），待确认状态机保留（纯显示逻辑、不碰路由）。双焦点问题改走别的路再议。
+// v36（v65 实测三点同源）：①按住滑动时有焦点在栏后面移动；②点首页时「我的」图标闪；
+//   ③有规律——按住或点击首页/专区，焦点必先跳进「我的」。逐帧验她的录屏：点首页后药丸
+//   先正确落首页、约 0.3 秒后自己弹回「我的」，同时真焦点（波纹透镜）一直在首页那层。
+//   定案：栏里两只盘——我们藏的那只里的「药丸」是静态摆设、读数恒为最后一格（「我的」），
+//   我们的跟随一直在读它；App 真正的透镜在另一只活盘里，没被藏、在栏后面跟着手指和
+//   选中移动，就是那个第二焦点。改法：活盘本身一概不动（承重件），只藏它内部的透镜
+//   本体（纯视觉叶子）；跟随源改读这枚活透镜的位置（藏了照样读 frame）。
 // v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
 //   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
 //   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
@@ -758,6 +765,33 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     UIView *hpPlate = HPFindPlatter(bar, &hpPlateDepth, &hpPlateSup);
     if (hpPlate) hpPlate.hidden = YES;
     CGRect plateInBar = hpPlate ? [bar convertRect:hpPlate.bounds fromView:hpPlate] : CGRectZero;
+    // v36：另一只活盘——App 的真透镜在里面（在栏后面跟手指/选中移动的第二焦点）。
+    // 盘本身是承重件、一概不动；只藏它内部的透镜本体（类名含 LiquidLens，找不到
+    // 退回 HPFindPill 的槽位视图），并把这枚活透镜作跟随源（下方 KVO 块用）。
+    UIView *liveLens = nil;
+    {
+        NSMutableArray *level = [NSMutableArray arrayWithObject:bar];
+        for (int d = 0; d < 6 && level.count; d++) {
+            NSMutableArray *next = [NSMutableArray array];
+            for (UIView *v in level) {
+                if (v != bar && v != hpPlate &&
+                    [NSStringFromClass([v class]) containsString:@"PlatterView"] &&
+                    v.frame.size.width > 30 && v.frame.size.height > 20) {
+                    UIView *lens = nil;
+                    NSMutableArray *st = [NSMutableArray arrayWithObject:v];
+                    while (st.count && !lens) {
+                        UIView *u = st.lastObject; [st removeLastObject];
+                        if (u != v && [NSStringFromClass([u class]) containsString:@"LiquidLens"]) lens = u;
+                        else [st addObjectsFromArray:u.subviews];
+                    }
+                    if (!lens) lens = HPFindPill(v);
+                    if (lens) { lens.hidden = YES; liveLens = lens; }
+                }
+                [next addObjectsFromArray:v.subviews];
+            }
+            level = next;
+        }
+    }
 
     // 按钮集合签名（指针序列）变了才重建自建行
     NSMutableString *sig = [NSMutableString string];
@@ -818,8 +852,9 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     // v30：存槽位格（药丸跟随换算用）+ 药丸定位/观察 + 盘背景玻璃换 Clear（去灰，只做一次）
     objc_setAssociatedObject(bar, &kGridXKey, @(slotX0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(bar, &kGridWKey, @(slotW), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (hpPlate) {
-        UIView *pill = HPFindPill(hpPlate);
+    if (hpPlate || liveLens) {
+        // v36：跟随源优先用活盘的真透镜；没有活盘时退回原盘内药丸（旧行为）
+        UIView *pill = liveLens ?: HPFindPill(hpPlate);
         UIView *oldPill = objc_getAssociatedObject(bar, &kPillKey);
         if (pill != oldPill) {
             HPSelectionObserver *obs = objc_getAssociatedObject(bar, &kPillObsKey);
@@ -1023,7 +1058,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v35 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v36 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
