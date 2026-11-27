@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v30 (2026-11-27)
+// HPGlassBar.m — 虎扑液态玻璃悬浮底栏 v31 (2026-11-27)
 // v25：以 v14 原码（v45 黄金版、用户实测原生 duang）为底逐字回滚，底栏全部代码一字未动；
 //   仅在场景桥接补三件与底栏动效无关的事——深链转发（场景清单会停发 AppDelegate 的
 //   openURL/continueUserActivity）、状态栏高度修正、安全区补差（后两件治顶部被灵动岛压）。
@@ -29,6 +29,7 @@ static char kPillObsKey;
 static char kGridXKey;
 static char kGridWKey;
 static void HPRefreshSelectionFromPill(UIView *bar);
+static void HPSchedulePillSync(UIView *bar);
 static UIView *HPFindPlatter(UIView *root, int *depthOut, NSString **supOut);
 static int gHUDLayoutCalls = 0;
 static int gHUDUpdateCalls = 0;
@@ -187,8 +188,8 @@ static void HPSetPlateFrame(UIView *plate, CGRect f) {
 static void HPApplyCapsuleShadow(UIView *plate) {
     CALayer *l = plate.layer;
     l.shadowColor = [UIColor blackColor].CGColor;
-    l.shadowOpacity = 0.22;
-    l.shadowRadius = 14;
+    l.shadowOpacity = 0.10;
+    l.shadowRadius = 10;
     l.shadowOffset = CGSizeMake(0, 5);
     l.shadowPath = [UIBezierPath bezierPathWithRoundedRect:plate.bounds
                                               cornerRadius:plate.bounds.size.height / 2].CGPath;
@@ -242,6 +243,7 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
 @property (nonatomic, retain) UIColor *selectedColor;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, assign) BOOL hpSelected;
+@property (nonatomic, assign) NSInteger hpIndex;
 - (void)refreshAppearance;
 @end
 
@@ -298,22 +300,20 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
     // v28：点击即选中——把槽位记在栏上。updateButton 钩子切换时根本不响（HUD 实测 ub 只在
     // 启动时响 3 次），图标选中态以后以这份点击记录为准，比任何推断都直接。
     if (bar) {
-        NSArray *row = objc_getAssociatedObject(bar, &kRowKey);
-        NSUInteger idx = [row indexOfObject:self];
-        if (idx != NSNotFound) {
-            objc_setAssociatedObject(bar, &kTapSelKey, @(idx), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            // v29：不等排版——切换后这个 App 不再触发底栏排版（v28 的记录没人消费、图标照旧冻住）。
-            // 点击当场把整行选中态刷掉，排版里的判定只作程序化切页的兜底。
-            for (HPGlassButton *gb in row) {
-                BOOL s = (gb == self);
-                if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
-            }
+        // v31：选中位直接用排版时写死在按钮上的序号，不再查栏上的行数组——那条查询在真机上
+        // 从没命中过（v30 的 HUD 里 tap 恒为 -），整段绕开；行数据改从栏的子视图现枚举。
+        objc_setAssociatedObject(bar, &kTapSelKey, @(self.hpIndex), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        for (UIView *sub in bar.subviews) {
+            if (![sub isKindOfClass:[HPGlassButton class]]) continue;
+            HPGlassButton *gb = (HPGlassButton *)sub;
+            BOOL s = (gb.hpIndex == self.hpIndex);
+            if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
         }
     }
     if (bar && orig && [bar respondsToSelector:@selector(didClickedWithButton:)])
         ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(didClickedWithButton:), orig);
-    // v30：路由回来后一拍再按药丸位置对一次（那时 App 状态已落定）
-    if (bar) dispatch_async(dispatch_get_main_queue(), ^{ HPRefreshSelectionFromPill(bar); });
+    // v30/v31：路由回来后等药丸弹簧落定，再按它的位置复核一次
+    if (bar) HPSchedulePillSync(bar);
 }
 @end
 
@@ -502,7 +502,17 @@ static void HPRefreshSelectionFromPill(UIView *bar) {
         CGFloat dd = fabs(cx - c); if (dd < bestD) { bestD = dd; sel = i; }
     }
     HPApplySel(bar, sel);
-    HPShowHUD(bar);
+}
+
+// 药丸的弹簧是逐帧驱动的，位置变化会连珠炮一样报过来——等它静下来 0.28 秒再对一次，
+// 不然图标跟着药丸的过冲来回翻（v30 的「点这个、其他图标在闪」就是这么来的）。
+static NSInteger gHPSettleGen = 0;
+static void HPSchedulePillSync(UIView *bar) {
+    NSInteger gen = ++gHPSettleGen;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (gen == gHPSettleGen) HPRefreshSelectionFromPill(bar);
+    });
 }
 
 @interface HPSelectionObserver : NSObject
@@ -511,9 +521,8 @@ static void HPRefreshSelectionFromPill(UIView *bar) {
 @implementation HPSelectionObserver
 - (void)observeValueForKeyPath:(NSString *)kp ofObject:(id)obj change:(NSDictionary *)chg context:(void *)ctx {
     (void)kp; (void)obj; (void)chg; (void)ctx;
-    gHPKvoCount++;
     UIView *bar = self.bar; if (!bar) return;
-    dispatch_async(dispatch_get_main_queue(), ^{ HPRefreshSelectionFromPill(bar); });
+    HPSchedulePillSync(bar);
 }
 @end
 
@@ -671,23 +680,6 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
             objc_setAssociatedObject(bar, &kPillKey, pill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         if (pill) HPRefreshSelectionFromPill(bar);
-        if (!objc_getAssociatedObject(hpPlate, &kPlateTreatedKey)) {
-            objc_setAssociatedObject(hpPlate, &kPlateTreatedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            Class glassCls = NSClassFromString(@"UIGlassEffect");
-            if (glassCls && [glassCls respondsToSelector:@selector(effectWithStyle:)]) {
-                id clearFx = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassCls, @selector(effectWithStyle:), 1);
-                NSMutableArray *stack = [NSMutableArray arrayWithObject:hpPlate];
-                while (stack.count) {
-                    UIView *v = stack.lastObject; [stack removeLastObject];
-                    for (UIView *s in v.subviews) [stack addObject:s];
-                    if (v != hpPlate && [v isKindOfClass:[UIVisualEffectView class]] &&
-                        v.frame.size.width >= hpPlate.bounds.size.width * 0.9 &&
-                        v.frame.size.height >= hpPlate.bounds.size.height * 0.9) {
-                        ((UIVisualEffectView *)v).effect = clearFx;
-                    }
-                }
-            }
-        }
     }
     // v30 对中：按钮格回 v14 的实测格（slotX0/slotW，盘覆盖不许动它）——v28 挪成 138、
     // v29 挪成盘三分格 128.7，她两次都判不居中；v45/v56 用的就是这套格、当时没这条意见。
@@ -698,35 +690,24 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
         HPGlassButton *gb = row[i];
         gb.frame = measured ? CGRectMake(slotX0 + (CGFloat)i * slotW, rowRect.origin.y, slotW, rowRect.size.height)
                             : CGRectMake(slotX0 + (CGFloat)i * slotW, capY + 2, slotW, capH - 4);
+        gb.hpIndex = (NSInteger)i;
         HPSyncGlassButton(gb, bar, orig);
         orig.hidden = YES;
     }
 
-    // 选中态（v28 改）：盘是整栏宽的大盘、位置不随选中变，按盘定选中这条路作废。改三级：
-    // ①点击记录（我们的按钮亲手接的点击，最直接）；②原按钮当前显示的图与它自己的选中图
-    // 指针比对（程序化切页时靠它）；③updateButton 钩子记录（实测切换时不响，只剩启动值）。
-    NSUInteger sel = NSNotFound;
+    // 选中态（v31 改）：旧三级判定全撤——其中的「原按钮当前图比对」在切换后读到的永远是
+    // 启动时的旧状态，每次排版都把选中态打回首页（v30 真机图标闪乱的另一半原因）。
+    // 现在只有两个源：药丸位置（已定位到药丸时）、点击记录；都没有就保持现状，
+    // 整行还没人被选中时才落到 0。
     NSNumber *tapSel = objc_getAssociatedObject(bar, &kTapSelKey);
-    if (tapSel && tapSel.unsignedIntegerValue < btns.count) sel = tapSel.unsignedIntegerValue;
-    if (sel == NSNotFound) {
-        for (NSUInteger i = 0; i < btns.count; i++) {
-            UIView *orig = btns[i];
-            UIView *iv = HPGetObj(orig, @"tabImageView");
-            if (!iv) iv = HPGetObj(orig, @"imageView");
-            UIImage *cur = (iv && [iv isKindOfClass:[UIImageView class]]) ? ((UIImageView *)iv).image : nil;
-            UIImage *selImg = HPGetObj(orig, @"hightlightImage");
-            if (cur && selImg && cur == selImg) { sel = i; break; }
-        }
-    }
-    if (sel == NSNotFound) {
-        UIView *selBtn = objc_getAssociatedObject(bar, &kSelBtnKey);
-        sel = selBtn ? [btns indexOfObject:selBtn] : NSNotFound;
-    }
-    if (sel == NSNotFound) sel = 0;
-    for (NSUInteger i = 0; i < row.count; i++) {
-        HPGlassButton *gb = row[i];
-        BOOL s = (i == sel);
-        if (gb.hpSelected != s) { gb.hpSelected = s; [gb refreshAppearance]; }
+    if (objc_getAssociatedObject(bar, &kPillKey)) {
+        HPRefreshSelectionFromPill(bar);
+    } else if (tapSel && tapSel.unsignedIntegerValue < row.count) {
+        HPApplySel(bar, tapSel.unsignedIntegerValue);
+    } else {
+        BOOL anySel = NO;
+        for (HPGlassButton *gb in row) if (gb.hpSelected) { anySel = YES; break; }
+        if (!anySel && row.count) HPApplySel(bar, 0);
     }
 
     // 胶囊 + 透镜：透镜贴合整个槽位（横向内缩 4、纵向内缩 5），不再比按钮小一圈
@@ -744,8 +725,6 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     NSNumber *flashing = objc_getAssociatedObject(bar, &kLensFlashActiveKey);
     if (!flashing.boolValue) { lens.hidden = YES; lens.alpha = 0.0; }
 
-    gHPLayCount++;
-    HPShowHUD(bar);
     // 层级：胶囊 < 透镜 < 自建按钮
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
@@ -887,7 +866,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v30 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v31 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
