@@ -564,7 +564,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v14 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v15 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
@@ -578,21 +578,30 @@ static void HPInstall(void) {
 
 @implementation HPSceneBridge
 
+- (void)hpPokeLayoutInView:(UIView *)v {
+    [v setNeedsLayout];
+    for (UIView *sub in v.subviews) [self hpPokeLayoutInView:sub];
+}
+
 - (void)hpAttachWindowToScene:(UIScene *)scene {
     if (![scene isKindOfClass:[UIWindowScene class]]) return;
-    if (self.window && self.window.windowScene == (UIWindowScene *)scene) return;
     id appDelegate = [[UIApplication sharedApplication] delegate];
-    UIWindow *w = nil;
-    if (appDelegate && [appDelegate respondsToSelector:@selector(window)]) {
+    UIWindow *w = self.window;
+    if (!w && appDelegate && [appDelegate respondsToSelector:@selector(window)]) {
         w = [appDelegate performSelector:@selector(window)];
     }
-    if (!w) w = self.window;
-    if (w) {
+    if (!w) return;
+    BOOL fresh = (w.windowScene != (UIWindowScene *)scene);
+    if (fresh) {
         w.windowScene = (UIWindowScene *)scene;
         self.window = w;
         [w makeKeyAndVisible];
         NSLog(@"[HPGlass] scene bridge attached window: %@", w);
     }
+    // App 在场景存在之前就按旧状态栏高度排好了顶部布局，挂场景后强制全树重排一次，
+    // 让它按新身份的真实安全区/状态栏高度重新读值（v45 实测顶部被灵动岛压住）。
+    [self hpPokeLayoutInView:w];
+    [w layoutIfNeeded];
 }
 
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
