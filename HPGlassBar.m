@@ -1,4 +1,4 @@
-// HPGlassBar.m — 虎扑悬浮底栏 v13.5 (2026-11-27)
+// HPGlassBar.m — 虎扑悬浮底栏 v13.6 (2026-11-27)
 // 本版以 v12 为基线（用户指定「那个可用的插件」），只加两件、其余逐字不动：
 // ①嫁接 v14 起的场景桥接 HPSceneBridge——现行改包带 UIScene 清单，缺桥接会黑屏；
 // ②首页信息流上滑隐藏底栏（下滑或回到顶部恢复；渐隐渐显 + 下沉/回位，0.15 秒快动效；只在首页根页面生效，切 tab/进帖子页强制显示）。
@@ -336,10 +336,10 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
 }
 
 
-#pragma mark - 首页滑动隐藏底栏（v13.5 新增）
+#pragma mark - 首页滑动隐藏底栏（v13.6 新增）
 // v13 首版按系统 UITabBarController 找首页，真机无反应：虎扑的标签控制器是 App 自写的，
 // 既不是 UITabBarController 子类、bar 的 controller 属性也拿不到它，滚动源根本没绑上。
-// v13.5 不再依赖标签控制器类型：沿响应链找托管底栏的 VC、按子 VC 可见性定当前标签页，
+// v13.6 不再依赖标签控制器类型：沿响应链找托管底栏的 VC、按子 VC 可见性定当前标签页，
 // 再叠加插件自己记录的选中序号（选中态钩子所得）把关；VC 路线找不到时整窗兜底扫描。
 
 static char kBarHiddenKey;
@@ -349,36 +349,51 @@ static char kFeedVCKey;
 static char kSVLastOffKey;
 static char kSelIdxKey;
 static char kBindRetryKey;
+static char kSlideCurKey;
+static char kSlideLinkKey;
 
 @interface HPFeedObserver : NSObject
 @property (nonatomic, assign) UIView *bar;
 @end
 
 // 只滑动进出（用户定）：上滑整栏下滑消失、下滑整栏上滑回来，隐藏与出现互为逆向。
-// 前两版没藏住的真因（v13.3/v13.5 真机定案）：滑动期间 App 频繁重排底栏，凡是给
-// 正在平移中的视图重设 frame，平移量会被 frame 吸收掉——平移加在栏本体被栏的 frame
-// 吸收、加在子视图被子视图的 frame 吸收，动画刚起步就被吃掉；更早版本看着能藏是靠
-// 淡变的透明度在盖。这版仍平移栏本体，但在插件的排版钩子末尾（排版链最后一环、
-// 所有 frame 都设完之后）按隐藏标记重钉平移：每次重排的最终状态都是钉好的，
-// 吸收窗口不存在。动画中途撞上重排会直接落位，终点状态始终正确。
-static void HPApplyBarSlide(UIView *bar) {
+// v13.3–v13.6 三种平移全被吃掉（真机定案）：底栏归 Auto Layout 管，排版引擎在插件
+// 排版钩子之后还会再写一次栏的位置，把平移量吸收掉；钩子里重钉也赶不上。改用
+// CADisplayLink 逐帧驱动：每帧在排版之后把平移重新断言一次，吸收了下一帧就钉回来；
+// 隐藏期间链保持运行（终点状态持续断言），滑回出现并到位后才停链。推进用指数缓动，
+// 约 0.15 秒走完（用户要快）；中途反向只需翻标记，逐帧推进自动掉头。
+static void HPSetBarHidden(UIView *bar, BOOL hidden, BOOL animated);
+
+static CGFloat HPSlideTarget(UIView *bar) {
     BOOL hidden = [objc_getAssociatedObject(bar, &kBarHiddenKey) boolValue];
-    bar.transform = hidden ? CGAffineTransformMakeTranslation(0, bar.bounds.size.height + 40.0)
-                           : CGAffineTransformIdentity;
+    return hidden ? (bar.bounds.size.height + 40.0) : 0.0;
+}
+
+static void HPDriveSlide(UIView *bar) {
+    HPFeedObserver *obs = objc_getAssociatedObject(bar, &kFeedObsKey);
+    if (!obs) return;
+    CADisplayLink *link = objc_getAssociatedObject(bar, &kSlideLinkKey);
+    if (!link) {
+        link = [CADisplayLink displayLinkWithTarget:obs selector:@selector(hpSlideTick:)];
+        [link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+        objc_setAssociatedObject(bar, &kSlideLinkKey, link, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    link.paused = NO;
 }
 
 static void HPSetBarHidden(UIView *bar, BOOL hidden, BOOL animated) {
     NSNumber *cur = objc_getAssociatedObject(bar, &kBarHiddenKey);
-    if (cur && cur.boolValue == hidden) return;
+    BOOL changed = !cur || cur.boolValue != hidden;
     objc_setAssociatedObject(bar, &kBarHiddenKey, @(hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (animated) {
-        [UIView animateWithDuration:0.15 delay:0
-                            options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
-                         animations:^{ HPApplyBarSlide(bar); }
-                         completion:nil];
-    } else {
-        HPApplyBarSlide(bar);
+    if (!animated) {
+        CGFloat t = HPSlideTarget(bar);
+        bar.transform = CGAffineTransformMakeTranslation(0, t);
+        objc_setAssociatedObject(bar, &kSlideCurKey, @(t), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        CADisplayLink *link = objc_getAssociatedObject(bar, &kSlideLinkKey);
+        if (link && !hidden) { [link invalidate]; objc_setAssociatedObject(bar, &kSlideLinkKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+        return;
     }
+    if (changed) HPDriveSlide(bar);
 }
 
 static UIViewController *HPHostVC(UIView *bar) {
@@ -417,6 +432,32 @@ static UIViewController *HPHomeRootVC(UIView *bar) {
 }
 
 @implementation HPFeedObserver
+- (void)hpSlideTick:(CADisplayLink *)link {
+    UIView *bar = self.bar;
+    if (!bar) { [link invalidate]; return; }
+    CGFloat target = HPSlideTarget(bar);
+    NSNumber *curN = objc_getAssociatedObject(bar, &kSlideCurKey);
+    CGFloat cur = curN ? curN.doubleValue : 0;
+    CGFloat diff = target - cur;
+    if (fabs(diff) < 0.5) {
+        if (cur != target) {
+            bar.transform = CGAffineTransformMakeTranslation(0, target);
+            objc_setAssociatedObject(bar, &kSlideCurKey, @(target), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else {
+            bar.transform = CGAffineTransformMakeTranslation(0, target); // 终点也每帧断言，防排版吸收
+        }
+        if (target == 0) { // 已完全出现：停链；隐藏状态则保持链继续断言
+            [link invalidate];
+            objc_setAssociatedObject(bar, &kSlideLinkKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+    CGFloat dt = link.duration > 0 ? link.duration : 1.0 / 60.0;
+    CGFloat frac = 1.0 - pow(0.6, dt / (1.0 / 60.0));
+    cur += diff * frac;
+    bar.transform = CGAffineTransformMakeTranslation(0, cur);
+    objc_setAssociatedObject(bar, &kSlideCurKey, @(cur), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
                         change:(NSDictionary *)change context:(void *)context {
     if (![object isKindOfClass:[UIScrollView class]] || !self.bar) return;
@@ -622,8 +663,13 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
 
-    HPBindFeedScrollViews(bar); // v13.5：首页滑动隐藏底栏的滚动源绑定
-    HPApplyBarSlide(bar); // 隐藏态下新重建的件跟上平移
+    HPBindFeedScrollViews(bar); // v13.6：首页滑动隐藏底栏的滚动源绑定
+    // 排版末尾对齐滑动状态：链在跑时不插手（逐帧驱动中），没链时直接按标记落位
+    if (!objc_getAssociatedObject(bar, &kSlideLinkKey)) {
+        CGFloat t = HPSlideTarget(bar);
+        bar.transform = CGAffineTransformMakeTranslation(0, t);
+        objc_setAssociatedObject(bar, &kSlideCurKey, @(t), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -741,7 +787,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v13.5 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v13.6 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
