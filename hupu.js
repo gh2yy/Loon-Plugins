@@ -1,10 +1,11 @@
-// 虎扑 - 去底部发布与评分 tab、去首页热榜频道、详情页离线包换黑包、去首页游戏推广卡
+// 虎扑 - 去开屏与信息流广告、去底部发布/评分/深聊 tab、去首页热榜频道、详情页离线包换黑包、去首页游戏推广卡
 // 原作者：gh2yy
 // 修改日期：2026-11-27
 // 修改日志：
 // - 2026-10-30 Muse：脚本按 URL 分发处理各接口。getBottomNav：底部清单 5 项删 post 与 score，navVersion 顺延标记防按版本跳过；第 3 位动作键逻辑写死在 App 代码内，插件层试过 type/order/顺序均无效，已由改包修复，须配合改包版使用。init：clientLevelOneNavV2 删 en 为 hotRank 的热榜项。帖子详情页是随包下发的离线 H5（frontendofflinepkg 的 bbs-detailapp-opg 包），脚本改写该接口的升级清单，把详情包的下载地址与 md5 换成本仓库的改色包（深色变量改 OLED 黑）；另有一段 bbs-m-web 主题 CSS 改写，作用于 m.hupu.com 网页版（详情页不走它）。basketballapi/news/v3/tab（tagCode=nba）：入口清单删「战术百科」与「2K手游」，保留赛程、数据、主队。
 // - 2026-11-21 Muse：新增 getRecommendList 游戏推广卡过滤（服务器文案特征法，原独立插件 hupu-gamecard 合并进来，命中弹通知报标题）。
 // - 2026-11-25 Muse：v1 真机漏检（鬼杀队卡再现、无通知）。二进制 Swift 元数据定案游戏卡模型 HCHomeRecommendGameItemModel 独有键 actionButtonTitle/actionButtonScheme/actionLabelName，v2 改以结构键为主判据（命中任一即删）、文案组为备判据。
+// - 2026-11-27 Muse：适配商店最新版 8.2.70（用户抓包定案）：新增 goblin interfaceAd/getOther 广告清空——开屏 pid=999 与信息流/评论/资讯等全部广告位响应统一改无填充（ad_code=-41、ads=[]），开屏无广告可播直接进首页；底部清单删除项加 deeptalk（深聊，替代了旧版评分的位置），仍删 post、保留 score 兼容。
 // - 2026-11-27 Muse：v2 真机再漏检（《凡人问道》卡，三组文案齐全仍漏、无通知）。静态核对：接口路径与二进制一致（bbsallapi/recommend/v2/getRecommendList），疑点收窄到送达（首页容器发请求的域名未必是 bbs 域名）或条目结构再变。v3 双管：插件规则加 games 域名一条、路径前缀放宽；脚本加疑似诊断——条目带 action* 键或只命中 1 组文案时不删但弹通知报该条目的键名清单，拿真实特征定案。
 (function () {
   try {
@@ -39,6 +40,21 @@
     }
 
     var obj = JSON.parse(body);
+
+    // 广告系统：interfaceAd/getOther（v3 与 batch）——开屏（pid=999）、首页推荐信息流、评论、资讯等
+    // 全部广告位都走这个接口下发。统一改成服务端的无填充形态（ad_code=-41、ads=[]，与真实空响应同构），
+    // 开屏拿不到广告即直接进首页，其余广告位同样不再出广告。保留 request_id 等其余字段原样。
+    if (url.indexOf('interfaceAd/getOther') !== -1) {
+      if (obj && Array.isArray(obj.ads)) {
+        obj.ads = [];
+        obj.ad_code = -41;
+        if (!('show_type' in obj)) obj.show_type = 0;
+        $done({ body: JSON.stringify(obj) });
+      } else {
+        $done({});
+      }
+      return;
+    }
 
     // 首页推荐流：getRecommendList 里伪装成帖子的 shaper AI 小游戏推广卡
     // v2 主判据（结构字段）：游戏卡模型 HCHomeRecommendGameItemModel 的独有键 actionButtonTitle / actionButtonScheme / actionLabelName
@@ -152,12 +168,12 @@
       return;
     }
 
-    // 底部栏：getBottomNav 清单删 post 与 score
+    // 底部栏：getBottomNav 清单删 post、score 与 deeptalk（深聊）
     var normals = obj && obj.result && obj.result.normals;
     if (!normals || !Array.isArray(normals.navItems)) { $done({}); return; }
     var before = normals.navItems.length;
     normals.navItems = normals.navItems.filter(function (it) {
-      return it && it.code !== 'post' && it.code !== 'score';
+      return it && it.code !== 'post' && it.code !== 'score' && it.code !== 'deeptalk';
     });
     if (normals.navItems.length === before) { $done({}); return; }
     if (obj.result.navVersion) obj.result.navVersion = String(obj.result.navVersion).replace(/\d+$/, function (n) { return String(parseInt(n, 10) + 30); }) + String(normals.navItems.length);
