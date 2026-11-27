@@ -16,6 +16,7 @@
 static char kCapsuleKey;
 static char kLensKey;
 static char kSelBtnKey;
+static BOOL gInSpringSync = NO; // 弹簧动画中的同步才许动透镜 frame，普通布局同步不许抢
 static char kRowKey;
 static char kRowSigKey;
 static char kMyHiddenKey;
@@ -187,29 +188,30 @@ static void HPApplyCapsuleShadow(UIView *plate) {
 // 布局函数见 kLensFlashActiveKey 为真时不碰透镜的 hidden/alpha。
 static char kLensFlashGenKey;
 static char kLensFlashActiveKey;
-static void HPFlashLens(UIView *bar, CGRect lensFrame) {
-    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
+// v22：透镜显形管理（只管 hidden/alpha 与代数，不再瞬移 frame——位置由 updateButton 的弹簧同步驱动，
+// 这样点选时透镜是「滑」到目标槽而不是先瞬移再假装滑；重选当前 tab 时它就在原地亮一下，正合焦点语义）
+static void HPShowLens(UIView *host, NSTimeInterval hold) {
+    UIView *lens = objc_getAssociatedObject(host, &kLensKey);
     if (!lens) return;
-    NSNumber *g = objc_getAssociatedObject(bar, &kLensFlashGenKey);
+    NSNumber *g = objc_getAssociatedObject(host, &kLensFlashGenKey);
     NSInteger gen = g ? g.integerValue + 1 : 1;
-    objc_setAssociatedObject(bar, &kLensFlashGenKey, @(gen), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(bar, &kLensFlashActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    HPSetPlateFrame(lens, lensFrame);
+    objc_setAssociatedObject(host, &kLensFlashGenKey, @(gen), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(host, &kLensFlashActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     lens.hidden = NO;
     [UIView animateWithDuration:0.12 delay:0
                         options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
                      animations:^{ lens.alpha = 1.0; } completion:nil];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.55 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(hold * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        NSNumber *cur = objc_getAssociatedObject(bar, &kLensFlashGenKey);
-        if (!cur || cur.integerValue != gen) return; // 已被更新的点击接管
+        NSNumber *cur = objc_getAssociatedObject(host, &kLensFlashGenKey);
+        if (!cur || cur.integerValue != gen) return;
         [UIView animateWithDuration:0.3 delay:0 options:UIViewAnimationOptionCurveEaseIn
                          animations:^{ lens.alpha = 0.0; }
                          completion:^(BOOL finished) {
-            NSNumber *cur2 = objc_getAssociatedObject(bar, &kLensFlashGenKey);
+            NSNumber *cur2 = objc_getAssociatedObject(host, &kLensFlashGenKey);
             if (cur2 && cur2.integerValue == gen) {
                 lens.hidden = YES;
-                objc_setAssociatedObject(bar, &kLensFlashActiveKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                objc_setAssociatedObject(host, &kLensFlashActiveKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
         }];
     });
@@ -225,6 +227,8 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
 @property (nonatomic, assign) UIView *hostView;
 @property (nonatomic, retain) UIImage *normalImage;
 @property (nonatomic, retain) UIImage *selectedImage;
+@property (nonatomic, retain) UIImage *snapNormal;
+@property (nonatomic, retain) UIImage *snapSelected;
 @property (nonatomic, retain) UIColor *normalColor;
 @property (nonatomic, retain) UIColor *selectedColor;
 @property (nonatomic, copy) NSString *title;
@@ -262,20 +266,23 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
     [_badgeDot release];
     [_normalImage release];
     [_selectedImage release];
+    [_snapNormal release];
+    [_snapSelected release];
     [_normalColor release];
     [_selectedColor release];
     [_title release];
     [super dealloc];
 }
 - (void)refreshAppearance {
-    UIImage *img = self.hpSelected ? (self.selectedImage ?: self.normalImage) : self.normalImage;
+    UIImage *img = self.hpSelected ? (self.snapSelected ?: self.selectedImage ?: self.snapNormal ?: self.normalImage)
+                                   : (self.snapNormal ?: self.normalImage);
     self.iconView.image = img;
     self.textLabel.text = self.title;
     self.textLabel.textColor = self.hpSelected ? (self.selectedColor ?: self.normalColor) : self.normalColor;
 }
 - (void)hpDown {
     self.iconView.alpha = 0.55;
-    if (self.hostView) HPFlashLens(self.hostView, CGRectInset(self.frame, 4, 5)); // 焦点只在点击时展示
+    if (self.hostView) HPShowLens(self.hostView, 0.95); // 焦点只在点击时展示
 }
 - (void)hpUp { self.iconView.alpha = 1.0; }
 - (void)hpTapped {
@@ -286,6 +293,20 @@ static void HPFlashLens(UIView *bar, CGRect lensFrame) {
         ((void (*)(id, SEL, id))objc_msgSend)(bar, @selector(didClickedWithButton:), orig);
 }
 @end
+
+// v22：图标改走层快照——把原按钮图标视图的实际渲染截下来用，像素级照搬 App 自己的画法
+//（借属性里的 UIImage 会丢掉它内部的着色/合成，用户实测图标不对）。按状态各存一份，源图指针变了才重截。
+static char kSnapNormSrcKey;
+static char kSnapSelSrcKey;
+static UIImage *HPSnapshotView(UIView *v) {
+    CGSize sz = v.bounds.size;
+    if (sz.width < 2 || sz.height < 2) return nil;
+    UIGraphicsBeginImageContextWithOptions(sz, NO, 0);
+    [v.layer renderInContext:UIGraphicsGetCurrentContext()];
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
+}
 
 // 从原按钮只取数据（标题/两态图标/两态颜色/字体），内部布局用自有固定规格，不再量原按钮的几何：
 // 图标框 27pt 居中在上、文字在下成组居中；红点只借原按钮判「有没有」，位置自定于图标右上角。
@@ -300,10 +321,29 @@ static void HPSyncGlassButton(HPGlassButton *gb, UIView *bar, UIView *orig) {
     CGFloat W = gb.bounds.size.width, H = gb.bounds.size.height;
     CGFloat iconS = 27.0;
     CGRect iconF = CGRectMake((W - iconS) / 2, 7.0, iconS, iconS);
-    gb.iconView.frame = iconF;
     UIView *oIcon = HPGetObj(orig, @"tabImageView");
     if (!oIcon) oIcon = HPGetObj(orig, @"imageView");
     gb.iconView.hidden = oIcon ? oIcon.hidden : NO;
+    // 层快照采集：原按钮当前处于哪个状态就截哪个状态（选中态由栏的 kSelBtnKey 判定）
+    BOOL origIsSel = (objc_getAssociatedObject(bar, &kSelBtnKey) == orig);
+    if (oIcon && [oIcon isKindOfClass:[UIImageView class]]) {
+        UIImage *srcImg = [(UIImageView *)oIcon image];
+        char *srcKey = origIsSel ? &kSnapSelSrcKey : &kSnapNormSrcKey;
+        if (srcImg && objc_getAssociatedObject(gb, srcKey) != (id)srcImg) {
+            UIImage *snap = HPSnapshotView(oIcon);
+            if (snap) {
+                if (origIsSel) gb.snapSelected = snap; else gb.snapNormal = snap;
+                objc_setAssociatedObject(gb, srcKey, srcImg, OBJC_ASSOCIATION_ASSIGN);
+            }
+        }
+    }
+    UIImage *snapForState = origIsSel ? (gb.snapSelected ?: gb.snapNormal) : gb.snapNormal;
+    if (snapForState) {
+        CGSize ss = snapForState.size;
+        if (ss.width > 1 && ss.height > 1 && ss.width <= 44 && ss.height <= 44)
+            iconF = CGRectMake((W - ss.width) / 2, 7.0 + (iconS - ss.height) / 2, ss.width, ss.height);
+    }
+    gb.iconView.frame = iconF;
     UIView *oLabel = HPGetObj(orig, @"label");
     if (!oLabel) oLabel = HPGetObj(orig, @"titleLabel");
     gb.textLabel.frame = CGRectMake(0, CGRectGetMaxY(iconF) + 2.0, W, 15.0);
@@ -483,10 +523,12 @@ static void HPSyncOverlayBar(UIView *bar, Class btnCls) {
     HPSetPlateFrame(capsule, capRect);
     HPApplyCapsuleShadow(capsule);
     CGFloat lensH = capH - 10;
-    HPSetPlateFrame(lens, CGRectMake(capX + 12 + (CGFloat)sel * slotW + 4,
-                                     capY + (capH - lensH) / 2, slotW - 8, lensH));
-    NSNumber *flashing = objc_getAssociatedObject(host, &kLensFlashActiveKey);
-    if (!flashing.boolValue) { lens.hidden = YES; lens.alpha = 0.0; }
+    BOOL flashing = [objc_getAssociatedObject(host, &kLensFlashActiveKey) boolValue];
+    if (!flashing || gInSpringSync) {
+        HPSetPlateFrame(lens, CGRectMake(capX + 12 + (CGFloat)sel * slotW + 4,
+                                         capY + (capH - lensH) / 2, slotW - 8, lensH));
+    }
+    if (!flashing) { lens.hidden = YES; lens.alpha = 0.0; }
 
     [host bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [host bringSubviewToFront:gb];
@@ -558,9 +600,13 @@ static void HP_SwiftBar_updateButton(UIView *self, SEL _cmd, UIView *btn, BOOL s
     ((void (*)(id, SEL, id, BOOL))gOrigSwiftUpdateBtn)(self, _cmd, btn, selected);
     if (selected && btn) {
         objc_setAssociatedObject(self, &kSelBtnKey, btn, OBJC_ASSOCIATION_ASSIGN);
+        UIView *host = objc_getAssociatedObject(self, &kOverlayKey);
+        if (host) HPShowLens(host, 1.05); // 透镜先显形，再由下面的弹簧同步把它滑到新槽
+        gInSpringSync = YES;
         [UIView animateWithDuration:0.55 delay:0 usingSpringWithDamping:0.75 initialSpringVelocity:0.6
                             options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
-                         animations:^{ HPSyncOverlayBar(self, gSwiftBtnCls); } completion:nil];
+                         animations:^{ HPSyncOverlayBar(self, gSwiftBtnCls); }
+                         completion:^(BOOL finished) { gInSpringSync = NO; }];
     }
 }
 static void HP_ObjcBar_layoutSubviews(UIView *self, SEL _cmd) {
@@ -629,7 +675,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v21 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v22 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
@@ -639,6 +685,9 @@ static void HPInstall(void) {
 // window 挂到该场景并 makeKeyAndVisible。无清单的老包永远不会实例化本类，无副作用。MRC。
 @interface HPSceneBridge : NSObject <UISceneDelegate>
 @property (nonatomic, retain) UIWindow *window;
+@property (nonatomic, retain) NSMutableSet *hpPendingURLs;
+@property (nonatomic, retain) NSMutableSet *hpPendingActs;
+@property (nonatomic, assign) BOOL hpFlushed;
 @end
 
 @implementation HPSceneBridge
@@ -665,6 +714,62 @@ static void HPInstall(void) {
     }
 }
 
+- (void)hpForwardURL:(NSURL *)url sourceApp:(NSString *)sourceApp {
+    if (!url) return;
+    id ad = [[UIApplication sharedApplication] delegate];
+    SEL sel = @selector(application:openURL:options:);
+    if (!ad || ![ad respondsToSelector:sel]) return;
+    NSDictionary *opts = sourceApp ? @{UIApplicationOpenURLOptionsSourceApplicationKey: sourceApp} : @{};
+    ((BOOL (*)(id, SEL, id, id, id))objc_msgSend)(ad, sel, [UIApplication sharedApplication], url, opts);
+    NSLog(@"[HPGlass] bridge forwarded openURL: %@", url);
+}
+
+- (void)hpForwardActivity:(NSUserActivity *)act {
+    if (!act) return;
+    id ad = [[UIApplication sharedApplication] delegate];
+    SEL sel = @selector(application:continueUserActivity:restorationHandler:);
+    if (!ad || ![ad respondsToSelector:sel]) return;
+    ((BOOL (*)(id, SEL, id, id, id))objc_msgSend)(ad, sel, [UIApplication sharedApplication], act,
+        (id)^(NSArray *restorableObjects) { (void)restorableObjects; });
+    NSLog(@"[HPGlass] bridge forwarded userActivity: %@", act.activityType);
+}
+
+// 场景清单一旦声明，系统就不再向 AppDelegate 投递链接/通用链接事件（掘金适配清单的「深链静默失效」），
+// 而虎扑的分享回跳等正走 AppDelegate 的 openURL——桥接必须转发。冷启动的事件在 willConnect 就到达、
+// 业务还没就绪，先暂存，首次 sceneDidBecomeActive 后统一补发（同一 URL 只发一次，防双发）。
+- (void)hpFlushPending {
+    if (self.hpFlushed) return;
+    self.hpFlushed = YES;
+    NSMutableSet *seen = [NSMutableSet set];
+    for (UIOpenURLContext *c in [[self.hpPendingURLs copy] autorelease]) {
+        NSString *k = c.URL.absoluteString ?: @"";
+        if ([seen containsObject:k]) continue;
+        [seen addObject:k];
+        [self hpForwardURL:c.URL sourceApp:c.options.sourceApplication];
+    }
+    [self.hpPendingURLs removeAllObjects];
+    for (NSUserActivity *a in [[self.hpPendingActs copy] autorelease]) [self hpForwardActivity:a];
+    [self.hpPendingActs removeAllObjects];
+}
+
+- (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)URLContexts {
+    if (!self.hpFlushed) {
+        if (!self.hpPendingURLs) self.hpPendingURLs = [NSMutableSet set];
+        [self.hpPendingURLs unionSet:URLContexts];
+        return;
+    }
+    for (UIOpenURLContext *c in URLContexts) [self hpForwardURL:c.URL sourceApp:c.options.sourceApplication];
+}
+
+- (void)scene:(UIScene *)scene continueUserActivity:(NSUserActivity *)userActivity {
+    if (!self.hpFlushed) {
+        if (!self.hpPendingActs) self.hpPendingActs = [NSMutableSet set];
+        [self.hpPendingActs addObject:userActivity];
+        return;
+    }
+    [self hpForwardActivity:userActivity];
+}
+
 - (void)hpAttachWindowToScene:(UIScene *)scene {
     if (![scene isKindOfClass:[UIWindowScene class]]) return;
     id appDelegate = [[UIApplication sharedApplication] delegate];
@@ -683,6 +788,14 @@ static void HPInstall(void) {
 }
 
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
+    if (connectionOptions.URLContexts.count) {
+        if (!self.hpPendingURLs) self.hpPendingURLs = [NSMutableSet set];
+        [self.hpPendingURLs unionSet:connectionOptions.URLContexts];
+    }
+    if (connectionOptions.userActivities.count) {
+        if (!self.hpPendingActs) self.hpPendingActs = [NSMutableSet set];
+        [self.hpPendingActs unionSet:connectionOptions.userActivities];
+    }
     [self hpAttachWindowToScene:scene];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ [self hpAttachWindowToScene:scene]; });
@@ -692,10 +805,13 @@ static void HPInstall(void) {
 
 - (void)sceneDidBecomeActive:(UIScene *)scene {
     [self hpAttachWindowToScene:scene];
+    [self hpFlushPending];
 }
 
 - (void)dealloc {
     [_window release];
+    [_hpPendingURLs release];
+    [_hpPendingActs release];
     [super dealloc];
 }
 
