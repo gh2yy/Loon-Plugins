@@ -189,7 +189,10 @@ static char kLensFlashGenKey;
 static char kLensFlashActiveKey;
 static void HPFlashLens(UIView *bar, CGRect lensFrame) {
     UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
-    if (!lens) return;
+    if (!lens) { gFlashInfo = @"flash: NO LENS"; return; }
+    gFlashInfo = [NSString stringWithFormat:@"flash: lens f={%.0f,%.0f,%.0f,%.0f} inBar=%d",
+        lensFrame.origin.x, lensFrame.origin.y, lensFrame.size.width, lensFrame.size.height,
+        [lens isDescendantOfView:bar]];
     NSNumber *g = objc_getAssociatedObject(bar, &kLensFlashGenKey);
     NSInteger gen = g ? g.integerValue + 1 : 1;
     objc_setAssociatedObject(bar, &kLensFlashGenKey, @(gen), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -388,6 +391,59 @@ static void HPHideBarBackground(UIView *bar, NSArray *btns) {
     }
 }
 
+#pragma mark - 诊断 HUD（v19-diag：把底栏层级打到屏幕上，截图即证据，定案后删）
+
+static UILabel *gHUD = nil;
+static NSString *gFlashInfo = @"flash: (none yet)";
+static void HPUpdateHUD(UIView *bar) {
+    UIView *cap = objc_getAssociatedObject(bar, &kCapsuleKey);
+    UIView *lens = objc_getAssociatedObject(bar, &kLensKey);
+    NSArray *mine = objc_getAssociatedObject(bar, &kRowKey);
+    NSArray *btns = HPBarButtons(bar, gSwiftBtnCls);
+    NSMutableString *s = [NSMutableString stringWithFormat:@"v19-diag bar=%@ sub=%lu\n%@\n",
+        NSStringFromClass([bar class]), (unsigned long)bar.subviews.count, gFlashInfo];
+    if ([bar respondsToSelector:@selector(backgroundView)]) {
+        UIView *bg = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(backgroundView));
+        [s appendFormat:@"bgView=%@ h=%d | ", bg ? NSStringFromClass([bg class]) : @"nil", bg ? bg.hidden : -1];
+    }
+    if ([bar respondsToSelector:@selector(mixView)]) {
+        UIView *mv = ((id (*)(id, SEL))objc_msgSend)(bar, @selector(mixView));
+        [s appendFormat:@"mix=%@ h=%d\n", mv ? NSStringFromClass([mv class]) : @"nil", mv ? mv.hidden : -1];
+    }
+    for (NSUInteger i = 0; i < bar.subviews.count; i++) {
+        UIView *v = bar.subviews[i];
+        NSString *mark = @"";
+        if (v == cap) mark = @"<CAP>";
+        else if (v == lens) mark = @"<LENS>";
+        else if (mine && [mine containsObject:v]) mark = @"<ROW>";
+        else if ([btns containsObject:v]) mark = @"<ORIG>";
+        [s appendFormat:@"[%lu]%@ %@ f={%.0f,%.0f,%.0f,%.0f} h=%d a=%.2f\n",
+            (unsigned long)i, mark, NSStringFromClass([v class]),
+            v.frame.origin.x, v.frame.origin.y, v.frame.size.width, v.frame.size.height,
+            v.hidden, v.alpha];
+    }
+    UIView *win = bar.window;
+    if (!win) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!gHUD) {
+            gHUD = [[UILabel alloc] initWithFrame:CGRectZero];
+            gHUD.numberOfLines = 0;
+            gHUD.font = [UIFont fontWithName:@"Menlo" size:10] ?: [UIFont systemFontOfSize:10];
+            gHUD.textColor = [UIColor whiteColor];
+            gHUD.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72];
+            gHUD.userInteractionEnabled = NO;
+        }
+        if (gHUD.superview != win) [win addSubview:gHUD];
+        [win bringSubviewToFront:gHUD];
+        gHUD.text = s;
+        CGSize sz = [s sizeWithAttributes:@{NSFontAttributeName: gHUD.font}];
+        CGFloat w = MIN(sz.width + 12, win.bounds.size.width - 8);
+        gHUD.frame = CGRectMake(4, 64, w, 0);
+        [gHUD sizeToFit];
+        CGRect f = gHUD.frame; f.origin = CGPointMake(4, 64); f.size.width = w; gHUD.frame = f;
+    });
+}
+
 static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     CGRect bounds = bar.bounds;
     if (bounds.size.width < 50 || bounds.size.height < 30) return;
@@ -470,6 +526,7 @@ static void HPLayoutSwiftBar(UIView *bar, Class btnCls) {
     // 层级：胶囊 < 透镜 < 自建按钮
     [bar bringSubviewToFront:lens];
     for (HPGlassButton *gb in row) [bar bringSubviewToFront:gb];
+    HPUpdateHUD(bar);
 }
 
 #pragma mark - 布局（ObjC 旧栏：v4 覆盖式，仅兼容）
@@ -607,7 +664,7 @@ static void HPInstall(void) {
         gOrigObjcReload = HPSwap(gObjcBarCls, @selector(reloadImageAndTitles), (IMP)HP_ObjcBar_reload);
     }
     gInstalled = any;
-    NSLog(@"[HPGlass] v18 install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
+    NSLog(@"[HPGlass] v19-diag install: swiftBar=%@ swiftBtn=%@ objcBar=%@ installed=%d",
           gSwiftBarCls, gSwiftBtnCls, gObjcBarCls, gInstalled);
 }
 
